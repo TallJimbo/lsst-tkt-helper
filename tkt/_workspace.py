@@ -152,12 +152,12 @@ class Workspace:
             if not dry_run:
                 os.makedirs(self._directory)
         if not dry_run:
-            self.write_description()
-            self.write_eups_table()
+            self._write_description()
+            self._write_eups_table()
         for package in self._packages:
             self._checkout_package(package, environment, dry_run=dry_run)
 
-    def write_description(self) -> None:
+    def _write_description(self) -> None:
         with open(os.path.join(self._directory, "tkt.json"), "w") as f:
             json.dump(
                 {
@@ -171,7 +171,7 @@ class Workspace:
                 f,
             )
 
-    def write_eups_table(self) -> None:
+    def _write_eups_table(self) -> None:
         os.makedirs(os.path.join(self._directory, "ups"), exist_ok=True)
         with open(
             os.path.join(
