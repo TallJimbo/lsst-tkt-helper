@@ -36,6 +36,7 @@ from typing import (
     Optional,
 )
 
+import eups
 import git
 
 from ._environment import Environment
@@ -49,16 +50,16 @@ class Workspace:
         ticket: str,
         packages: Dict[str, str],
         externals: Dict[str, str],
-        metapackage: str,
-        tag: str,
+        metapackage_name: str,
+        metapackage_version: str,
         workspace_eups_product: str,
     ):
         self._directory = directory
         self._ticket = ticket
         self._packages = packages
         self._externals = externals
-        self._metapackage = metapackage
-        self._tag = tag
+        self._metapackage_name = metapackage_name
+        self._metapackage_version = metapackage_version
         self._workspace_eups_product = workspace_eups_product
 
     @classmethod
@@ -67,13 +68,18 @@ class Workspace:
             return None
         with open(os.path.join(directory, "tkt.json"), "r") as f:
             descr = json.load(f)
+        if "tag" in descr:
+            metapackage_name = descr["metapackage"]
+            metapackage_version = eups.Eups().findProduct(
+                metapackage_name, eups.Tag(descr["tag"])
+            )
         return cls(
             directory=directory,
             ticket=descr["ticket"],
             packages=dict(descr["packages"]),
             externals=dict(descr["externals"]),
-            metapackage=descr["metapackage"],
-            tag=descr["tag"],
+            metapackage_name=metapackage_name,
+            metapackage_version=metapackage_version,
             workspace_eups_product=descr["workspace_eups_product"],
         )
 
@@ -131,8 +137,8 @@ class Workspace:
             ticket=ticket,
             packages=packages_dict,
             externals=externals,
-            metapackage=metapackage,
-            tag=tag,
+            metapackage_name=metapackage,
+            metapackage_version=eups.Eups().findProduct(metapackage, eups.Tag(tag)),
             workspace_eups_product=workspace_eups_product,
         )
         instance._write_new(environment, dry_run=dry_run)
@@ -158,8 +164,8 @@ class Workspace:
                     "ticket": self._ticket,
                     "packages": dict(self._packages),
                     "externals": list(self._externals),
-                    "metapackage": self._metapackage,
-                    "tag": self._tag,
+                    "metapackage_name": self._metapackage_name,
+                    "metapackage_version": self._metapackage_version,
                     "workspace_eups_product": self._workspace_eups_product,
                 },
                 f,
@@ -173,7 +179,9 @@ class Workspace:
             ),
             "w",
         ) as f:
-            f.write(f"setupRequired({self._metapackage} -t {self._tag})\n")
+            f.write(
+                f"setupRequired({self._metapackage_name} {self._metapackage_version})\n"
+            )
             for product, path in self._externals.items():
                 f.write(f"setupRequired({product} -j -r {path})\n")
             for product in self._packages:

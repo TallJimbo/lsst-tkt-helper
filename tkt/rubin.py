@@ -45,14 +45,12 @@ class RubinEnvironment(Environment):
         eups_path: str,
         workspace_path: str,
         repos_yaml: str,
-        local_repo_paths: Mapping[str, str],
         externals: Mapping[str, str],
     ):
         self._eups_path = eups_path
         self._workspace_path = workspace_path
         with open(repos_yaml, "r") as f:
             self._repo_data = yaml.safe_load(f)
-        self._local_repo_paths = local_repo_paths
         self._externals = externals
 
     @classmethod
@@ -61,7 +59,6 @@ class RubinEnvironment(Environment):
             eups_path=data["eups_path"],
             workspace_path=data["workspace_path"],
             repos_yaml=data["repos_yaml"],
-            local_repo_paths=data.get("local_repo_paths", {}),
             externals=data.get("externals", {}),
         )
 
