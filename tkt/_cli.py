@@ -53,6 +53,13 @@ class KeySetParamType(click.ParamType):
         self.fail(f"Expected a string of the form 'k=v', got '{value}'.", param, ctx)
 
 
+def _setup_logging(verbose: int) -> None:
+    logging.basicConfig(
+        level={0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}[verbose],
+        format="%(message)s",
+    )
+
+
 @click.group()
 def cli() -> None:
     pass
@@ -92,10 +99,7 @@ def new(
     dry_run: bool = False,
     verbose: int = 0,
 ) -> None:
-    logging.basicConfig(
-        level={0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}[verbose],
-        format="%(message)s",
-    )
+    _setup_logging(verbose)
     if environment is None:
         env = Environment.minimal()
     else:
@@ -108,6 +112,50 @@ def new(
         metapackage=metapackage,
         tag=tag,
         workspace_eups_product=workspace_eups_product,
+        environment=env,
+        dry_run=dry_run,
+    )
+
+
+@cli.command()
+@click.argument("packages", nargs=-1)
+@click.option(
+    "-d",
+    "--directory",
+    type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
+)
+@click.option("--ticket")
+@click.option(
+    "-b", "--branch", "branches", type=KeySetParamType(), multiple=True, default=()
+)
+@click.option(
+    "--environment",
+    envvar="TKT_ENVIRONMENT",
+    type=click.File(),
+)
+@click.option("-n", "--dry-run", is_flag=True)
+@click.option("-v", "--verbose", count=True)
+def update(
+    packages: Iterable[str],
+    *,
+    ticket: Optional[str],
+    directory: Optional[str],
+    branches: Iterable[Tuple[str, str]],
+    environment: Optional[TextIO],
+    dry_run: bool = False,
+    verbose: int = 0,
+) -> None:
+    _setup_logging(verbose)
+    if environment is None:
+        env = Environment.minimal()
+    else:
+        env = Environment.from_file(environment)
+    workspace = Workspace.from_existing(
+        ticket=ticket, directory=directory, environment=env
+    )
+    workspace.update(
+        packages=packages,
+        branches=dict(branches),
         environment=env,
         dry_run=dry_run,
     )

@@ -34,6 +34,7 @@ from typing import (
     Iterable,
     Mapping,
     Optional,
+    Tuple,
 )
 
 import eups
@@ -63,31 +64,49 @@ class Workspace:
         self._workspace_eups_product = workspace_eups_product
 
     @classmethod
-    def from_directory(cls, directory: str) -> Optional[Workspace]:
-        if not os.path.exists(directory):
-            return None
+    def from_directory(cls, directory: str) -> Workspace:
         with open(os.path.join(directory, "tkt.json"), "r") as f:
-            descr = json.load(f)
-        if "tag" in descr:
-            metapackage_name = descr["metapackage"]
-            metapackage_version = eups.Eups().findProduct(
-                metapackage_name, eups.Tag(descr["tag"])
+            data = json.load(f)
+        if "tag" in data:
+            metapackage_name = data["metapackage"]
+            metapackage_version = (
+                eups.Eups().findProduct(metapackage_name, eups.Tag(data["tag"])).version
             )
+        else:
+            metapackage_name = data["metapackage_name"]
+            metapackage_version = data["metapackage_version"]
         return cls(
             directory=directory,
-            ticket=descr["ticket"],
-            packages=dict(descr["packages"]),
-            externals=dict(descr["externals"]),
+            ticket=data["ticket"],
+            packages=dict(data["packages"]),
+            externals=dict(data["externals"]),
             metapackage_name=metapackage_name,
             metapackage_version=metapackage_version,
-            workspace_eups_product=descr["workspace_eups_product"],
+            workspace_eups_product=data["workspace_eups_product"],
         )
 
     @classmethod
-    def from_ticket_directory(
-        cls, ticket: str, environment: Environment
-    ) -> Optional[Workspace]:
-        return cls.from_directory(environment.get_workspace_directory(ticket))
+    def from_existing(
+        cls,
+        *,
+        ticket: Optional[str],
+        directory: Optional[str],
+        environment: Environment,
+    ) -> Workspace:
+        if directory is None:
+            if ticket is not None:
+                directory = environment.get_workspace_directory(ticket)
+            else:
+                directory = os.path.curdir
+                while not os.path.exists(os.path.join(directory, "tkt.json")):
+                    new_directory = os.path.normpath(os.path.join(directory, ".."))
+                    if new_directory == directory:
+                        raise RuntimeError(
+                            "No ticket or directory provided, and no tkt.json found "
+                            "in current or its parents."
+                        )
+                    directory = new_directory
+        return cls.from_directory(directory)
 
     @classmethod
     def new(
@@ -104,22 +123,75 @@ class Workspace:
         environment: Optional[Environment] = None,
         dry_run: bool = False,
     ) -> Workspace:
-        if environment is None:
-            environment = Environment.minimal()
+        packages, externals, environment = cls._handle_package_args(
+            ticket,
+            packages=packages,
+            branches=branches,
+            externals=externals,
+            environment=environment,
+        )
         if directory is None:
             directory = environment.get_workspace_directory(ticket)
-        if branches is None:
-            branches = {}
-        if externals is None:
-            externals = {}
-        else:
-            externals = dict(externals)
         if metapackage is None:
             metapackage = environment.default_metapackage
         if tag is None:
             tag = environment.default_tag
         if workspace_eups_product is None:
             workspace_eups_product = environment.default_workspace_eups_product
+        instance = cls(
+            directory=directory,
+            ticket=ticket,
+            packages=packages,
+            externals=externals,
+            metapackage_name=metapackage,
+            metapackage_version=eups.Eups()
+            .findProduct(metapackage, eups.Tag(tag))
+            .version,
+            workspace_eups_product=workspace_eups_product,
+        )
+        instance._write_new(environment, dry_run=dry_run)
+        return instance
+
+    def update(
+        self,
+        packages: Iterable[str],
+        branches: Optional[Mapping[str, str]] = None,
+        externals: Optional[Mapping[str, str]] = None,
+        environment: Optional[Environment] = None,
+        dry_run: bool = False,
+    ) -> None:
+        packages, externals, environment = self._handle_package_args(
+            self._ticket,
+            packages=packages,
+            branches=branches,
+            externals=externals,
+            environment=environment,
+        )
+        self._packages.update(packages)
+        self._externals.update(externals)
+        if not dry_run:
+            self._write_description()
+            self._write_eups_table()
+        for package in packages:
+            self._checkout_package(package, environment, dry_run=dry_run)
+
+    @staticmethod
+    def _handle_package_args(
+        ticket: str,
+        *,
+        packages: Iterable[str],
+        branches: Optional[Mapping[str, str]] = None,
+        externals: Optional[Mapping[str, str]] = None,
+        environment: Optional[Environment] = None,
+    ) -> Tuple[Dict[str, str], Dict[str, str], Environment]:
+        if environment is None:
+            environment = Environment.minimal()
+        if branches is None:
+            branches = {}
+        if externals is None:
+            externals = {}
+        else:
+            externals = dict(externals)
         packages_dict = {}
         for package in packages:
             if package in branches:
@@ -132,17 +204,7 @@ class Workspace:
                     packages_dict[package] = environment.get_default_branch(
                         package, ticket
                     )
-        instance = cls(
-            directory=directory,
-            ticket=ticket,
-            packages=packages_dict,
-            externals=externals,
-            metapackage_name=metapackage,
-            metapackage_version=eups.Eups().findProduct(metapackage, eups.Tag(tag)),
-            workspace_eups_product=workspace_eups_product,
-        )
-        instance._write_new(environment, dry_run=dry_run)
-        return instance
+        return (packages_dict, externals, environment)
 
     def _write_new(self, environment: Environment, *, dry_run: bool) -> None:
         if os.path.exists(self._directory):
@@ -163,7 +225,7 @@ class Workspace:
                 {
                     "ticket": self._ticket,
                     "packages": dict(self._packages),
-                    "externals": list(self._externals),
+                    "externals": dict(self._externals),
                     "metapackage_name": self._metapackage_name,
                     "metapackage_version": self._metapackage_version,
                     "workspace_eups_product": self._workspace_eups_product,
