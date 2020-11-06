@@ -73,9 +73,7 @@ def cli() -> None:
     "--directory",
     type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
 )
-@click.option(
-    "-b", "--branch", "branches", type=KeySetParamType(), multiple=True, default=()
-)
+@click.option("-b", "--branch", "branches", type=KeySetParamType(), multiple=True, default=())
 @click.option("-t", "--tag", type=str)
 @click.option("--metapackage")
 @click.option("--workspace-eups-product")
@@ -84,6 +82,7 @@ def cli() -> None:
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
 )
+@click.option("--editor", "editors", multiple=True, default=(), type=str)
 @click.option("-n", "--dry-run", is_flag=True)
 @click.option("-v", "--verbose", count=True)
 def new(
@@ -96,6 +95,7 @@ def new(
     metapackage: Optional[str],
     workspace_eups_product: Optional[str],
     environment: Optional[TextIO],
+    editors: Iterable[str] = (),
     dry_run: bool = False,
     verbose: int = 0,
 ) -> None:
@@ -112,6 +112,7 @@ def new(
         metapackage=metapackage,
         tag=tag,
         workspace_eups_product=workspace_eups_product,
+        editors=editors,
         environment=env,
         dry_run=dry_run,
     )
@@ -125,9 +126,7 @@ def new(
     type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
 )
 @click.option("--ticket")
-@click.option(
-    "-b", "--branch", "branches", type=KeySetParamType(), multiple=True, default=()
-)
+@click.option("-b", "--branch", "branches", type=KeySetParamType(), multiple=True, default=())
 @click.option(
     "--environment",
     envvar="TKT_ENVIRONMENT",
@@ -150,12 +149,50 @@ def update(
         env = Environment.minimal()
     else:
         env = Environment.from_file(environment)
-    workspace = Workspace.from_existing(
-        ticket=ticket, directory=directory, environment=env
-    )
+    workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
     workspace.update(
         packages=packages,
         branches=dict(branches),
+        environment=env,
+        dry_run=dry_run,
+    )
+
+
+@cli.command("upgrade-metapackage")
+@click.option(
+    "-d",
+    "--directory",
+    type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
+)
+@click.option("--ticket")
+@click.option(
+    "--environment",
+    envvar="TKT_ENVIRONMENT",
+    type=click.File(),
+)
+@click.option("-t", "--tag", type=str)
+@click.option("--metapackage")
+@click.option("-n", "--dry-run", is_flag=True)
+@click.option("-v", "--verbose", count=True)
+def upgrade_metapackage(
+    *,
+    ticket: Optional[str],
+    directory: Optional[str],
+    environment: Optional[TextIO],
+    tag: Optional[str],
+    metapackage: Optional[str],
+    dry_run: bool = False,
+    verbose: int = 0,
+) -> None:
+    _setup_logging(verbose)
+    if environment is None:
+        env = Environment.minimal()
+    else:
+        env = Environment.from_file(environment)
+    workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
+    workspace.upgrade_metapackage(
+        metapackage=metapackage,
+        tag=tag,
         environment=env,
         dry_run=dry_run,
     )

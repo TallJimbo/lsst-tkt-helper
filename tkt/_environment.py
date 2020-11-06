@@ -32,9 +32,32 @@ import json
 from typing import (
     Any,
     Dict,
+    Iterable,
     Optional,
     TextIO,
 )
+
+
+class Editor(ABC):
+    @classmethod
+    @abstractmethod
+    def from_json_data(cls, data: dict) -> Editor:
+        raise NotImplementedError()
+
+    @property
+    @abstractmethod
+    def needs_envvars(self) -> bool:
+        raise NotADirectoryError()
+
+    @abstractmethod
+    def write(
+        self,
+        ticket: str,
+        directory: str,
+        packages: Iterable[str],
+        envvars: Optional[dict] = None,
+    ) -> None:
+        raise NotImplementedError()
 
 
 class Environment(ABC):
@@ -54,6 +77,15 @@ class Environment(ABC):
     def from_json_data(cls, data: dict) -> Environment:
         raise NotImplementedError()
 
+    @classmethod
+    def _read_editors(cls, data: dict) -> Dict[str, Editor]:
+        result: Dict[str, Editor] = {}
+        for name, section in data.pop("editors", {}).items():
+            mod = importlib.import_module(section.pop("module"))
+            EditorClass = getattr(mod, section.pop("cls"))
+            result[name] = EditorClass.from_json_data(section)
+        return result
+
     @property
     @abstractmethod
     def default_metapackage(self) -> str:
@@ -62,6 +94,16 @@ class Environment(ABC):
     @property
     @abstractmethod
     def default_tag(self) -> str:
+        raise NotImplementedError()
+
+    @property
+    @abstractmethod
+    def shell(self) -> str:
+        raise NotImplementedError()
+
+    @property
+    @abstractmethod
+    def eups_prelude(self) -> str:
         raise NotImplementedError()
 
     @property
@@ -84,6 +126,10 @@ class Environment(ABC):
     def get_external_path(self, package: str) -> Optional[str]:
         return None
 
+    @abstractmethod
+    def get_editor(self, name: str) -> Optional[Editor]:
+        raise NotImplementedError()
+
 
 class _MinimalEnvironment(Environment):
     @classmethod
@@ -99,6 +145,14 @@ class _MinimalEnvironment(Environment):
         raise TypeError("No environment and no tag provided.")
 
     @property
+    def shell(self) -> str:
+        raise TypeError("No shell provided.")
+
+    @property
+    def eups_prelude(self) -> str:
+        raise TypeError("No EUPS prelude provided.")
+
+    @property
     def default_workspace_eups_product(self) -> str:
         raise TypeError("No environment and no workspace eups product provided.")
 
@@ -109,6 +163,7 @@ class _MinimalEnvironment(Environment):
         raise TypeError("No environment and no checkout directory provided.")
 
     def get_origin(self, package: str) -> str:
-        raise TypeError(
-            f"No environment and no existing repository provided for {package}."
-        )
+        raise TypeError(f"No environment and no existing repository provided for {package}.")
+
+    def get_editor(self, name: str) -> Optional[Editor]:
+        return None
