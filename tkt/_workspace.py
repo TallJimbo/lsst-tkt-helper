@@ -288,9 +288,12 @@ class Workspace:
         sentinal_seen = False
         envvars: Dict[str, str] = {}
         for line in result.stdout.splitlines():
+            if "()" in line or line == "}":
+                continue
             if sentinal_seen:
                 name, separator, value = line.partition("=")
-                assert separator == "="
+                if separator != "=":
+                    raise RuntimeError(f"Unexpected results when capturing environment:\n{result.stdout}.")
                 envvars[name] = value
             elif line.startswith(sentinal_line):
                 sentinal_seen = True
