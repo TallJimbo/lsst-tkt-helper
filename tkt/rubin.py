@@ -48,6 +48,7 @@ class RubinEnvironment(Environment):
         repos_yaml: str,
         shell: str,
         eups_prelude: str,
+        default_tag: str,
         externals: Mapping[str, str],
         editors: Mapping[str, Editor],
     ):
@@ -59,6 +60,7 @@ class RubinEnvironment(Environment):
         self._eups_prelude = eups_prelude
         self._externals = externals
         self._editors = editors
+        self._default_tag = default_tag
 
     @classmethod
     def from_json_data(cls, data: Dict[str, Any]) -> Environment:
@@ -70,6 +72,7 @@ class RubinEnvironment(Environment):
             shell=data.get("shell", "/bin/bash"),
             externals=data.get("externals", {}),
             editors=cls._read_editors(data),
+            default_tag=data.get("default_tag", "current"),
         )
 
     @property
@@ -78,7 +81,7 @@ class RubinEnvironment(Environment):
 
     @property
     def default_tag(self) -> str:
-        return "w_latest"
+        return self._default_tag
 
     @property
     def shell(self) -> str:
