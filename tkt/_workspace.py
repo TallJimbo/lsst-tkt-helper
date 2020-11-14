@@ -269,7 +269,8 @@ class Workspace:
             for product, path in self._externals.items():
                 f.write(f"setupRequired({product} -j -r {path})\n")
             for product in self._packages:
-                f.write(f"setupRequired({product} -j -r ${{PRODUCT_DIR}}/{product})\n")
+                if os.path.exists(os.path.join(self._directory, product, "ups")):
+                    f.write(f"setupRequired({product} -j -r ${{PRODUCT_DIR}}/{product})\n")
 
     def _capture_env(self, environment: Environment) -> Dict[str, str]:
         sentinal_line = "######## BEGIN ENV ########"
