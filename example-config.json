@@ -1,0 +1,63 @@
+{
+    "module": "tkt.rubin",
+    "cls": "RubinEnvironment",
+    "eups_path": "/home/jbosch/LSST/lsstsw/stack",
+    "repos_yaml": "/home/jbosch/LSST/lsstsw/etc/repos.yaml",
+    "workspace_path": "/home/jbosch/LSST/tkt",
+    "eups_prelude": ". /home/jbosch/LSST/lsstsw/bin/envconfig",
+    "externals": {
+        "testdata_subaru": "/home/jbosch/LSST/src/testdata_subaru",
+        "testdata_decam": "/home/jbosch/LSST/src/testdata_decam",
+        "testdata_ci_hsc": "/home/jbosch/LSST/src/testdata_ci_hsc"
+    },
+    "editors": {
+        "vscode": {
+            "module": "tkt.vscode",
+            "cls": "VSCode",
+            "base": {
+                "folders": [
+                    {
+                        "path": "."
+                    }
+                ],
+                "launch": {
+                    "version": "0.2.0",
+                    "configurations": [
+                        {
+                            "name": "Python: Remote Attach",
+                            "type": "python",
+                            "request": "attach",
+                            "connect": {
+                                "host": "localhost",
+                                "port": 5678
+                            },
+                            "pathMappings": [
+                                {
+                                    "localRoot": "${workspaceFolder}",
+                                    "remoteRoot": "."
+                                }
+                            ]
+                        },
+                        {
+                            "name": "Python: Current File",
+                            "type": "python",
+                            "request": "launch",
+                            "program": "${file}",
+                            "console": "integratedTerminal"
+                        }
+                    ]
+                }
+            },
+            "packages": {
+                "daf_butler": {
+                    "settings": {
+                        "mypy.targets": [
+                            "daf_butler/python/lsst"
+                        ],
+                        "mypy.configFile": "daf_butler/mypy.ini"
+                    }
+                }
+            }
+        }
+    }
+}
