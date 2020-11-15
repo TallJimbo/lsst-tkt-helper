@@ -238,10 +238,10 @@ class Workspace:
                 os.makedirs(self._directory)
         if not dry_run:
             self._write_description()
-            self._write_eups_table()
         for package in self._packages:
             self._checkout_package(package, environment, dry_run=dry_run)
         if not dry_run:
+            self._write_eups_table()
             self._write_editors(environment)
 
     def _write_description(self) -> None:
@@ -269,8 +269,11 @@ class Workspace:
             for product, path in self._externals.items():
                 f.write(f"setupRequired({product} -j -r {path})\n")
             for product in self._packages:
-                if os.path.exists(os.path.join(self._directory, product, "ups")):
+                path = os.path.join(self._directory, product, "ups")
+                if os.path.exists(path):
                     f.write(f"setupRequired({product} -j -r ${{PRODUCT_DIR}}/{product})\n")
+                else:
+                    logging.info(f"Skipping setup line for {product} because {path} does not exist.")
 
     def _capture_env(self, environment: Environment) -> Dict[str, str]:
         sentinal_line = "######## BEGIN ENV ########"
