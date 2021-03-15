@@ -95,7 +95,7 @@ class VSCode(Editor):
                 old_config = json.load(f)
             merge_hierarchical(config, old_config, override=True)
         with open(workspace_filename, "w") as f:
-            json.dump(config, f)
+            json.dump(config, f, indent=2)
         if envvars is not None:
             exported_variables = list(
                 BASE_EXPORTED_VARIABLES.intersection(envvars.keys())

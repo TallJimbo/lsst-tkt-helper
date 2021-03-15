@@ -267,6 +267,7 @@ class Workspace:
                     "editors": list(self._editors),
                 },
                 f,
+                indent=2,
             )
 
     def _write_eups_table(self) -> None:
