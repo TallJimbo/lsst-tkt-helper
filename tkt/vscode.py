@@ -67,7 +67,9 @@ class VSCode(Editor):
         base = data.pop("base", {})
         packages = data.pop("packages", {})
         if data:
-            raise ValueError(f"Unexpected entries in nested VSCode configuration: {data}.")
+            raise ValueError(
+                f"Unexpected entries in nested VSCode configuration: {data}."
+            )
         return cls(base, packages)
 
     @property
@@ -95,9 +97,13 @@ class VSCode(Editor):
         with open(workspace_filename, "w") as f:
             json.dump(config, f)
         if envvars is not None:
-            exported_variables = list(BASE_EXPORTED_VARIABLES.intersection(envvars.keys()))
+            exported_variables = list(
+                BASE_EXPORTED_VARIABLES.intersection(envvars.keys())
+            )
             exported_variables.extend(
-                var for var in envvars if (var.endswith("DIR") and f"SETUP_{var[:-4]}" in envvars)
+                var
+                for var in envvars
+                if (var.endswith("DIR") and f"SETUP_{var[:-4]}" in envvars)
             )
             with open(os.path.join(directory, ".env"), "w") as f:
                 for var in exported_variables:
