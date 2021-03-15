@@ -176,12 +176,12 @@ class Workspace:
         )
         self._packages.update(packages)
         self._externals.update(externals)
+        for package in packages:
+            self._checkout_package(package, environment, dry_run=dry_run)
         if not dry_run:
             self._write_description()
             self._write_eups_table()
             self._write_editors(environment)
-        for package in packages:
-            self._checkout_package(package, environment, dry_run=dry_run)
 
     def upgrade_metapackage(
         self,
