@@ -15,11 +15,6 @@
             "module": "tkt.vscode",
             "cls": "VSCode",
             "base": {
-                "folders": [
-                    {
-                        "path": "."
-                    }
-                ],
                 "launch": {
                     "version": "0.2.0",
                     "configurations": [
@@ -52,9 +47,9 @@
                 "daf_butler": {
                     "settings": {
                         "mypy.targets": [
-                            "daf_butler/python/lsst"
+                            "python/lsst"
                         ],
-                        "mypy.configFile": "daf_butler/mypy.ini"
+                        "mypy.configFile": "mypy.ini"
                     }
                 }
             }

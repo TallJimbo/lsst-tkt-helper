@@ -42,6 +42,9 @@ BASE_EXPORTED_VARIABLES = frozenset(("PATH", "PYTHONPATH", "LD_LIBRARY_PATH"))
 
 
 def merge_hierarchical(target: dict, source: dict, override: bool = False) -> None:
+    """Merge ``source`` into ``target``, combining dictionaries recursively
+    when the same keys are present.  Modifies ``target`` in-place.
+    """
     for k, v in source.items():
         d = target.setdefault(k, v)
         if d is not v:
@@ -49,7 +52,7 @@ def merge_hierarchical(target: dict, source: dict, override: bool = False) -> No
                 merge_hierarchical(d, v, override=override)
             elif override:
                 target[k] = v
-            else:
+            elif d != v:
                 raise ValueError(f"Cannot merge {k!r}: {v!r} into {d!r}.")
 
 
@@ -83,17 +86,24 @@ class VSCode(Editor):
         packages: Iterable[str],
         envvars: Optional[dict] = None,
     ) -> None:
-        config = copy.deepcopy(self._base)
-        for package in packages:
-            package_config = self._packages.get(package)
-            if package_config is not None:
-                merge_hierarchical(config, copy.deepcopy(package_config))
-        config.setdefault("settings", {})["python.pythonPath"] = sys.executable
         workspace_filename = os.path.join(directory, f"{ticket}.code-workspace")
+        config = copy.deepcopy(self._base)
         if os.path.exists(workspace_filename):
             with open(workspace_filename, "r") as f:
                 old_config = json.load(f)
             merge_hierarchical(config, old_config, override=True)
+        folders_list = config.setdefault("folders", [])
+        for package in packages:
+            for folder_config in folders_list:
+                if folder_config.get("path") == package:
+                    break
+            else:
+                folder_config = {"path": package}
+                folders_list.append(folder_config)
+            package_config = self._packages.get(package)
+            if package_config is not None:
+                merge_hierarchical(folder_config, copy.deepcopy(package_config))
+        config.setdefault("settings", {})["python.pythonPath"] = sys.executable
         with open(workspace_filename, "w") as f:
             json.dump(config, f, indent=2)
         if envvars is not None:
