@@ -41,7 +41,7 @@ from typing import (
 class Editor(ABC):
     @classmethod
     @abstractmethod
-    def from_json_data(cls, data: dict) -> Editor:
+    def from_json_data(cls, data: Dict[str, Any]) -> Editor:
         raise NotImplementedError()
 
     @property
@@ -55,7 +55,7 @@ class Editor(ABC):
         ticket: str,
         directory: str,
         packages: Iterable[str],
-        envvars: Optional[dict] = None,
+        envvars: Optional[Dict[str, Any]] = None,
     ) -> None:
         raise NotImplementedError()
 
@@ -74,11 +74,11 @@ class Environment(ABC):
 
     @classmethod
     @abstractmethod
-    def from_json_data(cls, data: dict) -> Environment:
+    def from_json_data(cls, data: Dict[str, Any]) -> Environment:
         raise NotImplementedError()
 
     @classmethod
-    def _read_editors(cls, data: dict) -> Dict[str, Editor]:
+    def _read_editors(cls, data: Dict[str, Any]) -> Dict[str, Editor]:
         result: Dict[str, Editor] = {}
         for name, section in data.pop("editors", {}).items():
             mod = importlib.import_module(section.pop("module"))
@@ -163,7 +163,9 @@ class _MinimalEnvironment(Environment):
         raise TypeError("No environment and no checkout directory provided.")
 
     def get_origin(self, package: str) -> str:
-        raise TypeError(f"No environment and no existing repository provided for {package}.")
+        raise TypeError(
+            f"No environment and no existing repository provided for {package}."
+        )
 
     def get_editor(self, name: str) -> Optional[Editor]:
         return None

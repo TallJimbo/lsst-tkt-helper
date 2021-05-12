@@ -22,7 +22,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-__all__ = ("cli",)
+__all__ = ("cli", "Environment", "Workspace")
 
 from ._cli import cli
 from ._environment import Environment

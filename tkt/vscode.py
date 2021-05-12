@@ -31,6 +31,8 @@ import json
 import os
 import sys
 from typing import (
+    Any,
+    Dict,
     Iterable,
     Optional,
 )
@@ -41,7 +43,9 @@ from ._environment import Editor
 BASE_EXPORTED_VARIABLES = frozenset(("PATH", "PYTHONPATH", "LD_LIBRARY_PATH"))
 
 
-def merge_hierarchical(target: dict, source: dict, override: bool = False) -> None:
+def merge_hierarchical(
+    target: Dict[str, Any], source: Dict[str, Any], override: bool = False
+) -> None:
     """Merge ``source`` into ``target``, combining dictionaries recursively
     when the same keys are present.  Modifies ``target`` in-place.
     """
@@ -59,14 +63,14 @@ def merge_hierarchical(target: dict, source: dict, override: bool = False) -> No
 class VSCode(Editor):
     def __init__(
         self,
-        base: dict,
-        packages: dict,
+        base: Dict[str, Any],
+        packages: Dict[str, Any],
     ):
         self._base = base
         self._packages = packages
 
     @classmethod
-    def from_json_data(cls, data: dict) -> Editor:
+    def from_json_data(cls, data: Dict[str, Any]) -> Editor:
         base = data.pop("base", {})
         packages = data.pop("packages", {})
         if data:
@@ -84,7 +88,7 @@ class VSCode(Editor):
         ticket: str,
         directory: str,
         packages: Iterable[str],
-        envvars: Optional[dict] = None,
+        envvars: Optional[Dict[str, Any]] = None,
     ) -> None:
         workspace_filename = os.path.join(directory, f"{ticket}.code-workspace")
         config = copy.deepcopy(self._base)
