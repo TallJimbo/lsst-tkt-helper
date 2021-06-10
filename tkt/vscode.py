@@ -108,6 +108,10 @@ class VSCode(Editor):
             if package_config is not None:
                 merge_hierarchical(folder_config, copy.deepcopy(package_config))
         config.setdefault("settings", {})["python.pythonPath"] = sys.executable
+        if envvars is not None and "PYTHONPATH" in envvars:
+            config["settings"]["python.analysis.extraPaths"] = envvars[
+                "PYTHONPATH"
+            ].split(":")
         with open(workspace_filename, "w") as f:
             json.dump(config, f, indent=2)
         if envvars is not None:
