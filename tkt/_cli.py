@@ -24,20 +24,14 @@
 
 from __future__ import annotations
 
-import re
 import logging
-from typing import (
-    Any,
-    Iterable,
-    Optional,
-    TextIO,
-    Tuple,
-)
+import re
+from typing import Any, Iterable, Optional, TextIO, Tuple
 
 import click
 
-from ._workspace import Workspace
 from ._environment import Environment
+from ._workspace import Workspace
 
 
 class KeySetParamType(click.ParamType):

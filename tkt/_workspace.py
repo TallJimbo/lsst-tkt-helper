@@ -30,18 +30,19 @@ import json
 import logging
 import os
 import subprocess
-from typing import (
-    Dict,
-    Iterable,
-    Mapping,
-    Optional,
-    Tuple,
-)
+from typing import Dict, Iterable, Mapping, Optional, Tuple
 
 import eups
 import git
 
 from ._environment import Environment
+
+
+def _get_eups_version(name: str, tag: str) -> str:
+    eups_product = eups.Eups().findProduct(name, eups.Tag(tag))
+    if eups_product is None:
+        raise LookupError(f"No metapackage {name!r} with tag {tag} found.")
+    return eups_product.version
 
 
 class Workspace:
@@ -72,9 +73,7 @@ class Workspace:
             data = json.load(f)
         if "tag" in data:
             metapackage_name = data["metapackage"]
-            metapackage_version = (
-                eups.Eups().findProduct(metapackage_name, eups.Tag(data["tag"])).version
-            )
+            metapackage_version = _get_eups_version(metapackage_name, data["tag"])
         else:
             metapackage_name = data["metapackage_name"]
             metapackage_version = data["metapackage_version"]
@@ -149,9 +148,7 @@ class Workspace:
             packages=packages,
             externals=externals,
             metapackage_name=metapackage,
-            metapackage_version=eups.Eups()
-            .findProduct(metapackage, eups.Tag(tag))
-            .version,
+            metapackage_version=_get_eups_version(metapackage, tag),
             workspace_eups_product=workspace_eups_product,
             editors=editors,
         )
@@ -197,12 +194,8 @@ class Workspace:
             self._metapackage_name = metapackage
             logging.info(f"Changing EUPS base metapackage to {metapackage}.")
         if tag is not None:
-            self._metapackage_version = (
-                eups.Eups().findProduct(self._metapackage_name, eups.Tag(tag)).version
-            )
-            logging.info(
-                f"Changing EUPS base tag to {tag} (version {self._metapackage_version})."
-            )
+            self._metapackage_version = _get_eups_version(self._metapackage_name, tag)
+            logging.info(f"Changing EUPS base tag to {tag} (version {self._metapackage_version}).")
         if not dry_run:
             self._write_description()
             self._write_eups_table()
@@ -234,9 +227,7 @@ class Workspace:
                 if package_external_path is not None:
                     externals[package] = package_external_path
                 else:
-                    packages_dict[package] = environment.get_default_branch(
-                        package, ticket
-                    )
+                    packages_dict[package] = environment.get_default_branch(package, ticket)
         return (packages_dict, externals, environment)
 
     def _write_new(self, environment: Environment, *, dry_run: bool) -> None:
@@ -273,26 +264,18 @@ class Workspace:
     def _write_eups_table(self) -> None:
         os.makedirs(os.path.join(self._directory, "ups"), exist_ok=True)
         with open(
-            os.path.join(
-                self._directory, "ups", f"{self._workspace_eups_product}.table"
-            ),
+            os.path.join(self._directory, "ups", f"{self._workspace_eups_product}.table"),
             "w",
         ) as f:
-            f.write(
-                f"setupRequired({self._metapackage_name} {self._metapackage_version})\n"
-            )
+            f.write(f"setupRequired({self._metapackage_name} {self._metapackage_version})\n")
             for product, path in self._externals.items():
                 f.write(f"setupRequired({product} -j -r {path})\n")
             for product in self._packages:
                 path = os.path.join(self._directory, product, "ups")
                 if os.path.exists(path):
-                    f.write(
-                        f"setupRequired({product} -j -r ${{PRODUCT_DIR}}/{product})\n"
-                    )
+                    f.write(f"setupRequired({product} -j -r ${{PRODUCT_DIR}}/{product})\n")
                 else:
-                    logging.info(
-                        f"Skipping setup line for {product} because {path} does not exist."
-                    )
+                    logging.info(f"Skipping setup line for {product} because {path} does not exist.")
 
     def _capture_env(self, environment: Environment) -> Dict[str, str]:
         sentinal_line = "######## BEGIN ENV ########"
@@ -316,9 +299,7 @@ class Workspace:
             if sentinal_seen:
                 name, separator, value = line.partition("=")
                 if separator != "=":
-                    raise RuntimeError(
-                        f"Unexpected results when capturing environment:\n{result.stdout}."
-                    )
+                    raise RuntimeError(f"Unexpected results when capturing environment:\n{result.stdout}.")
                 envvars[name] = value
             elif line.startswith(sentinal_line):
                 sentinal_seen = True
@@ -332,13 +313,9 @@ class Workspace:
                 raise LookupError("No editor configuration for {name}.")
             if editor.needs_envvars and envvars is None:
                 envvars = self._capture_env(environment)
-            editor.write(
-                self._ticket, self._directory, self._packages.keys(), envvars=envvars
-            )
+            editor.write(self._ticket, self._directory, self._packages.keys(), envvars=envvars)
 
-    def _checkout_package(
-        self, package: str, environment: Environment, *, dry_run: bool
-    ) -> None:
+    def _checkout_package(self, package: str, environment: Environment, *, dry_run: bool) -> None:
         branch_name = self._packages[package]
         package_dir = os.path.join(self._directory, package)
         if os.path.exists(package_dir):
@@ -351,20 +328,14 @@ class Workspace:
             else:
                 repo = None
         if repo is None:
-            logging.info(
-                f"{package}: (cannot determine {branch_name} checkout action in dry run)."
-            )
+            logging.info(f"{package}: (cannot determine {branch_name} checkout action in dry run).")
         elif repo.active_branch != branch_name:
             if branch_name in repo.heads:
-                logging.info(
-                    f"{package}: checking out existing local branch {branch_name}."
-                )
+                logging.info(f"{package}: checking out existing local branch {branch_name}.")
                 if not dry_run:
                     repo.heads[branch_name].checkout()
             else:
-                remotes_with_branch = [
-                    remote for remote in repo.remotes if branch_name in remote.refs
-                ]
+                remotes_with_branch = [remote for remote in repo.remotes if branch_name in remote.refs]
                 if len(remotes_with_branch) == 1:
                     logging.info(
                         f"{package}: creating local branch {branch_name} tracking {remotes_with_branch[0]}."
@@ -372,12 +343,14 @@ class Workspace:
                     if not dry_run:
                         upstream = remotes_with_branch[0].refs[branch_name]
                         local = repo.create_head(branch_name, upstream.commit)
+                        assert isinstance(local, git.Head)
                         local.set_tracking_branch(upstream)
                         local.checkout()
                 elif not remotes_with_branch:
                     logging.info(f"{package}: creating new local branch {branch_name}.")
                     if not dry_run:
                         local = repo.create_head(branch_name)
+                        assert isinstance(local, git.Head)
                         local.checkout()
                 else:
                     logging.warning(

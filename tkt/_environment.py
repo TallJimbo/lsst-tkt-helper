@@ -26,16 +26,10 @@ from __future__ import annotations
 
 __all__ = ("Environment",)
 
-from abc import ABC, abstractmethod
 import importlib
 import json
-from typing import (
-    Any,
-    Dict,
-    Iterable,
-    Optional,
-    TextIO,
-)
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Iterable, Optional, TextIO
 
 
 class Editor(ABC):
@@ -163,9 +157,7 @@ class _MinimalEnvironment(Environment):
         raise TypeError("No environment and no checkout directory provided.")
 
     def get_origin(self, package: str) -> str:
-        raise TypeError(
-            f"No environment and no existing repository provided for {package}."
-        )
+        raise TypeError(f"No environment and no existing repository provided for {package}.")
 
     def get_editor(self, name: str) -> Optional[Editor]:
         return None

@@ -27,12 +27,7 @@ from __future__ import annotations
 __all__ = ("RubinEnvironment",)
 
 import os
-from typing import (
-    Any,
-    Dict,
-    Mapping,
-    Optional,
-)
+from typing import Any, Dict, Mapping, Optional
 
 import yaml
 

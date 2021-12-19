@@ -30,22 +30,14 @@ import copy
 import json
 import os
 import sys
-from typing import (
-    Any,
-    Dict,
-    Iterable,
-    Optional,
-)
+from typing import Any, Dict, Iterable, Optional
 
 from ._environment import Editor
 
+BASE_EXPORTED_VARIABLES = frozenset(("MYPYPATH", "PATH", "PYTHONPATH", "LD_LIBRARY_PATH"))
 
-BASE_EXPORTED_VARIABLES = frozenset(("PATH", "PYTHONPATH", "LD_LIBRARY_PATH"))
 
-
-def merge_hierarchical(
-    target: Dict[str, Any], source: Dict[str, Any], override: bool = False
-) -> None:
+def merge_hierarchical(target: Dict[str, Any], source: Dict[str, Any], override: bool = False) -> None:
     """Merge ``source`` into ``target``, combining dictionaries recursively
     when the same keys are present.  Modifies ``target`` in-place.
     """
@@ -74,9 +66,7 @@ class VSCode(Editor):
         base = data.pop("base", {})
         packages = data.pop("packages", {})
         if data:
-            raise ValueError(
-                f"Unexpected entries in nested VSCode configuration: {data}."
-            )
+            raise ValueError(f"Unexpected entries in nested VSCode configuration: {data}.")
         return cls(base, packages)
 
     @property
@@ -109,19 +99,13 @@ class VSCode(Editor):
                 merge_hierarchical(folder_config, copy.deepcopy(package_config))
         config.setdefault("settings", {})["python.pythonPath"] = sys.executable
         if envvars is not None and "PYTHONPATH" in envvars:
-            config["settings"]["python.analysis.extraPaths"] = envvars[
-                "PYTHONPATH"
-            ].split(":")
+            config["settings"]["python.analysis.extraPaths"] = envvars["PYTHONPATH"].split(":")
         with open(workspace_filename, "w") as f:
             json.dump(config, f, indent=2)
         if envvars is not None:
-            exported_variables = list(
-                BASE_EXPORTED_VARIABLES.intersection(envvars.keys())
-            )
+            exported_variables = list(BASE_EXPORTED_VARIABLES.intersection(envvars.keys()))
             exported_variables.extend(
-                var
-                for var in envvars
-                if (var.endswith("DIR") and f"SETUP_{var[:-4]}" in envvars)
+                var for var in envvars if (var.endswith("DIR") and f"SETUP_{var[:-4]}" in envvars)
             )
             with open(os.path.join(directory, ".env"), "w") as f:
                 for var in exported_variables:
