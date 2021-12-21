@@ -24,6 +24,8 @@
 
 from __future__ import annotations
 
+from gitdb.db import pack
+
 __all__ = ("VSCode",)
 
 import copy
@@ -57,17 +59,20 @@ class VSCode(Editor):
         self,
         base: Dict[str, Any],
         packages: Dict[str, Any],
+        pyrightconfig: Dict[str, Any],
     ):
         self._base = base
         self._packages = packages
+        self._pyrightconfig = pyrightconfig
 
     @classmethod
     def from_json_data(cls, data: Dict[str, Any]) -> Editor:
         base = data.pop("base", {})
         packages = data.pop("packages", {})
+        pyrightconfig = data.pop("pyrightconfig", {})
         if data:
             raise ValueError(f"Unexpected entries in nested VSCode configuration: {data}.")
-        return cls(base, packages)
+        return cls(base, packages, pyrightconfig)
 
     @property
     def needs_envvars(self) -> bool:
@@ -94,9 +99,20 @@ class VSCode(Editor):
             else:
                 folder_config = {"path": package}
                 folders_list.append(folder_config)
-            package_config = self._packages.get(package)
-            if package_config is not None:
-                merge_hierarchical(folder_config, copy.deepcopy(package_config))
+            new_package_config = self._packages.get(package)
+            if new_package_config is not None:
+                package_config_filename = os.path.join(directory, package, ".vscode", "settings.json")
+                if os.path.exists(package_config_filename):
+                    with open(package_config_filename, "r") as f:
+                        package_config = json.load(f)
+                    merge_hierarchical(package_config, copy.deepcopy(new_package_config))
+                else:
+                    os.makedirs(os.path.dirname(package_config_filename))
+                    package_config = copy.deepcopy(new_package_config)
+                with open(package_config_filename, "w") as f:
+                    json.dump(package_config, f, indent=2)
+            with open(os.path.join(directory, package, "pyrightconfig.json"), "w") as f:
+                json.dump(self._pyrightconfig, f, indent=2)
         config.setdefault("settings", {})["python.pythonPath"] = sys.executable
         if envvars is not None and "PYTHONPATH" in envvars:
             config["settings"]["python.analysis.extraPaths"] = envvars["PYTHONPATH"].split(":")

@@ -44,14 +44,44 @@
                 }
             },
             "packages": {
+                "utils": {
+                    "mypy.targets": [
+                        "python/lsst"
+                    ],
+                    "editor.formatOnSave": true
+                },
+                "resources": {
+                    "mypy.targets": [
+                        "python/lsst"
+                    ],
+                    "editor.formatOnSave": true
+                },
                 "daf_butler": {
-                    "settings": {
-                        "mypy.targets": [
-                            "python/lsst"
-                        ],
-                        "mypy.configFile": "mypy.ini"
-                    }
+                    "mypy.targets": [
+                        "python/lsst"
+                    ],
+                    "editor.formatOnSave": true
+                },
+                "pipe_base": {
+                    "editor.formatOnSave": true
+                },
+                "obs_base": {
+                    "editor.formatOnSave": true
+                },
+                "ctrl_mpexec": {
+                    "editor.formatOnSave": true
                 }
+            },
+            "pyrightconfig": {
+                "exclude": [
+                    "config/**",
+                    "tests/.tests/**",
+                    "tests/data",
+                    "tests/config",
+                    "**/camera/**",
+                    "**/camGeom/**",
+                    "doc/**/config/*.py"
+                ]
             }
         }
     }
