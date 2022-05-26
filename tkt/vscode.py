@@ -24,14 +24,11 @@
 
 from __future__ import annotations
 
-from gitdb.db import pack
-
 __all__ = ("VSCode",)
 
 import copy
 import json
 import os
-import sys
 from typing import Any, Dict, Iterable, Optional
 
 from ._environment import Editor
@@ -60,19 +57,22 @@ class VSCode(Editor):
         base: Dict[str, Any],
         packages: Dict[str, Any],
         pyrightconfig: Dict[str, Any],
+        c_cpp_properties: Dict[str, Any],
     ):
         self._base = base
         self._packages = packages
         self._pyrightconfig = pyrightconfig
+        self._c_cpp_properties = c_cpp_properties
 
     @classmethod
     def from_json_data(cls, data: Dict[str, Any]) -> Editor:
         base = data.pop("base", {})
         packages = data.pop("packages", {})
         pyrightconfig = data.pop("pyrightconfig", {})
+        c_cpp_properties = data.pop("c_cpp_properties", {})
         if data:
             raise ValueError(f"Unexpected entries in nested VSCode configuration: {data}.")
-        return cls(base, packages, pyrightconfig)
+        return cls(base, packages, pyrightconfig, c_cpp_properties)
 
     @property
     def needs_envvars(self) -> bool:
@@ -100,6 +100,7 @@ class VSCode(Editor):
                 folder_config = {"path": package}
                 folders_list.append(folder_config)
             new_package_config = self._packages.get(package)
+            os.makedirs(os.path.join(directory, package, ".vscode"), exist_ok=True)
             if new_package_config is not None:
                 package_config_filename = os.path.join(directory, package, ".vscode", "settings.json")
                 if os.path.exists(package_config_filename):
@@ -107,13 +108,14 @@ class VSCode(Editor):
                         package_config = json.load(f)
                     merge_hierarchical(package_config, copy.deepcopy(new_package_config))
                 else:
-                    os.makedirs(os.path.dirname(package_config_filename))
                     package_config = copy.deepcopy(new_package_config)
                 with open(package_config_filename, "w") as f:
                     json.dump(package_config, f, indent=2)
             with open(os.path.join(directory, package, "pyrightconfig.json"), "w") as f:
                 json.dump(self._pyrightconfig, f, indent=2)
-        config.setdefault("settings", {})["python.pythonPath"] = sys.executable
+            if os.path.exists(os.path.join(directory, package, "lib")):
+                with open(os.path.join(directory, package, ".vscode", "c_cpp_properties.json"), "w") as f:
+                    json.dump(self._c_cpp_properties, f, indent=2)
         if envvars is not None and "PYTHONPATH" in envvars:
             config["settings"]["python.analysis.extraPaths"] = envvars["PYTHONPATH"].split(":")
         with open(workspace_filename, "w") as f:
