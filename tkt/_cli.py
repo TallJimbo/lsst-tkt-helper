@@ -76,7 +76,7 @@ def cli() -> None:
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
 )
-@click.option("--editor", "editors", multiple=True, default=(), type=str)
+@click.option("--editor", "editors", multiple=True, default=("vscode",), type=str)
 @click.option("-n", "--dry-run", is_flag=True)
 @click.option("-v", "--verbose", count=True)
 def new(
