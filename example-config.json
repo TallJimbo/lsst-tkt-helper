@@ -6,9 +6,11 @@
     "workspace_path": "/home/jbosch/LSST/tkt",
     "eups_prelude": ". /home/jbosch/LSST/lsstsw/bin/envconfig",
     "externals": {
-        "testdata_subaru": "/home/jbosch/LSST/src/testdata_subaru",
-        "testdata_decam": "/home/jbosch/LSST/src/testdata_decam",
-        "testdata_ci_hsc": "/home/jbosch/LSST/src/testdata_ci_hsc"
+        "testdata_subaru": "/home/jbosch/LSST/testdata/testdata_subaru",
+        "testdata_decam": "/home/jbosch/LSST/testdata/testdata_decam",
+        "testdata_cfht": "/home/jbosch/LSST/testdata/testdata_cfht",
+        "testdata_ci_hsc": "/home/jbosch/LSST/testdata/testdata_ci_hsc",
+        "testdata_ci_imsim": "/home/jbosch/LSST/testdata/testdata_ci_imsim"
     },
     "editors": {
         "vscode": {
@@ -63,12 +65,24 @@
                     "editor.formatOnSave": true
                 },
                 "pipe_base": {
+                    "mypy.targets": [
+                        "python/lsst"
+                    ],
                     "editor.formatOnSave": true
                 },
                 "obs_base": {
+                    "mypy.targets": [
+                        "python/lsst"
+                    ],
                     "editor.formatOnSave": true
                 },
                 "ctrl_mpexec": {
+                    "editor.formatOnSave": true
+                },
+                "cell_coadds": {
+                    "mypy.targets": [
+                        "python/lsst"
+                    ],
                     "editor.formatOnSave": true
                 }
             },
@@ -80,8 +94,25 @@
                     "tests/config",
                     "**/camera/**",
                     "**/camGeom/**",
-                    "doc/**/config/*.py"
+                    "doc/**/config/*.py",
+                    "*-gdb.py"
                 ]
+            },
+            "c_cpp_properties": {
+                "configurations": [
+                    {
+                        "name": "Linux",
+                        "includePath": [
+                            "${workspaceFolder}/**"
+                        ],
+                        "defines": [],
+                        "cStandard": "gnu17",
+                        "cppStandard": "gnu++17",
+                        "intelliSenseMode": "linux-gcc-x64",
+                        "compileCommands": "${workspaceFolder}/compile_commands.json"
+                    }
+                ],
+                "version": 4
             }
         }
     }
