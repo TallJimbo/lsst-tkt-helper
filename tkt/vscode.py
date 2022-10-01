@@ -116,15 +116,15 @@ class VSCode(Editor):
             if os.path.exists(os.path.join(directory, package, "lib")):
                 with open(os.path.join(directory, package, ".vscode", "c_cpp_properties.json"), "w") as f:
                     json.dump(self._c_cpp_properties, f, indent=2)
+            if envvars is not None:
+                exported_variables = list(BASE_EXPORTED_VARIABLES.intersection(envvars.keys()))
+                exported_variables.extend(
+                    var for var in envvars if (var.endswith("DIR") and f"SETUP_{var[:-4]}" in envvars)
+                )
+                with open(os.path.join(directory, package, ".env"), "w") as f:
+                    for var in exported_variables:
+                        f.write(f"{var}={envvars[var]}\n")
         if envvars is not None and "PYTHONPATH" in envvars:
-            config["settings"]["python.analysis.extraPaths"] = envvars["PYTHONPATH"].split(":")
+            config.setdefault("settings", {})["python.analysis.extraPaths"] = envvars["PYTHONPATH"].split(":")
         with open(workspace_filename, "w") as f:
             json.dump(config, f, indent=2)
-        if envvars is not None:
-            exported_variables = list(BASE_EXPORTED_VARIABLES.intersection(envvars.keys()))
-            exported_variables.extend(
-                var for var in envvars if (var.endswith("DIR") and f"SETUP_{var[:-4]}" in envvars)
-            )
-            with open(os.path.join(directory, ".env"), "w") as f:
-                for var in exported_variables:
-                    f.write(f"{var}={envvars[var]}\n")
