@@ -41,6 +41,52 @@
                             "request": "launch",
                             "program": "${file}",
                             "console": "integratedTerminal"
+                        },
+                        {
+                            "name": "test_sqlite",
+                            "type": "python",
+                            "request": "launch",
+                            "module": "unittest",
+                            "cwd": "${workspaceFolder:daf_butler}/tests",
+                            "args": [
+                                "-f",
+                                "test_sqlite.py"
+                            ],
+                            "console": "integratedTerminal"
+                        },
+                        {
+                            "name": "test_postgresql",
+                            "type": "python",
+                            "request": "launch",
+                            "module": "unittest",
+                            "cwd": "${workspaceFolder:daf_butler}/tests",
+                            "args": [
+                                "-f",
+                                "test_postgresql.py"
+                            ],
+                            "console": "integratedTerminal"
+                        },
+                        {
+                            "name": "pipetask",
+                            "type": "python",
+                            "request": "launch",
+                            "program": "${workspaceFolder:ctrl_mpexec}/bin/pipetask",
+                            "cwd": "${workspaceFolder}",
+                            "args": [
+                                "--help"
+                            ],
+                            "console": "integratedTerminal"
+                        },
+                        {
+                            "name": "butler",
+                            "type": "python",
+                            "request": "launch",
+                            "program": "${workspaceFolder:daf_butler}/bin/butler",
+                            "cwd": "${workspaceFolder}",
+                            "args": [
+                                "--help"
+                            ],
+                            "console": "integratedTerminal"
                         }
                     ]
                 }
