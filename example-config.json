@@ -123,9 +123,18 @@
                     "editor.formatOnSave": true
                 },
                 "ctrl_mpexec": {
+                    "mypy.targets": [
+                        "python/lsst"
+                    ],
                     "editor.formatOnSave": true
                 },
                 "cell_coadds": {
+                    "mypy.targets": [
+                        "python/lsst"
+                    ],
+                    "editor.formatOnSave": true
+                },
+                "image_cutout_backend": {
                     "mypy.targets": [
                         "python/lsst"
                     ],
