@@ -10,7 +10,12 @@
         "testdata_decam": "/home/jbosch/LSST/testdata/testdata_decam",
         "testdata_cfht": "/home/jbosch/LSST/testdata/testdata_cfht",
         "testdata_ci_hsc": "/home/jbosch/LSST/testdata/testdata_ci_hsc",
-        "testdata_ci_imsim": "/home/jbosch/LSST/testdata/testdata_ci_imsim"
+        "testdata_ci_imsim": "/home/jbosch/LSST/testdata/testdata_ci_imsim",
+        "testdata_jointcal": "/home/jbosch/LSST/testdata/testdata_jointcal",
+        "testdata_latiss_cpp": "/home/jbosch/LSST/testdata/testdata_latiss_cpp",
+        "rc2_subset": "/home/jbosch/LSST/testdata/rc2_subset",
+        "ap_verify_ci_hits2015": "/home/jbosch/LSST/testdata/ap_verify_ci_hits2015",
+        "ap_verify_ci_cosmos_pdr2": "/home/jbosch/LSST/testdata/ap_verify_ci_cosmos_pdr2"
     },
     "editors": {
         "vscode": {
