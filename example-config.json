@@ -1,179 +1,157 @@
 {
-    "module": "tkt.rubin",
-    "cls": "RubinEnvironment",
-    "eups_path": "/home/jbosch/LSST/lsstsw/stack",
-    "repos_yaml": "/home/jbosch/LSST/lsstsw/etc/repos.yaml",
-    "workspace_path": "/home/jbosch/LSST/tkt",
-    "eups_prelude": ". /home/jbosch/LSST/lsstsw/bin/envconfig",
-    "externals": {
-        "testdata_subaru": "/home/jbosch/LSST/testdata/testdata_subaru",
-        "testdata_decam": "/home/jbosch/LSST/testdata/testdata_decam",
-        "testdata_cfht": "/home/jbosch/LSST/testdata/testdata_cfht",
-        "testdata_ci_hsc": "/home/jbosch/LSST/testdata/testdata_ci_hsc",
-        "testdata_ci_imsim": "/home/jbosch/LSST/testdata/testdata_ci_imsim",
-        "testdata_jointcal": "/home/jbosch/LSST/testdata/testdata_jointcal",
-        "testdata_latiss_cpp": "/home/jbosch/LSST/testdata/testdata_latiss_cpp",
-        "rc2_subset": "/home/jbosch/LSST/testdata/rc2_subset",
-        "ap_verify_ci_hits2015": "/home/jbosch/LSST/testdata/ap_verify_ci_hits2015",
-        "ap_verify_ci_cosmos_pdr2": "/home/jbosch/LSST/testdata/ap_verify_ci_cosmos_pdr2"
-    },
-    "editors": {
-        "vscode": {
-            "module": "tkt.vscode",
-            "cls": "VSCode",
-            "base": {
-                "launch": {
-                    "version": "0.2.0",
-                    "configurations": [
-                        {
-                            "name": "Python: Remote Attach",
-                            "type": "python",
-                            "request": "attach",
-                            "connect": {
-                                "host": "localhost",
-                                "port": 5678
-                            },
-                            "pathMappings": [
-                                {
-                                    "localRoot": "${workspaceFolder}",
-                                    "remoteRoot": "."
-                                }
-                            ]
-                        },
-                        {
-                            "name": "Python: Current File",
-                            "type": "python",
-                            "request": "launch",
-                            "program": "${file}",
-                            "console": "integratedTerminal"
-                        },
-                        {
-                            "name": "test_sqlite",
-                            "type": "python",
-                            "request": "launch",
-                            "module": "unittest",
-                            "cwd": "${workspaceFolder:daf_butler}/tests",
-                            "args": [
-                                "-f",
-                                "test_sqlite.py"
-                            ],
-                            "console": "integratedTerminal"
-                        },
-                        {
-                            "name": "test_postgresql",
-                            "type": "python",
-                            "request": "launch",
-                            "module": "unittest",
-                            "cwd": "${workspaceFolder:daf_butler}/tests",
-                            "args": [
-                                "-f",
-                                "test_postgresql.py"
-                            ],
-                            "console": "integratedTerminal"
-                        },
-                        {
-                            "name": "pipetask",
-                            "type": "python",
-                            "request": "launch",
-                            "program": "${workspaceFolder:ctrl_mpexec}/bin/pipetask",
-                            "cwd": "${workspaceFolder}",
-                            "args": [
-                                "--help"
-                            ],
-                            "console": "integratedTerminal"
-                        },
-                        {
-                            "name": "butler",
-                            "type": "python",
-                            "request": "launch",
-                            "program": "${workspaceFolder:daf_butler}/bin/butler",
-                            "cwd": "${workspaceFolder}",
-                            "args": [
-                                "--help"
-                            ],
-                            "console": "integratedTerminal"
-                        }
-                    ]
+  "module": "tkt.rubin",
+  "cls": "RubinEnvironment",
+  "eups_path": "/home/jbosch/LSST/lsstsw/stack",
+  "repos_yaml": "/home/jbosch/LSST/lsstsw/etc/repos.yaml",
+  "workspace_path": "/home/jbosch/LSST/tkt",
+  "eups_prelude": ". /home/jbosch/LSST/lsstsw/bin/envconfig",
+  "externals": {
+    "testdata_subaru": "/home/jbosch/LSST/testdata/testdata_subaru",
+    "testdata_decam": "/home/jbosch/LSST/testdata/testdata_decam",
+    "testdata_cfht": "/home/jbosch/LSST/testdata/testdata_cfht",
+    "testdata_ci_hsc": "/home/jbosch/LSST/testdata/testdata_ci_hsc",
+    "testdata_ci_imsim": "/home/jbosch/LSST/testdata/testdata_ci_imsim",
+    "testdata_jointcal": "/home/jbosch/LSST/testdata/testdata_jointcal",
+    "testdata_latiss_cpp": "/home/jbosch/LSST/testdata/testdata_latiss_cpp",
+    "ap_verify_ci_hits2015": "/home/jbosch/LSST/testdata/ap_verify_ci_hits2015",
+    "ap_verify_ci_cosmos_pdr2": "/home/jbosch/LSST/testdata/ap_verify_ci_cosmos_pdr2"
+  },
+  "editors": {
+    "vscode": {
+      "module": "tkt.vscode",
+      "cls": "VSCode",
+      "base": {
+        "launch": {
+          "version": "0.2.0",
+          "configurations": [
+            {
+              "name": "Python: Remote Attach",
+              "type": "python",
+              "request": "attach",
+              "connect": {
+                "host": "localhost",
+                "port": 5678
+              },
+              "pathMappings": [
+                {
+                  "localRoot": "${workspaceFolder}",
+                  "remoteRoot": "."
                 }
+              ]
             },
-            "packages": {
-                "utils": {
-                    "mypy.targets": [
-                        "python/lsst"
-                    ],
-                    "editor.formatOnSave": true
-                },
-                "resources": {
-                    "mypy.targets": [
-                        "python/lsst"
-                    ],
-                    "editor.formatOnSave": true
-                },
-                "daf_butler": {
-                    "mypy.targets": [
-                        "python/lsst"
-                    ],
-                    "editor.formatOnSave": true
-                },
-                "pipe_base": {
-                    "mypy.targets": [
-                        "python/lsst"
-                    ],
-                    "editor.formatOnSave": true
-                },
-                "obs_base": {
-                    "mypy.targets": [
-                        "python/lsst"
-                    ],
-                    "editor.formatOnSave": true
-                },
-                "ctrl_mpexec": {
-                    "mypy.targets": [
-                        "python/lsst"
-                    ],
-                    "editor.formatOnSave": true
-                },
-                "cell_coadds": {
-                    "mypy.targets": [
-                        "python/lsst"
-                    ],
-                    "editor.formatOnSave": true
-                },
-                "image_cutout_backend": {
-                    "mypy.targets": [
-                        "python/lsst"
-                    ],
-                    "editor.formatOnSave": true
-                }
+            {
+              "name": "Python: Current File",
+              "type": "python",
+              "request": "launch",
+              "program": "${file}",
+              "console": "integratedTerminal"
             },
-            "pyrightconfig": {
-                "exclude": [
-                    "config/**",
-                    "tests/.tests/**",
-                    "tests/data",
-                    "tests/config",
-                    "**/camera/**",
-                    "**/camGeom/**",
-                    "doc/**/config/*.py",
-                    "*-gdb.py"
-                ]
+            {
+              "name": "test_sqlite",
+              "type": "python",
+              "request": "launch",
+              "module": "unittest",
+              "cwd": "${workspaceFolder:daf_butler}/tests",
+              "args": ["-f", "test_sqlite.py"],
+              "console": "integratedTerminal"
             },
-            "c_cpp_properties": {
-                "configurations": [
-                    {
-                        "name": "Linux",
-                        "includePath": [
-                            "${workspaceFolder}/**"
-                        ],
-                        "defines": [],
-                        "cStandard": "gnu17",
-                        "cppStandard": "gnu++17",
-                        "intelliSenseMode": "linux-gcc-x64",
-                        "compileCommands": "${workspaceFolder}/compile_commands.json"
-                    }
-                ],
-                "version": 4
+            {
+              "name": "test_postgresql",
+              "type": "python",
+              "request": "launch",
+              "module": "unittest",
+              "cwd": "${workspaceFolder:daf_butler}/tests",
+              "args": ["-f", "test_postgresql.py"],
+              "console": "integratedTerminal"
+            },
+            {
+              "name": "pipetask",
+              "type": "python",
+              "request": "launch",
+              "program": "${workspaceFolder:ctrl_mpexec}/bin/pipetask",
+              "cwd": "${workspaceFolder}",
+              "args": ["--help"],
+              "console": "integratedTerminal"
+            },
+            {
+              "name": "butler",
+              "type": "python",
+              "request": "launch",
+              "program": "${workspaceFolder:daf_butler}/bin/butler",
+              "cwd": "${workspaceFolder}",
+              "args": ["--help"],
+              "console": "integratedTerminal"
             }
+          ]
         }
+      },
+      "packages": {
+        "utils": {
+          "mypy.targets": ["python/lsst"],
+          "editor.formatOnSave": true
+        },
+        "resources": {
+          "mypy.targets": ["python/lsst"],
+          "editor.formatOnSave": true
+        },
+        "daf_butler": {
+          "mypy.targets": ["python/lsst"],
+          "editor.formatOnSave": true
+        },
+        "pipe_base": {
+          "mypy.targets": ["python/lsst"],
+          "editor.formatOnSave": true
+        },
+        "obs_base": {
+          "mypy.targets": ["python/lsst"],
+          "editor.formatOnSave": true
+        },
+        "ctrl_mpexec": {
+          "mypy.targets": ["python/lsst"],
+          "editor.formatOnSave": true
+        },
+        "cell_coadds": {
+          "mypy.targets": ["python/lsst"],
+          "editor.formatOnSave": true
+        },
+        "image_cutout_backend": {
+          "mypy.targets": ["python/lsst"],
+          "editor.formatOnSave": true
+        }
+      },
+      "pyrightconfig": {
+        "reportShadowedImports": "none",
+        "exclude": [
+          "config/**",
+          "tests/.tests/**",
+          "tests/data",
+          "tests/config",
+          "**/camera/**",
+          "**/camGeom/**",
+          "doc/**/config/*.py",
+          "*-gdb.py"
+        ],
+        "reportArgumentType": "none",
+        "reportAttributeAccessIssue": "none",
+        "reportOptionalMemberAccess": "none",
+        "reportGeneralTypeIssues": "none",
+        "reportOptionalSubscript": "none",
+        "reportIndexIssue": "none"
+      },
+      "c_cpp_properties": {
+        "configurations": [
+          {
+            "name": "Linux",
+            "includePath": ["${workspaceFolder}/**"],
+            "defines": [],
+            "cStandard": "gnu17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "linux-gcc-x64",
+            "compileCommands": "${workspaceFolder}/compile_commands.json"
+          }
+        ],
+        "version": 4
+      }
     }
+  }
 }
