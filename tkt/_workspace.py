@@ -1,4 +1,4 @@
-# Copyright 2020 Jim Bosch
+# Copyright 2020-2026 Jim Bosch
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -30,7 +30,7 @@ import json
 import logging
 import os
 import subprocess
-from typing import Dict, Iterable, Mapping, Optional, Tuple
+from collections.abc import Iterable, Mapping
 
 import eups
 import git
@@ -51,8 +51,8 @@ class Workspace:
         *,
         directory: str,
         ticket: str,
-        packages: Dict[str, str],
-        externals: Dict[str, str],
+        packages: dict[str, str],
+        externals: dict[str, str],
         metapackage_name: str,
         metapackage_version: str,
         workspace_eups_product: str,
@@ -69,7 +69,7 @@ class Workspace:
 
     @classmethod
     def from_directory(cls, directory: str) -> Workspace:
-        with open(os.path.join(directory, "tkt.json"), "r") as f:
+        with open(os.path.join(directory, "tkt.json")) as f:
             data = json.load(f)
         if "tag" in data:
             metapackage_name = data["metapackage"]
@@ -92,8 +92,8 @@ class Workspace:
     def from_existing(
         cls,
         *,
-        ticket: Optional[str],
-        directory: Optional[str],
+        ticket: str | None,
+        directory: str | None,
         environment: Environment,
     ) -> Workspace:
         if directory is None:
@@ -117,20 +117,18 @@ class Workspace:
         ticket: str,
         packages: Iterable[str],
         *,
-        directory: Optional[str] = None,
-        branches: Optional[Mapping[str, str]] = None,
-        externals: Optional[Mapping[str, str]] = None,
-        metapackage: Optional[str] = None,
-        tag: Optional[str] = None,
-        workspace_eups_product: Optional[str] = None,
-        environment: Optional[Environment] = None,
+        directory: str | None = None,
+        externals: Mapping[str, str] | None = None,
+        metapackage: str | None = None,
+        tag: str | None = None,
+        workspace_eups_product: str | None = None,
+        environment: Environment | None = None,
         editors: Iterable[str] = (),
         dry_run: bool = False,
     ) -> Workspace:
         packages, externals, environment = cls._handle_package_args(
             ticket,
             packages=packages,
-            branches=branches,
             externals=externals,
             environment=environment,
         )
@@ -159,15 +157,13 @@ class Workspace:
         self,
         packages: Iterable[str],
         *,
-        branches: Optional[Mapping[str, str]] = None,
-        externals: Optional[Mapping[str, str]] = None,
-        environment: Optional[Environment] = None,
+        externals: Mapping[str, str] | None = None,
+        environment: Environment | None = None,
         dry_run: bool = False,
     ) -> None:
         packages, externals, environment = self._handle_package_args(
             self._ticket,
             packages=packages,
-            branches=branches,
             externals=externals,
             environment=environment,
         )
@@ -183,9 +179,9 @@ class Workspace:
     def upgrade_metapackage(
         self,
         *,
-        metapackage: Optional[str] = None,
-        tag: Optional[str] = None,
-        environment: Optional[Environment] = None,
+        metapackage: str | None = None,
+        tag: str | None = None,
+        environment: Environment | None = None,
         dry_run: bool = False,
     ) -> None:
         if environment is None:
@@ -206,28 +202,22 @@ class Workspace:
         ticket: str,
         *,
         packages: Iterable[str],
-        branches: Optional[Mapping[str, str]] = None,
-        externals: Optional[Mapping[str, str]] = None,
-        environment: Optional[Environment] = None,
-    ) -> Tuple[Dict[str, str], Dict[str, str], Environment]:
+        externals: Mapping[str, str] | None = None,
+        environment: Environment | None = None,
+    ) -> tuple[dict[str, str], dict[str, str], Environment]:
         if environment is None:
             environment = Environment.minimal()
-        if branches is None:
-            branches = {}
         if externals is None:
             externals = {}
         else:
             externals = dict(externals)
         packages_dict = {}
         for package in packages:
-            if package in branches:
-                packages_dict[package] = branches[package]
+            package_external_path = environment.get_external_path(package)
+            if package_external_path is not None:
+                externals[package] = package_external_path
             else:
-                package_external_path = environment.get_external_path(package)
-                if package_external_path is not None:
-                    externals[package] = package_external_path
-                else:
-                    packages_dict[package] = environment.get_default_branch(package, ticket)
+                packages_dict[package] = environment.get_default_branch(package, ticket)
         return (packages_dict, externals, environment)
 
     def _write_new(self, environment: Environment, *, dry_run: bool) -> None:
@@ -277,22 +267,17 @@ class Workspace:
                 else:
                     logging.info(f"Skipping setup line for {product} because {path} does not exist.")
 
-    def _capture_env(self, environment: Environment) -> Dict[str, str]:
+    def _capture_env(self, environment: Environment) -> dict[str, str]:
         sentinal_line = "######## BEGIN ENV ########"
         result = subprocess.run(
             environment.shell,
-            input=(
-                f"{environment.eups_prelude}\n"
-                f"setup -r {self._directory}\n"
-                f"echo '{sentinal_line}'\n"
-                "env\n"
-            ),
+            input=(f"{environment.eups_prelude}\nsetup -r {self._directory}\necho '{sentinal_line}'\nenv\n"),
             capture_output=True,
             text=True,
-            env={},  # type: ignore
+            env={},
         )
         sentinal_seen = False
-        envvars: Dict[str, str] = {}
+        envvars: dict[str, str] = {}
         for line in result.stdout.splitlines():
             if "()" in line or line == "}":
                 continue
@@ -354,6 +339,5 @@ class Workspace:
                         local.checkout()
                 else:
                     logging.warning(
-                        f"{package}: {branch_name} found in multiple remotes; "
-                        "not checking out any of them."
+                        f"{package}: {branch_name} found in multiple remotes; not checking out any of them."
                     )

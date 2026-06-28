@@ -1,4 +1,4 @@
-# Copyright 2020 Jim Bosch
+# Copyright 2020-2026 Jim Bosch
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:

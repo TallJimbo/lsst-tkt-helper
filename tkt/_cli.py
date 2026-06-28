@@ -1,4 +1,4 @@
-# Copyright 2020 Jim Bosch
+# Copyright 2020-2026 Jim Bosch
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -25,26 +25,13 @@
 from __future__ import annotations
 
 import logging
-import re
-from typing import Any, Iterable, Optional, TextIO, Tuple
+from collections.abc import Iterable
+from typing import TextIO
 
 import click
 
 from ._environment import Environment
 from ._workspace import Workspace
-
-
-class KeySetParamType(click.ParamType):
-
-    name = "k=v"
-
-    _REGEX = re.compile(r"(?P<key>[a-zA-Z0-9_]+)=(?P<value>\S+)")
-
-    def convert(self, value: str, param: Any, ctx: Any) -> Tuple[str, str]:
-        m = self._REGEX.match(value)
-        if m is not None:
-            return (m.group("key"), m.group("value"))
-        self.fail(f"Expected a string of the form 'k=v', got '{value}'.", param, ctx)
 
 
 def _setup_logging(verbose: int) -> None:
@@ -67,7 +54,6 @@ def cli() -> None:
     "--directory",
     type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
 )
-@click.option("-b", "--branch", "branches", type=KeySetParamType(), multiple=True, default=())
 @click.option("-t", "--tag", type=str)
 @click.option("--metapackage")
 @click.option("--workspace-eups-product")
@@ -83,12 +69,11 @@ def new(
     ticket: str,
     packages: Iterable[str],
     *,
-    directory: Optional[str],
-    branches: Iterable[Tuple[str, str]],
-    tag: Optional[str],
-    metapackage: Optional[str],
-    workspace_eups_product: Optional[str],
-    environment: Optional[TextIO],
+    directory: str | None,
+    tag: str | None,
+    metapackage: str | None,
+    workspace_eups_product: str | None,
+    environment: TextIO | None,
     editors: Iterable[str] = (),
     dry_run: bool = False,
     verbose: int = 0,
@@ -102,7 +87,6 @@ def new(
         ticket=ticket,
         packages=packages,
         directory=directory,
-        branches=dict(branches),
         metapackage=metapackage,
         tag=tag,
         workspace_eups_product=workspace_eups_product,
@@ -120,7 +104,6 @@ def new(
     type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
 )
 @click.option("--ticket")
-@click.option("-b", "--branch", "branches", type=KeySetParamType(), multiple=True, default=())
 @click.option(
     "--environment",
     envvar="TKT_ENVIRONMENT",
@@ -131,10 +114,9 @@ def new(
 def update(
     packages: Iterable[str],
     *,
-    ticket: Optional[str],
-    directory: Optional[str],
-    branches: Iterable[Tuple[str, str]],
-    environment: Optional[TextIO],
+    ticket: str | None,
+    directory: str | None,
+    environment: TextIO | None,
     dry_run: bool = False,
     verbose: int = 0,
 ) -> None:
@@ -146,7 +128,6 @@ def update(
     workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
     workspace.update(
         packages=packages,
-        branches=dict(branches),
         environment=env,
         dry_run=dry_run,
     )
@@ -170,11 +151,11 @@ def update(
 @click.option("-v", "--verbose", count=True)
 def upgrade_metapackage(
     *,
-    ticket: Optional[str],
-    directory: Optional[str],
-    environment: Optional[TextIO],
-    tag: Optional[str],
-    metapackage: Optional[str],
+    ticket: str | None,
+    directory: str | None,
+    environment: TextIO | None,
+    tag: str | None,
+    metapackage: str | None,
     dry_run: bool = False,
     verbose: int = 0,
 ) -> None:

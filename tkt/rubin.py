@@ -1,4 +1,4 @@
-# Copyright 2020 Jim Bosch
+# Copyright 2020-2026 Jim Bosch
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -27,7 +27,8 @@ from __future__ import annotations
 __all__ = ("RubinEnvironment",)
 
 import os
-from typing import Any, Dict, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any
 
 import yaml
 
@@ -35,6 +36,8 @@ from ._environment import Editor, Environment
 
 
 class RubinEnvironment(Environment):
+    """Environment specialization for LSST Data Management."""
+
     def __init__(
         self,
         *,
@@ -49,7 +52,7 @@ class RubinEnvironment(Environment):
     ):
         self._eups_path = eups_path
         self._workspace_path = workspace_path
-        with open(repos_yaml, "r") as f:
+        with open(repos_yaml) as f:
             self._repo_data = yaml.safe_load(f)
         self._shell = shell
         self._eups_prelude = eups_prelude
@@ -58,7 +61,7 @@ class RubinEnvironment(Environment):
         self._default_tag = default_tag
 
     @classmethod
-    def from_json_data(cls, data: Dict[str, Any]) -> Environment:
+    def from_json_data(cls, data: dict[str, Any]) -> Environment:
         return cls(
             eups_path=data["eups_path"],
             workspace_path=data["workspace_path"],
@@ -106,8 +109,8 @@ class RubinEnvironment(Environment):
         else:
             raise ValueError(f"No origin found for package {package}.")
 
-    def get_external_path(self, package: str) -> Optional[str]:
+    def get_external_path(self, package: str) -> str | None:
         return self._externals.get(package)
 
-    def get_editor(self, name: str) -> Optional[Editor]:
+    def get_editor(self, name: str) -> Editor | None:
         return self._editors.get(name)

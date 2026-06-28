@@ -1,4 +1,4 @@
-# Copyright 2020 Jim Bosch
+# Copyright 2020-2026 Jim Bosch
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -29,14 +29,15 @@ __all__ = ("VSCode",)
 import copy
 import json
 import os
-from typing import Any, Dict, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 
 from ._environment import Editor
 
 BASE_EXPORTED_VARIABLES = frozenset(("MYPYPATH", "PATH", "PYTHONPATH", "LD_LIBRARY_PATH"))
 
 
-def merge_hierarchical(target: Dict[str, Any], source: Dict[str, Any], override: bool = False) -> None:
+def merge_hierarchical(target: dict[str, Any], source: dict[str, Any], override: bool = False) -> None:
     """Merge ``source`` into ``target``, combining dictionaries recursively
     when the same keys are present.  Modifies ``target`` in-place.
     """
@@ -52,12 +53,14 @@ def merge_hierarchical(target: Dict[str, Any], source: Dict[str, Any], override:
 
 
 class VSCode(Editor):
+    """Editor specialization for VSCode."""
+
     def __init__(
         self,
-        base: Dict[str, Any],
-        packages: Dict[str, Any],
-        pyrightconfig: Dict[str, Any],
-        c_cpp_properties: Dict[str, Any],
+        base: dict[str, Any],
+        packages: dict[str, Any],
+        pyrightconfig: dict[str, Any],
+        c_cpp_properties: dict[str, Any],
     ):
         self._base = base
         self._packages = packages
@@ -65,7 +68,7 @@ class VSCode(Editor):
         self._c_cpp_properties = c_cpp_properties
 
     @classmethod
-    def from_json_data(cls, data: Dict[str, Any]) -> Editor:
+    def from_json_data(cls, data: dict[str, Any]) -> Editor:
         base = data.pop("base", {})
         packages = data.pop("packages", {})
         pyrightconfig = data.pop("pyrightconfig", {})
@@ -83,12 +86,12 @@ class VSCode(Editor):
         ticket: str,
         directory: str,
         packages: Iterable[str],
-        envvars: Optional[Dict[str, Any]] = None,
+        envvars: dict[str, Any] | None = None,
     ) -> None:
         workspace_filename = os.path.join(directory, f"{ticket}.code-workspace")
         config = copy.deepcopy(self._base)
         if os.path.exists(workspace_filename):
-            with open(workspace_filename, "r") as f:
+            with open(workspace_filename) as f:
                 old_config = json.load(f)
             merge_hierarchical(config, old_config, override=True)
         folders_list = config.setdefault("folders", [])
@@ -104,7 +107,7 @@ class VSCode(Editor):
             if new_package_config is not None:
                 package_config_filename = os.path.join(directory, package, ".vscode", "settings.json")
                 if os.path.exists(package_config_filename):
-                    with open(package_config_filename, "r") as f:
+                    with open(package_config_filename) as f:
                         package_config = json.load(f)
                     merge_hierarchical(package_config, copy.deepcopy(new_package_config))
                 else:

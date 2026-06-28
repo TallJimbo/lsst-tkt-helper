@@ -1,4 +1,4 @@
-# Copyright 2020 Jim Bosch
+# Copyright 2020-2026 Jim Bosch
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -29,13 +29,14 @@ __all__ = ("Environment",)
 import importlib
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Iterable, Optional, TextIO
+from collections.abc import Iterable
+from typing import Any, TextIO
 
 
 class Editor(ABC):
     @classmethod
     @abstractmethod
-    def from_json_data(cls, data: Dict[str, Any]) -> Editor:
+    def from_json_data(cls, data: dict[str, Any]) -> Editor:
         raise NotImplementedError()
 
     @property
@@ -49,7 +50,7 @@ class Editor(ABC):
         ticket: str,
         directory: str,
         packages: Iterable[str],
-        envvars: Optional[Dict[str, Any]] = None,
+        envvars: dict[str, Any] | None = None,
     ) -> None:
         raise NotImplementedError()
 
@@ -68,12 +69,12 @@ class Environment(ABC):
 
     @classmethod
     @abstractmethod
-    def from_json_data(cls, data: Dict[str, Any]) -> Environment:
+    def from_json_data(cls, data: dict[str, Any]) -> Environment:
         raise NotImplementedError()
 
     @classmethod
-    def _read_editors(cls, data: Dict[str, Any]) -> Dict[str, Editor]:
-        result: Dict[str, Editor] = {}
+    def _read_editors(cls, data: dict[str, Any]) -> dict[str, Editor]:
+        result: dict[str, Editor] = {}
         for name, section in data.pop("editors", {}).items():
             mod = importlib.import_module(section.pop("module"))
             EditorClass = getattr(mod, section.pop("cls"))
@@ -117,17 +118,17 @@ class Environment(ABC):
     def get_origin(self, package: str) -> str:
         raise NotImplementedError()
 
-    def get_external_path(self, package: str) -> Optional[str]:
+    def get_external_path(self, package: str) -> str | None:
         return None
 
     @abstractmethod
-    def get_editor(self, name: str) -> Optional[Editor]:
+    def get_editor(self, name: str) -> Editor | None:
         raise NotImplementedError()
 
 
 class _MinimalEnvironment(Environment):
     @classmethod
-    def from_json_data(cls, data: Dict[str, Any]) -> Environment:
+    def from_json_data(cls, data: dict[str, Any]) -> Environment:
         return cls()
 
     @property
@@ -159,5 +160,5 @@ class _MinimalEnvironment(Environment):
     def get_origin(self, package: str) -> str:
         raise TypeError(f"No environment and no existing repository provided for {package}.")
 
-    def get_editor(self, name: str) -> Optional[Editor]:
+    def get_editor(self, name: str) -> Editor | None:
         return None
