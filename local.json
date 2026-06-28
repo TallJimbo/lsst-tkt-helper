@@ -15,6 +15,10 @@
     "ap_verify_ci_cosmos_pdr2": "/home/jbosch/LSST/testdata/ap_verify_ci_cosmos_pdr2"
   },
   "tools": {
+    "pyright": {
+      "module": "tkt.pyright",
+      "cls": "Pyright"
+    },
     "vscode": {
       "module": "tkt.vscode",
       "cls": "VSCode",
@@ -116,26 +120,6 @@
           "mypy.targets": ["python/lsst"],
           "editor.formatOnSave": true
         }
-      },
-      "pyrightconfig": {
-        "reportShadowedImports": "none",
-        "exclude": [
-          "config/**",
-          "tests/.tests/**",
-          "tests/data",
-          "tests/config",
-          "**/camera/**",
-          "**/camGeom/**",
-          "doc/**/config/*.py",
-          "*-gdb.py"
-        ],
-        "reportArgumentType": "none",
-        "reportAttributeAccessIssue": "none",
-        "reportOptionalMemberAccess": "none",
-        "reportGeneralTypeIssues": "none",
-        "reportOptionalSubscript": "none",
-        "reportIndexIssue": "none",
-        "reportIncompatibleVariableOverride": "none"
       },
       "c_cpp_properties": {
         "configurations": [

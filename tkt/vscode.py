@@ -59,23 +59,20 @@ class VSCode(Tool):
         self,
         base: dict[str, Any],
         packages: dict[str, Any],
-        pyrightconfig: dict[str, Any],
         c_cpp_properties: dict[str, Any],
     ):
         self._base = base
         self._packages = packages
-        self._pyrightconfig = pyrightconfig
         self._c_cpp_properties = c_cpp_properties
 
     @classmethod
     def from_json_data(cls, data: dict[str, Any]) -> Tool:
         base = data.pop("base", {})
         packages = data.pop("packages", {})
-        pyrightconfig = data.pop("pyrightconfig", {})
         c_cpp_properties = data.pop("c_cpp_properties", {})
         if data:
             raise ValueError(f"Unexpected entries in nested VSCode configuration: {data}.")
-        return cls(base, packages, pyrightconfig, c_cpp_properties)
+        return cls(base, packages, c_cpp_properties)
 
     @property
     def needs_envvars(self) -> bool:
@@ -114,8 +111,6 @@ class VSCode(Tool):
                     package_config = copy.deepcopy(new_package_config)
                 with open(package_config_filename, "w") as f:
                     json.dump(package_config, f, indent=2)
-            with open(os.path.join(directory, package, "pyrightconfig.json"), "w") as f:
-                json.dump(self._pyrightconfig, f, indent=2)
             if os.path.exists(os.path.join(directory, package, "lib")):
                 with open(os.path.join(directory, package, ".vscode", "c_cpp_properties.json"), "w") as f:
                     json.dump(self._c_cpp_properties, f, indent=2)
