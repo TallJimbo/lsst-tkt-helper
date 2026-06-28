@@ -80,7 +80,7 @@ def new(
 ) -> None:
     _setup_logging(verbose)
     if environment is None:
-        env = Environment.minimal()
+        raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
     else:
         env = Environment.from_file(environment)
     Workspace.new(
@@ -122,7 +122,7 @@ def update(
 ) -> None:
     _setup_logging(verbose)
     if environment is None:
-        env = Environment.minimal()
+        raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
     else:
         env = Environment.from_file(environment)
     workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
@@ -161,7 +161,7 @@ def upgrade_metapackage(
 ) -> None:
     _setup_logging(verbose)
     if environment is None:
-        env = Environment.minimal()
+        raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
     else:
         env = Environment.from_file(environment)
     workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)

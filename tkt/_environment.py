@@ -63,10 +63,6 @@ class Environment(ABC):
         cls = getattr(mod, data["cls"])
         return cls.from_json_data(data)
 
-    @staticmethod
-    def minimal() -> Environment:
-        return _MinimalEnvironment()
-
     @classmethod
     @abstractmethod
     def from_json_data(cls, data: dict[str, Any]) -> Environment:
@@ -124,41 +120,3 @@ class Environment(ABC):
     @abstractmethod
     def get_editor(self, name: str) -> Editor | None:
         raise NotImplementedError()
-
-
-class _MinimalEnvironment(Environment):
-    @classmethod
-    def from_json_data(cls, data: dict[str, Any]) -> Environment:
-        return cls()
-
-    @property
-    def default_metapackage(self) -> str:
-        raise TypeError("No environment and no metapackage provided.")
-
-    @property
-    def default_tag(self) -> str:
-        raise TypeError("No environment and no tag provided.")
-
-    @property
-    def shell(self) -> str:
-        raise TypeError("No shell provided.")
-
-    @property
-    def eups_prelude(self) -> str:
-        raise TypeError("No EUPS prelude provided.")
-
-    @property
-    def default_workspace_eups_product(self) -> str:
-        raise TypeError("No environment and no workspace eups product provided.")
-
-    def get_default_branch(self, package: str, ticket: str) -> str:
-        raise TypeError(f"No environment and no branch for {package} provided.")
-
-    def get_workspace_directory(self, ticket: str) -> str:
-        raise TypeError("No environment and no checkout directory provided.")
-
-    def get_origin(self, package: str) -> str:
-        raise TypeError(f"No environment and no existing repository provided for {package}.")
-
-    def get_editor(self, name: str) -> Editor | None:
-        return None

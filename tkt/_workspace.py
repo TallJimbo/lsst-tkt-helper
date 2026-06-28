@@ -122,7 +122,7 @@ class Workspace:
         metapackage: str | None = None,
         tag: str | None = None,
         workspace_eups_product: str | None = None,
-        environment: Environment | None = None,
+        environment: Environment,
         editors: Iterable[str] = (),
         dry_run: bool = False,
     ) -> Workspace:
@@ -158,7 +158,7 @@ class Workspace:
         packages: Iterable[str],
         *,
         externals: Mapping[str, str] | None = None,
-        environment: Environment | None = None,
+        environment: Environment,
         dry_run: bool = False,
     ) -> None:
         packages, externals, environment = self._handle_package_args(
@@ -181,11 +181,9 @@ class Workspace:
         *,
         metapackage: str | None = None,
         tag: str | None = None,
-        environment: Environment | None = None,
+        environment: Environment,
         dry_run: bool = False,
     ) -> None:
-        if environment is None:
-            environment = Environment.minimal()
         if metapackage is not None:
             self._metapackage_name = metapackage
             logging.info(f"Changing EUPS base metapackage to {metapackage}.")
@@ -203,10 +201,8 @@ class Workspace:
         *,
         packages: Iterable[str],
         externals: Mapping[str, str] | None = None,
-        environment: Environment | None = None,
+        environment: Environment,
     ) -> tuple[dict[str, str], dict[str, str], Environment]:
-        if environment is None:
-            environment = Environment.minimal()
         if externals is None:
             externals = {}
         else:
