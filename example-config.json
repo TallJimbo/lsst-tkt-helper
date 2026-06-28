@@ -136,7 +136,8 @@
         "reportOptionalMemberAccess": "none",
         "reportGeneralTypeIssues": "none",
         "reportOptionalSubscript": "none",
-        "reportIndexIssue": "none"
+        "reportIndexIssue": "none",
+        "reportIncompatibleVariableOverride": "none"
       },
       "c_cpp_properties": {
         "configurations": [
