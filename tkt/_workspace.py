@@ -267,7 +267,7 @@ class Workspace:
         sentinal_line = "######## BEGIN ENV ########"
         result = subprocess.run(
             environment.shell,
-            input=(f"{environment.eups_prelude}\nsetup -r {self._directory}\necho '{sentinal_line}'\nenv\n"),
+            input=(f"setup -r {self._directory}\necho '{sentinal_line}'\nenv\n"),
             capture_output=True,
             text=True,
             env={},

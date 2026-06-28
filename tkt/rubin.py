@@ -41,21 +41,17 @@ class RubinEnvironment(Environment):
     def __init__(
         self,
         *,
-        eups_path: str,
         workspace_path: str,
         repos_yaml: str,
         shell: str,
-        eups_prelude: str,
         default_tag: str,
         externals: Mapping[str, str],
         editors: Mapping[str, Editor],
     ):
-        self._eups_path = eups_path
         self._workspace_path = workspace_path
         with open(repos_yaml) as f:
             self._repo_data = yaml.safe_load(f)
         self._shell = shell
-        self._eups_prelude = eups_prelude
         self._externals = externals
         self._editors = editors
         self._default_tag = default_tag
@@ -63,10 +59,8 @@ class RubinEnvironment(Environment):
     @classmethod
     def from_json_data(cls, data: dict[str, Any]) -> Environment:
         return cls(
-            eups_path=data["eups_path"],
             workspace_path=data["workspace_path"],
             repos_yaml=data["repos_yaml"],
-            eups_prelude=data["eups_prelude"],
             shell=data.get("shell", "/bin/bash"),
             externals=data.get("externals", {}),
             editors=cls._read_editors(data),
@@ -84,10 +78,6 @@ class RubinEnvironment(Environment):
     @property
     def shell(self) -> str:
         return self._shell
-
-    @property
-    def eups_prelude(self) -> str:
-        return self._eups_prelude
 
     @property
     def default_workspace_eups_product(self) -> str:

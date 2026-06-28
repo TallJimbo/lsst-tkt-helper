@@ -94,11 +94,6 @@ class Environment(ABC):
 
     @property
     @abstractmethod
-    def eups_prelude(self) -> str:
-        raise NotImplementedError()
-
-    @property
-    @abstractmethod
     def default_workspace_eups_product(self) -> str:
         raise NotImplementedError()
 
