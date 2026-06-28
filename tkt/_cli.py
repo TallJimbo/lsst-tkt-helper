@@ -62,7 +62,7 @@ def cli() -> None:
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
 )
-@click.option("--editor", "editors", multiple=True, default=("vscode",), type=str)
+@click.option("--tool", "tools", multiple=True, default=("vscode",), type=str)
 @click.option("-n", "--dry-run", is_flag=True)
 @click.option("-v", "--verbose", count=True)
 def new(
@@ -74,7 +74,7 @@ def new(
     metapackage: str | None,
     workspace_eups_product: str | None,
     environment: TextIO | None,
-    editors: Iterable[str] = (),
+    tools: Iterable[str] = (),
     dry_run: bool = False,
     verbose: int = 0,
 ) -> None:
@@ -90,7 +90,7 @@ def new(
         metapackage=metapackage,
         tag=tag,
         workspace_eups_product=workspace_eups_product,
-        editors=editors,
+        tools=tools,
         environment=env,
         dry_run=dry_run,
     )

@@ -56,7 +56,7 @@ class Workspace:
         metapackage_name: str,
         metapackage_version: str,
         workspace_eups_product: str,
-        editors: Iterable[str],
+        tools: Iterable[str],
     ):
         self._directory = directory
         self._ticket = ticket
@@ -65,7 +65,7 @@ class Workspace:
         self._metapackage_name = metapackage_name
         self._metapackage_version = metapackage_version
         self._workspace_eups_product = workspace_eups_product
-        self._editors = tuple(editors)
+        self._tools = tuple(tools)
 
     @classmethod
     def from_directory(cls, directory: str) -> Workspace:
@@ -85,7 +85,7 @@ class Workspace:
             metapackage_name=metapackage_name,
             metapackage_version=metapackage_version,
             workspace_eups_product=data["workspace_eups_product"],
-            editors=data["editors"],
+            tools=data["tools"],
         )
 
     @classmethod
@@ -123,7 +123,7 @@ class Workspace:
         tag: str | None = None,
         workspace_eups_product: str | None = None,
         environment: Environment,
-        editors: Iterable[str] = (),
+        tools: Iterable[str] = (),
         dry_run: bool = False,
     ) -> Workspace:
         packages, externals, environment = cls._handle_package_args(
@@ -148,7 +148,7 @@ class Workspace:
             metapackage_name=metapackage,
             metapackage_version=_get_eups_version(metapackage, tag),
             workspace_eups_product=workspace_eups_product,
-            editors=editors,
+            tools=tools,
         )
         instance._write_new(environment, dry_run=dry_run)
         return instance
@@ -174,7 +174,7 @@ class Workspace:
         if not dry_run:
             self._write_description()
             self._write_eups_table()
-            self._write_editors(environment)
+            self._write_tools(environment)
 
     def upgrade_metapackage(
         self,
@@ -193,7 +193,7 @@ class Workspace:
         if not dry_run:
             self._write_description()
             self._write_eups_table()
-            self._write_editors(environment)
+            self._write_tools(environment)
 
     @staticmethod
     def _handle_package_args(
@@ -229,7 +229,7 @@ class Workspace:
             self._checkout_package(package, environment, dry_run=dry_run)
         if not dry_run:
             self._write_eups_table()
-            self._write_editors(environment)
+            self._write_tools(environment)
 
     def _write_description(self) -> None:
         with open(os.path.join(self._directory, "tkt.json"), "w") as f:
@@ -241,7 +241,7 @@ class Workspace:
                     "metapackage_name": self._metapackage_name,
                     "metapackage_version": self._metapackage_version,
                     "workspace_eups_product": self._workspace_eups_product,
-                    "editors": list(self._editors),
+                    "tools": list(self._tools),
                 },
                 f,
                 indent=2,
@@ -286,15 +286,15 @@ class Workspace:
                 sentinal_seen = True
         return envvars
 
-    def _write_editors(self, environment: Environment) -> None:
+    def _write_tools(self, environment: Environment) -> None:
         envvars = None
-        for name in self._editors:
-            editor = environment.get_editor(name)
-            if editor is None:
+        for name in self._tools:
+            tool = environment.get_tool(name)
+            if tool is None:
                 raise LookupError("No editor configuration for {name}.")
-            if editor.needs_envvars and envvars is None:
+            if tool.needs_envvars and envvars is None:
                 envvars = self._capture_env(environment)
-            editor.write(self._ticket, self._directory, self._packages.keys(), envvars=envvars)
+            tool.write(self._ticket, self._directory, self._packages.keys(), envvars=envvars)
 
     def _checkout_package(self, package: str, environment: Environment, *, dry_run: bool) -> None:
         branch_name = self._packages[package]

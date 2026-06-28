@@ -32,7 +32,7 @@ import os
 from collections.abc import Iterable
 from typing import Any
 
-from ._environment import Editor
+from ._environment import Tool
 
 BASE_EXPORTED_VARIABLES = frozenset(("MYPYPATH", "PATH", "PYTHONPATH", "LD_LIBRARY_PATH"))
 
@@ -52,8 +52,8 @@ def merge_hierarchical(target: dict[str, Any], source: dict[str, Any], override:
                 raise ValueError(f"Cannot merge {k!r}: {v!r} into {d!r}.")
 
 
-class VSCode(Editor):
-    """Editor specialization for VSCode."""
+class VSCode(Tool):
+    """Tool specialization for VSCode."""
 
     def __init__(
         self,
@@ -68,7 +68,7 @@ class VSCode(Editor):
         self._c_cpp_properties = c_cpp_properties
 
     @classmethod
-    def from_json_data(cls, data: dict[str, Any]) -> Editor:
+    def from_json_data(cls, data: dict[str, Any]) -> Tool:
         base = data.pop("base", {})
         packages = data.pop("packages", {})
         pyrightconfig = data.pop("pyrightconfig", {})

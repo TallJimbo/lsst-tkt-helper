@@ -24,7 +24,7 @@
 
 from __future__ import annotations
 
-__all__ = ("Environment",)
+__all__ = ("Environment", "Tool")
 
 import importlib
 import json
@@ -33,10 +33,10 @@ from collections.abc import Iterable
 from typing import Any, TextIO
 
 
-class Editor(ABC):
+class Tool(ABC):
     @classmethod
     @abstractmethod
-    def from_json_data(cls, data: dict[str, Any]) -> Editor:
+    def from_json_data(cls, data: dict[str, Any]) -> Tool:
         raise NotImplementedError()
 
     @property
@@ -69,12 +69,12 @@ class Environment(ABC):
         raise NotImplementedError()
 
     @classmethod
-    def _read_editors(cls, data: dict[str, Any]) -> dict[str, Editor]:
-        result: dict[str, Editor] = {}
-        for name, section in data.pop("editors", {}).items():
+    def _read_tools(cls, data: dict[str, Any]) -> dict[str, Tool]:
+        result: dict[str, Tool] = {}
+        for name, section in data.pop("tools", {}).items():
             mod = importlib.import_module(section.pop("module"))
-            EditorClass = getattr(mod, section.pop("cls"))
-            result[name] = EditorClass.from_json_data(section)
+            tool_cls = getattr(mod, section.pop("cls"))
+            result[name] = tool_cls.from_json_data(section)
         return result
 
     @property
@@ -113,5 +113,5 @@ class Environment(ABC):
         return None
 
     @abstractmethod
-    def get_editor(self, name: str) -> Editor | None:
+    def get_tool(self, name: str) -> Tool | None:
         raise NotImplementedError()

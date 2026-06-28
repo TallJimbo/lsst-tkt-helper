@@ -14,7 +14,7 @@
     "ap_verify_ci_hits2015": "/home/jbosch/LSST/testdata/ap_verify_ci_hits2015",
     "ap_verify_ci_cosmos_pdr2": "/home/jbosch/LSST/testdata/ap_verify_ci_cosmos_pdr2"
   },
-  "editors": {
+  "tools": {
     "vscode": {
       "module": "tkt.vscode",
       "cls": "VSCode",

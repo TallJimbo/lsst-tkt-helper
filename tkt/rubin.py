@@ -32,7 +32,7 @@ from typing import Any
 
 import yaml
 
-from ._environment import Editor, Environment
+from ._environment import Environment, Tool
 
 
 class RubinEnvironment(Environment):
@@ -46,14 +46,14 @@ class RubinEnvironment(Environment):
         shell: str,
         default_tag: str,
         externals: Mapping[str, str],
-        editors: Mapping[str, Editor],
+        tools: Mapping[str, Tool],
     ):
         self._workspace_path = workspace_path
         with open(repos_yaml) as f:
             self._repo_data = yaml.safe_load(f)
         self._shell = shell
         self._externals = externals
-        self._editors = editors
+        self._tools = tools
         self._default_tag = default_tag
 
     @classmethod
@@ -63,7 +63,7 @@ class RubinEnvironment(Environment):
             repos_yaml=data["repos_yaml"],
             shell=data.get("shell", "/bin/bash"),
             externals=data.get("externals", {}),
-            editors=cls._read_editors(data),
+            tools=cls._read_tools(data),
             default_tag=data.get("default_tag", "current"),
         )
 
@@ -102,5 +102,5 @@ class RubinEnvironment(Environment):
     def get_external_path(self, package: str) -> str | None:
         return self._externals.get(package)
 
-    def get_editor(self, name: str) -> Editor | None:
-        return self._editors.get(name)
+    def get_tool(self, name: str) -> Tool | None:
+        return self._tools.get(name)
