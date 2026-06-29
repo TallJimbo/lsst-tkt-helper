@@ -259,7 +259,7 @@ class Workspace:
             tool = environment.get_tool(name)
             if tool is None:
                 raise LookupError("No editor configuration for {name}.")
-            tool.write(self._ticket, self._directory, self._packages.keys())
+            tool.write(self._ticket, self._directory, self._packages.keys(), self, environment)
 
     def _checkout_package(self, package: str, environment: Environment, *, dry_run: bool) -> None:
         branch_name = self._packages[package]

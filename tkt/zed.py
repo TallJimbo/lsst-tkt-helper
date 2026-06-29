@@ -32,7 +32,8 @@ import os
 from collections.abc import Iterable
 from typing import Any
 
-from ._environment import Tool
+from ._environment import Environment, Tool
+from ._workspace import Workspace
 from .utils import read_json_file, write_json_file
 
 
@@ -55,7 +56,14 @@ class Zed(Tool):
             raise ValueError(f"Unexpected entries in nested VSCode configuration: {data}.")
         return cls(base, packages)
 
-    def write(self, ticket: str, directory: str, packages: Iterable[str]) -> None:
+    def write(
+        self,
+        ticket: str,
+        directory: str,
+        packages: Iterable[str],
+        workspace: Workspace,
+        environment: Environment,
+    ) -> None:
         workspace_filename = os.path.join(directory, ".zed", "settings.json")
         config = copy.deepcopy(self._base)
         if os.path.exists(workspace_filename):

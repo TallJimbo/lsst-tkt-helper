@@ -30,7 +30,10 @@ import importlib
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
+
+if TYPE_CHECKING:
+    from ._workspace import Workspace
 
 
 class Tool(ABC):
@@ -40,7 +43,14 @@ class Tool(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def write(self, ticket: str, directory: str, packages: Iterable[str]) -> None:
+    def write(
+        self,
+        ticket: str,
+        directory: str,
+        packages: Iterable[str],
+        workspace: Workspace,
+        environment: Environment,
+    ) -> None:
         raise NotImplementedError()
 
 
