@@ -64,7 +64,7 @@ class RubinEnvironment(Environment):
             shell=data.get("shell", "/bin/bash"),
             externals=data.get("externals", {}),
             tools=cls._read_tools(data),
-            default_tag=data.get("default_tag", "current"),
+            default_tag=data.get("default_tag", "w_latest"),
         )
 
     @property

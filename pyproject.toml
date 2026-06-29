@@ -73,5 +73,5 @@ warn_unused_configs = true
 warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
-module = ["git", "eups"]
+module = ["git"]
 ignore_missing_imports = true

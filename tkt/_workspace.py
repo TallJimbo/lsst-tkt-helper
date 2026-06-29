@@ -31,17 +31,9 @@ import logging
 import os
 from collections.abc import Iterable, Mapping
 
-import eups
 import git
 
 from ._environment import Environment
-
-
-def _get_eups_version(name: str, tag: str) -> str:
-    eups_product = eups.Eups().findProduct(name, eups.Tag(tag))
-    if eups_product is None:
-        raise LookupError(f"No metapackage {name!r} with tag {tag} found.")
-    return eups_product.version
 
 
 class Workspace:
@@ -53,7 +45,7 @@ class Workspace:
         packages: dict[str, str],
         externals: dict[str, str],
         metapackage_name: str,
-        metapackage_version: str,
+        metapackage_tag: str,
         workspace_eups_product: str,
         tools: Iterable[str],
     ):
@@ -62,7 +54,7 @@ class Workspace:
         self._packages = packages
         self._externals = externals
         self._metapackage_name = metapackage_name
-        self._metapackage_version = metapackage_version
+        self._metapackage_tag = metapackage_tag
         self._workspace_eups_product = workspace_eups_product
         self._tools = tuple(tools)
 
@@ -72,17 +64,17 @@ class Workspace:
             data = json.load(f)
         if "tag" in data:
             metapackage_name = data["metapackage"]
-            metapackage_version = _get_eups_version(metapackage_name, data["tag"])
+            metapackage_tag = data["tag"]
         else:
             metapackage_name = data["metapackage_name"]
-            metapackage_version = data["metapackage_version"]
+            metapackage_tag = data.get("metapackage_tag", "")
         return cls(
             directory=directory,
             ticket=data["ticket"],
             packages=dict(data["packages"]),
             externals=dict(data["externals"]),
             metapackage_name=metapackage_name,
-            metapackage_version=metapackage_version,
+            metapackage_tag=metapackage_tag,
             workspace_eups_product=data["workspace_eups_product"],
             tools=data["tools"],
         )
@@ -145,7 +137,7 @@ class Workspace:
             packages=packages,
             externals=externals,
             metapackage_name=metapackage,
-            metapackage_version=_get_eups_version(metapackage, tag),
+            metapackage_tag=tag,
             workspace_eups_product=workspace_eups_product,
             tools=tools,
         )
@@ -187,8 +179,8 @@ class Workspace:
             self._metapackage_name = metapackage
             logging.info(f"Changing EUPS base metapackage to {metapackage}.")
         if tag is not None:
-            self._metapackage_version = _get_eups_version(self._metapackage_name, tag)
-            logging.info(f"Changing EUPS base tag to {tag} (version {self._metapackage_version}).")
+            self._metapackage_tag = tag
+            logging.info(f"Changing EUPS base tag to {tag}.")
         if not dry_run:
             self._write_description()
             self._write_eups_table()
@@ -238,7 +230,7 @@ class Workspace:
                     "packages": dict(self._packages),
                     "externals": dict(self._externals),
                     "metapackage_name": self._metapackage_name,
-                    "metapackage_version": self._metapackage_version,
+                    "metapackage_tag": self._metapackage_tag,
                     "workspace_eups_product": self._workspace_eups_product,
                     "tools": list(self._tools),
                 },
@@ -252,7 +244,7 @@ class Workspace:
             os.path.join(self._directory, "ups", f"{self._workspace_eups_product}.table"),
             "w",
         ) as f:
-            f.write(f"setupRequired({self._metapackage_name} {self._metapackage_version})\n")
+            f.write(f"setupRequired({self._metapackage_name} -t {self._metapackage_tag})\n")
             for product, path in self._externals.items():
                 f.write(f"setupRequired({product} -j -r {path})\n")
             for product in self._packages:
