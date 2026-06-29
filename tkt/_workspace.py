@@ -29,7 +29,6 @@ __all__ = ("Workspace",)
 import json
 import logging
 import os
-import subprocess
 from collections.abc import Iterable, Mapping
 
 import eups
@@ -263,38 +262,12 @@ class Workspace:
                 else:
                     logging.info(f"Skipping setup line for {product} because {path} does not exist.")
 
-    def _capture_env(self, environment: Environment) -> dict[str, str]:
-        sentinal_line = "######## BEGIN ENV ########"
-        result = subprocess.run(
-            environment.shell,
-            input=(f"setup -r {self._directory}\necho '{sentinal_line}'\nenv\n"),
-            capture_output=True,
-            text=True,
-            env={},
-        )
-        sentinal_seen = False
-        envvars: dict[str, str] = {}
-        for line in result.stdout.splitlines():
-            if "()" in line or line == "}":
-                continue
-            if sentinal_seen:
-                name, separator, value = line.partition("=")
-                if separator != "=":
-                    raise RuntimeError(f"Unexpected results when capturing environment:\n{result.stdout}.")
-                envvars[name] = value
-            elif line.startswith(sentinal_line):
-                sentinal_seen = True
-        return envvars
-
     def _write_tools(self, environment: Environment) -> None:
-        envvars = None
         for name in self._tools:
             tool = environment.get_tool(name)
             if tool is None:
                 raise LookupError("No editor configuration for {name}.")
-            if tool.needs_envvars and envvars is None:
-                envvars = self._capture_env(environment)
-            tool.write(self._ticket, self._directory, self._packages.keys(), envvars=envvars)
+            tool.write(self._ticket, self._directory, self._packages.keys())
 
     def _checkout_package(self, package: str, environment: Environment, *, dry_run: bool) -> None:
         branch_name = self._packages[package]

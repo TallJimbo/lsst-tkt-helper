@@ -55,17 +55,7 @@ class Zed(Tool):
             raise ValueError(f"Unexpected entries in nested VSCode configuration: {data}.")
         return cls(base, packages)
 
-    @property
-    def needs_envvars(self) -> bool:
-        return False
-
-    def write(
-        self,
-        ticket: str,
-        directory: str,
-        packages: Iterable[str],
-        envvars: dict[str, Any] | None = None,
-    ) -> None:
+    def write(self, ticket: str, directory: str, packages: Iterable[str]) -> None:
         workspace_filename = os.path.join(directory, ".zed", "settings.json")
         config = copy.deepcopy(self._base)
         if os.path.exists(workspace_filename):

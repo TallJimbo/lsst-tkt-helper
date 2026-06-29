@@ -39,19 +39,8 @@ class Tool(ABC):
     def from_json_data(cls, data: dict[str, Any]) -> Tool:
         raise NotImplementedError()
 
-    @property
     @abstractmethod
-    def needs_envvars(self) -> bool:
-        raise NotADirectoryError()
-
-    @abstractmethod
-    def write(
-        self,
-        ticket: str,
-        directory: str,
-        packages: Iterable[str],
-        envvars: dict[str, Any] | None = None,
-    ) -> None:
+    def write(self, ticket: str, directory: str, packages: Iterable[str]) -> None:
         raise NotImplementedError()
 
 
