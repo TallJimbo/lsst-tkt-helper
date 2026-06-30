@@ -1,0 +1,46 @@
+[user]
+	name = Jim Bosch
+	email = jbosch@astro.princeton.edu
+[color]
+	diff = auto
+	status = auto
+	branch = auto
+    ui = true
+[help]
+    autocorrect = 1
+[core]
+	excludesfile = /home/jbosch/.gitignore-global
+	editor = emacsclient -t
+[difftool]
+    prompt = false
+[diff]
+	tool = meld
+    guitool = meld
+[push]
+	default = tracking
+[branch "main"]
+	rebase = true
+# Cache anonymous access to DM Git LFS S3 servers
+[credential "https://git-lfs-rw.lsst.cloud"]
+    helper = store
+[credential]
+	helper = /usr/share/doc/git/contrib/credential/libsecret/git-credential-libsecret
+[alias]
+    upbase = !git fetch origin && git rebase origin/main
+    recommit = commit --reedit-message=ORIG_HEAD
+    rebase-pc = rebase -x 'pre-commit run --from-ref HEAD~ --to-ref HEAD' $1
+    upbase-pc = !git fetch origin && git rebase -x 'pre-commit run --from-ref HEAD~ --to-ref HEAD' origin/main
+[pull]
+	rebase = true
+[rebase]
+    autosquash = true
+    autostash = true
+[merge]
+	tool = xxdiff
+[filter "lfs"]
+	required = true
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+[init]
+	defaultBranch = main

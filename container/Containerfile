@@ -1,0 +1,45 @@
+ARG BASE_IMAGE=docker.io/ubuntu:latest
+FROM $BASE_IMAGE
+
+ARG LSST_SPLENV_REF
+ARG NEW_DIR=/opt/lsst/software/stack
+ARG LSST_USER=lsst
+ARG LSSTINSTALL_URL=https://ls.st/lsstinstall
+ARG LSST_EUPS_PKGROOT_BASE_URL=https://eups.lsst.cloud/stack
+
+USER root
+
+RUN apt-get update && apt-get install -y wget curl unminimize git emacs-nox nodejs && yes | unminimize && apt-get clean
+
+RUN mkdir -p "$NEW_DIR" && groupadd "$LSST_USER" && useradd -g "$LSST_USER" -m "$LSST_USER" -s /bin/bash && chown "${LSST_USER}:${LSST_USER}" "$NEW_DIR"
+
+USER $LSST_USER
+WORKDIR $NEW_DIR
+
+SHELL ["/bin/bash", "-c"]
+
+RUN wget "$LSSTINSTALL_URL" && chmod +x lsstinstall
+RUN ./lsstinstall -S -T $LSST_SPLENV_REF
+RUN source ./loadLSST.bash && conda update -n base -c conda-forge conda
+RUN source ./loadLSST.bash && conda install prek
+RUN source ./loadLSST.bash && conda clean -a -y
+RUN source ./loadLSST.bash && eups distrib install lsst_distrib -t $LSST_SPLENV_REF
+
+USER root
+
+RUN groupadd jbosch && useradd -m -g jbosch -G lsst -c "Jim Bosch" -s /bin/bash jbosch
+
+USER jbosch
+WORKDIR /home/jbosch
+
+RUN git clone https://github.com/magicmonty/bash-git-prompt.git ~/.bash-git-prompt --depth=1
+
+COPY ./dotfiles/* .
+
+VOLUME /home/jbosch/
+
+# Source LSST startup as main user to initialize some things; it will be
+# sourced in .bash
+RUN source $NEW_DIR/loadLSST.bash
+
+ENTRYPOINT emacs --daemon && bash -il

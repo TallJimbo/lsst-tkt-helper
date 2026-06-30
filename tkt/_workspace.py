@@ -40,21 +40,21 @@ class Workspace:
     def __init__(
         self,
         *,
-        directory: str,
         ticket: str,
-        packages: dict[str, str],
-        externals: dict[str, str],
+        directory: str,
         metapackage_name: str,
         metapackage_tag: str,
+        packages: dict[str, str],
+        externals: dict[str, str],
         workspace_eups_product: str,
         tools: Iterable[str],
     ):
+        self.ticket = ticket
+        self.metapackage_name = metapackage_name
+        self.metapackage_tag = metapackage_tag
         self._directory = directory
-        self._ticket = ticket
         self._packages = packages
         self._externals = externals
-        self._metapackage_name = metapackage_name
-        self._metapackage_tag = metapackage_tag
         self._workspace_eups_product = workspace_eups_product
         self._tools = tuple(tools)
 
@@ -153,7 +153,7 @@ class Workspace:
         dry_run: bool = False,
     ) -> None:
         packages, externals, environment = self._handle_package_args(
-            self._ticket,
+            self.ticket,
             packages=packages,
             externals=externals,
             environment=environment,
@@ -176,10 +176,10 @@ class Workspace:
         dry_run: bool = False,
     ) -> None:
         if metapackage is not None:
-            self._metapackage_name = metapackage
+            self.metapackage_name = metapackage
             logging.info(f"Changing EUPS base metapackage to {metapackage}.")
         if tag is not None:
-            self._metapackage_tag = tag
+            self.metapackage_tag = tag
             logging.info(f"Changing EUPS base tag to {tag}.")
         if not dry_run:
             self._write_description()
@@ -226,11 +226,11 @@ class Workspace:
         with open(os.path.join(self._directory, "tkt.json"), "w") as f:
             json.dump(
                 {
-                    "ticket": self._ticket,
+                    "ticket": self.ticket,
                     "packages": dict(self._packages),
                     "externals": dict(self._externals),
-                    "metapackage_name": self._metapackage_name,
-                    "metapackage_tag": self._metapackage_tag,
+                    "metapackage_name": self.metapackage_name,
+                    "metapackage_tag": self.metapackage_tag,
                     "workspace_eups_product": self._workspace_eups_product,
                     "tools": list(self._tools),
                 },
@@ -244,7 +244,7 @@ class Workspace:
             os.path.join(self._directory, "ups", f"{self._workspace_eups_product}.table"),
             "w",
         ) as f:
-            f.write(f"setupRequired({self._metapackage_name} -t {self._metapackage_tag})\n")
+            f.write(f"setupRequired({self.metapackage_name} -t {self.metapackage_tag})\n")
             for product, path in self._externals.items():
                 f.write(f"setupRequired({product} -j -r {path})\n")
             for product in self._packages:
@@ -259,7 +259,7 @@ class Workspace:
             tool = environment.get_tool(name)
             if tool is None:
                 raise LookupError("No editor configuration for {name}.")
-            tool.write(self._ticket, self._directory, self._packages.keys(), self, environment)
+            tool.write(self.ticket, self._directory, self._packages.keys(), self, environment)
 
     def _checkout_package(self, package: str, environment: Environment, *, dry_run: bool) -> None:
         branch_name = self._packages[package]

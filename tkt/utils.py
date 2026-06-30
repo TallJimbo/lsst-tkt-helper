@@ -24,7 +24,7 @@
 
 from __future__ import annotations
 
-__all__ = ("read_json_file", "write_json_file")
+__all__ = ("format_dict", "read_json_file", "write_json_file")
 
 import json
 import logging
@@ -34,7 +34,7 @@ import json5  # used to read to allow trailling commas, never to write.
 
 
 def _merge(
-    target: dict[str, Any], source: dict[str, Any], base_path: str | None = None, context: str = "JSON entry"
+    target: dict[str, Any], source: dict[str, Any], base_path: str | None = None, context: str | None = None
 ) -> None:
     """Merge ``source`` into ``target``, combining dictionaries recursively
     when the same keys are present.
@@ -49,12 +49,30 @@ def _merge(
                 _merge(d, v, base_path=path)
             elif v != d:
                 target[k] = v
-                logging.warning(f"{context} {path}={d!r} differs from tkt default of {v!r}.")
-        else:
+                if context is not None:
+                    logging.warning(f"{context} {path}={d!r} differs from tkt default of {v!r}.")
+        elif context is not None:
             logging.warning(f"{context} {path}={d!r} is not set in tkt defaults.")
 
 
-def read_json_file(filename: str, *, target: dict[str, Any] | None = None) -> dict[str, Any]:
+def format_dict[T: Any](value: T, **kwargs: Any) -> T:
+    """Apply `str.format` formatting to all string vlaues in a dictionary,
+    recursively.
+    """
+    match value:
+        case str():
+            return value.format(**kwargs)  # type: ignore
+        case list():
+            return [format_dict(item, **kwargs) for item in value]  # type: ignore
+        case dict():
+            return {k: format_dict(v, **kwargs) for k, v in value.items()}  # type: ignore
+        case _:
+            return value
+
+
+def read_json_file(
+    filename: str, *, target: dict[str, Any] | None = None, warn_on_conflict: bool = True
+) -> dict[str, Any]:
     """Read JSON data from the file with the given name.
 
     Parameters
@@ -64,11 +82,13 @@ def read_json_file(filename: str, *, target: dict[str, Any] | None = None) -> di
     target
         If provided, merge the loaded data into this dictionary, given
         precedence to the loaded data and warning about differences.
+    warn_on_conflict
+        Whether to warn if a conflict is seen.
     """
     with open(filename) as stream:
         data = json5.load(stream)
     if target is not None:
-        _merge(target, data, context=filename)
+        _merge(target, data, context=filename if warn_on_conflict else None)
         return target
     else:
         return data
