@@ -23,17 +23,9 @@
       "module": "tkt.zed",
       "cls": "Zed"
     },
-    "devcontainer": {
-      "module": "tkt.devcontainer",
-      "cls": "DevContainer",
-      "base": {
-        "name": "{workspace.ticket}",
-        "image": "localhost/dev:{workspace.metapackage_tag}",
-        "containerEnv": {
-          "HISTFILE": "/workspace/.bash_history",
-          "IPYTHONDIR": "/workspace/.ipython"
-        }
-      }
+    "sandbox": {
+      "module": "tkt.sandbox",
+      "cls": "Sandbox"
     }
   }
 }

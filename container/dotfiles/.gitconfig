@@ -9,8 +9,8 @@
 [help]
     autocorrect = 1
 [core]
-	excludesfile = /home/jbosch/.gitignore-global
-	editor = emacsclient -t
+	excludesfile = /sandbox/.gitignore-global
+	editor = emacs
 [difftool]
     prompt = false
 [diff]

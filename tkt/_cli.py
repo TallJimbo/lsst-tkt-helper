@@ -25,6 +25,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 from collections.abc import Iterable
 from typing import TextIO
 
@@ -62,7 +64,7 @@ def cli() -> None:
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
 )
-@click.option("--tool", "tools", multiple=True, default=("zed", "pyright", "devcontainer"), type=str)
+@click.option("--tool", "tools", multiple=True, default=("zed", "pyright", "sandbox"), type=str)
 @click.option("-n", "--dry-run", is_flag=True)
 @click.option("-v", "--verbose", count=True)
 def new(
@@ -171,3 +173,58 @@ def upgrade_metapackage(
         environment=env,
         dry_run=dry_run,
     )
+
+
+@cli.command("rm")
+@click.argument("ticket")
+@click.option(
+    "-d",
+    "--directory",
+    type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
+)
+@click.option(
+    "--environment",
+    envvar="TKT_ENVIRONMENT",
+    type=click.File(),
+)
+@click.option("-v", "--verbose", count=True)
+def rm(
+    *,
+    ticket: str | None,
+    directory: str | None,
+    environment: TextIO | None,
+    verbose: int = 0,
+) -> None:
+    _setup_logging(verbose)
+    if environment is None:
+        raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
+    else:
+        env = Environment.from_file(environment)
+    workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
+    workspace.remove(environment=env)
+
+
+@cli.command("build-container")
+@click.argument("tag")
+@click.option("-v", "--verbose", count=True)
+def build_container(
+    *,
+    tag: str,
+    verbose: int = 0,
+) -> None:
+    _setup_logging(verbose)
+    old_dir = os.curdir
+    build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "container"))
+    try:
+        os.chdir(build_dir)
+        p = subprocess.run(
+            f"podman build . -t localdev:{tag} --format docker --build-arg EUPS_TAG={tag}",
+            shell=True,
+            capture_output=True,
+        )
+        for line in p.stderr.decode().splitlines():
+            logging.warning(line)
+        for line in p.stdout.decode().splitlines():
+            logging.info(line)
+    finally:
+        os.chdir(old_dir)

@@ -53,6 +53,16 @@ class Tool(ABC):
     ) -> None:
         raise NotImplementedError()
 
+    def remove(
+        self,
+        ticket: str,
+        directory: str,
+        packages: Iterable[str],
+        workspace: Workspace,
+        environment: Environment,
+    ) -> None:
+        pass
+
 
 class Environment(ABC):
     @staticmethod

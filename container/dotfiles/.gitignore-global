@@ -26,3 +26,5 @@ lcov.info
 coverage.xml
 .zed
 .devcontainer
+.opencode
+.openspec

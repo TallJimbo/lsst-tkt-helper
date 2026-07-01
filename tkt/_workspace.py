@@ -29,6 +29,7 @@ __all__ = ("Workspace",)
 import json
 import logging
 import os
+import shutil
 from collections.abc import Iterable, Mapping
 
 import git
@@ -186,6 +187,18 @@ class Workspace:
             self._write_eups_table()
             self._write_tools(environment)
 
+    def remove(self, environment: Environment) -> None:
+        for tool_name in self._tools:
+            if (tool := environment.get_tool(tool_name)) is not None:
+                tool.remove(
+                    ticket=self.ticket,
+                    directory=self._directory,
+                    packages=self._packages,
+                    environment=environment,
+                    workspace=self,
+                )
+        shutil.rmtree(self._directory)
+
     @staticmethod
     def _handle_package_args(
         ticket: str,
@@ -258,7 +271,7 @@ class Workspace:
         for name in self._tools:
             tool = environment.get_tool(name)
             if tool is None:
-                raise LookupError("No editor configuration for {name}.")
+                raise LookupError(f"No editor configuration for {name}.")
             tool.write(self.ticket, self._directory, self._packages.keys(), self, environment)
 
     def _checkout_package(self, package: str, environment: Environment, *, dry_run: bool) -> None:
