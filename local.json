@@ -25,7 +25,28 @@
     },
     "sandbox": {
       "module": "tkt.sandbox",
-      "cls": "Sandbox"
+      "cls": "Sandbox",
+      "command": ["/home/jbosch/.opencode/bin/opencode", "acp"],
+      "setup_script": "/home/jbosch/LSST/install/loadLSST.bash",
+      "mounts": {
+        "ro": [
+          "/home/jbosch/LSST/install",
+          "~/.opencode",
+          "~/.gitconfig",
+          "~/.gitignore-global",
+          "~/.bashrc",
+          "~/.profile",
+          "~/.bash_profile",
+          "~/.inputrc"
+        ],
+        "rw": [
+          "~/.config/opencode",
+          "~/.local/share/opencode",
+          "~/.cache/opencode",
+          "~/.eups"
+        ]
+      },
+      "env": {}
     }
   }
 }

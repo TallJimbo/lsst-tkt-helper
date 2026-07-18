@@ -59,8 +59,37 @@ class Workspace:
         self._workspace_eups_product = workspace_eups_product
         self._tools = tuple(tools)
 
+    @property
+    def directory(self) -> str:
+        """Absolute path to the workspace directory."""
+        return self._directory
+
+    @property
+    def packages(self) -> Mapping[str, str]:
+        """Mapping from package name to branch for each cloned package."""
+        return self._packages
+
+    @property
+    def externals(self) -> Mapping[str, str]:
+        """Mapping from package name to filesystem path for external
+        packages that are referenced by the workspace's EUPS table without
+        being cloned into the workspace directory.
+        """
+        return self._externals
+
+    @property
+    def workspace_eups_product(self) -> str:
+        """Name of the EUPS product representing the workspace as a whole."""
+        return self._workspace_eups_product
+
+    @property
+    def tools(self) -> tuple[str, ...]:
+        """Names of the `Tool` objects configured for this workspace."""
+        return self._tools
+
     @classmethod
     def from_directory(cls, directory: str) -> Workspace:
+        directory = os.path.abspath(directory)
         with open(os.path.join(directory, "tkt.json")) as f:
             data = json.load(f)
         if "tag" in data:
@@ -126,6 +155,7 @@ class Workspace:
         )
         if directory is None:
             directory = environment.get_workspace_directory(ticket)
+        directory = os.path.abspath(directory)
         if metapackage is None:
             metapackage = environment.default_metapackage
         if tag is None:
