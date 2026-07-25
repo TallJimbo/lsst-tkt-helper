@@ -2,6 +2,8 @@
 
 `tkt` is a Python CLI tool for Rubin Observatory DM development. It creates EUPS metapackages tied to Jira tickets, managing git workspaces with multiple packages on the same branch. It integrates with the Zed editor, Pyright, and a `bwrap`-based sandbox for running LLM agents.
 
+Prefer simple solutions to thorough handling of edge cases; the users of this tool are also developers, and they can handle exception tracebacks and other failure modes.
+
 ## Development setup
 
 - **Python**: 3.13
