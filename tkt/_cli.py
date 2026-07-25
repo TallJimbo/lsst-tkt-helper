@@ -62,7 +62,7 @@ def cli() -> None:
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
 )
-@click.option("--tool", "tools", multiple=True, default=("zed", "pyright", "sandbox"), type=str)
+@click.option("--tool", "tools", multiple=True, default=("zed", "pyright", "sandbox", "precommit"), type=str)
 @click.option("-n", "--dry-run", is_flag=True)
 @click.option("-v", "--verbose", count=True)
 def new(

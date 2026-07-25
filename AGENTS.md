@@ -35,6 +35,7 @@ mypy tkt/
 | `tkt/sandbox.py`      | `Sandbox` tool: runs an LLM agent inside a `bwrap` sandbox with a read-only view of the human's worktree and a writable git worktree on a separate branch.                                      |
 | `tkt/zed.py`          | `Zed` tool: writes Zed editor configuration into the workspace.                                                                                                                                 |
 | `tkt/pyright.py`      | `Pyright` tool: writes `pyrightconfig.json` into the workspace.                                                                                                                                 |
+| `tkt/precommit.py`    | `PreCommit` tool: installs pre-commit or prek git hooks when configuration files are present in packages.                                                                                       |
 | `tkt/utils.py`        | JSON read/write helpers (uses `json5` for reading to allow trailing commas).                                                                                                                    |
 
 ## Configuration

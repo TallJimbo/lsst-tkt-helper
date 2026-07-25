@@ -46,6 +46,10 @@
         ]
       },
       "env": {}
+    },
+    "precommit": {
+      "module": "tkt.precommit",
+      "cls": "PreCommit"
     }
   }
 }
