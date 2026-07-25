@@ -217,16 +217,7 @@ class Workspace:
             self._write_eups_table()
             self._write_tools(environment)
 
-    def remove(self, environment: Environment) -> None:
-        for tool_name in self._tools:
-            if (tool := environment.get_tool(tool_name)) is not None:
-                tool.remove(
-                    ticket=self.ticket,
-                    directory=self._directory,
-                    packages=self._packages,
-                    environment=environment,
-                    workspace=self,
-                )
+    def remove(self) -> None:
         shutil.rmtree(self._directory)
 
     @staticmethod

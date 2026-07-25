@@ -69,40 +69,25 @@ class PreCommit(Tool):
         workspace: Workspace,
         environment: Environment,
     ) -> None:
-        self._process(packages, directory, "install")
-
-    def remove(
-        self,
-        ticket: str,
-        directory: str,
-        packages: Iterable[str],
-        workspace: Workspace,
-        environment: Environment,
-    ) -> None:
-        self._process(packages, directory, "uninstall")
+        self._process(packages, directory)
 
     def _process(
         self,
         packages: Iterable[str],
         directory: str,
-        action: str,
     ) -> None:
         use_prek = _prek_available()
         for package in packages:
             package_dir = os.path.join(directory, package)
             if not os.path.exists(package_dir):
-                if action == "install":
-                    logging.info(
-                        f"Skipping pre-commit for {package}: directory {package_dir} does not exist."
-                    )
+                logging.info(f"Skipping pre-commit for {package}: directory {package_dir} does not exist.")
                 continue
-            self._run_for_package(package_dir, package, action, use_prek)
+            self._run_for_package(package_dir, package, use_prek)
 
     def _run_for_package(
         self,
         package_dir: str,
         package: str,
-        action: str,
         use_prek: bool,
     ) -> None:
         pre_commit_config = os.path.join(package_dir, ".pre-commit-config.yaml")
@@ -120,16 +105,15 @@ class PreCommit(Tool):
                     f"Cannot configure hooks for {package}: prek.toml found but prek is not installed."
                 )
             executable = "pre-commit"
-        verb = "Installing" if action == "install" else "Uninstalling"
-        logging.info(f"{verb} {executable} hooks for {package}.")
+        logging.info(f"Installing {executable} hooks for {package}.")
         result = subprocess.run(
-            [executable, action],
+            [executable, "install"],
             cwd=package_dir,
             capture_output=True,
             text=True,
             check=False,
         )
         if result.returncode != 0:
-            logging.warning(f"Failed to {action} {executable} hooks for {package}: {result.stderr.strip()}")
+            logging.warning(f"Failed to install {executable} hooks for {package}: {result.stderr.strip()}")
         elif result.stdout.strip():
             logging.debug(f"{executable} output for {package}: {result.stdout.strip()}")

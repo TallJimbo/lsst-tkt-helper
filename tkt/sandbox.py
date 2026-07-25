@@ -156,34 +156,6 @@ class Sandbox(Tool):
         else:
             repo.git.worktree("add", "-b", agent_branch, agent_package_dir, source_branch)
 
-    def remove(
-        self,
-        ticket: str,
-        directory: str,
-        packages: Iterable[str],
-        workspace: Workspace,
-        environment: Environment,
-    ) -> None:
-        agent_dir = os.path.join(directory, AGENT_SUBDIR)
-        for package in packages:
-            package_dir = os.path.join(directory, package)
-            agent_package_dir = os.path.join(agent_dir, package)
-            if not os.path.exists(agent_package_dir):
-                continue
-            if os.path.exists(package_dir):
-                try:
-                    repo = git.Repo(package_dir)
-                    repo.git.worktree("remove", "--force", agent_package_dir)
-                    continue
-                except Exception as err:
-                    logging.warning(
-                        f"Failed to remove worktree {agent_package_dir} via git: {err}; "
-                        f"falling back to rmtree."
-                    )
-            shutil.rmtree(agent_package_dir, ignore_errors=True)
-        if os.path.exists(agent_dir):
-            shutil.rmtree(agent_dir, ignore_errors=True)
-
     def run(
         self,
         workspace: Workspace,
