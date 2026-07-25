@@ -44,6 +44,10 @@ AGENT_SUBDIR = ".agent"
 # Suffix appended to the workspace's ticket branch to form the agent branch.
 AGENT_BRANCH_SUFFIX = "-agent"
 
+# Path to the AGENTS.md boilerplate template installed into the agent
+# directory to guide the LLM agent.
+_AGENTS_MD_TEMPLATE = os.path.join(os.path.dirname(__file__), "AGENTS.md.in")
+
 
 class Sandbox(Tool):
     """Tool that runs an LLM agent inside a ``bwrap`` sandbox.
@@ -113,6 +117,9 @@ class Sandbox(Tool):
         packages = list(packages)
         agent_dir = os.path.join(directory, AGENT_SUBDIR)
         os.makedirs(agent_dir, exist_ok=True)
+        # Install the AGENTS.md boilerplate into the agent directory so the
+        # LLM agent has context about the sandbox setup.
+        shutil.copy2(_AGENTS_MD_TEMPLATE, os.path.join(agent_dir, "AGENTS.md"))
         for package in packages:
             package_dir = os.path.join(directory, package)
             agent_package_dir = os.path.join(agent_dir, package)

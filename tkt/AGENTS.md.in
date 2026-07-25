@@ -1,0 +1,64 @@
+# AGENTS.md - LSST Science Pipelines Development
+
+This directory is a single-ticket workspace for LSST Science Pipelines
+development. Each subdirectory (e.g., `images/`) is a separate git repository
+with a worktree checked out in `.agent/<repo-name>/`.
+
+## Repository Layout
+
+- **Main ticket directory**: Read-only. Human developers may make changes here
+  in parallel.
+- **`.agent/<repo-name>/`**: Your working directory. This is a git worktree of
+  the main repository. All edits, tests, and commits should be made here.
+- **`.agent/ups/`**: EUPS product setup files. Do not modify.
+
+## Finding Repositories
+
+Repositories relevant for the ticket appear as subdirectories of `.agent/`
+(excluding `ups/`). Each corresponds to a git worktree of a main repository in
+the parent ticket directory.
+
+## Development Workflow
+
+1. **Work in `.agent/<repo-name>/`** — this is your writable worktree.
+
+2. **Run tests** using pytest from the `.agent/<repo-name>/` directory.
+
+3. **Linting**: Check `pyproject.toml` for `tool.ruff` or `tool.flake8`
+   entries.
+   - If `tool.ruff` is present, use `ruff check .` and `ruff format .`.
+   - If only `flake8` is configured (via `setup.cfg` or `tool.flake8`), follow
+     the prevailing style and never reformat untouched code.
+
+4. **Type checking**: If `mypy.ini` or `tool.mypy` is present in
+   `pyproject.toml`, run `mypy .` to type-check the package.
+
+5. **Commits**: Write concise commit messages — a one-line summary (≤72 chars)
+   followed by at most 5-6 bullet points of detail. Do not mention ticket
+   numbers, planning context, or spec-driven development rationale.
+
+6. **Multiple repositories**: When multiple repos are present, they share the
+   same ticket branch. Coordinate changes across repos at the branch level as
+   needed.
+
+## Building with SCons
+
+The official build system for LSST Science Pipelines packages is SCons.
+
+- **Generate version files**: Run `scons pkginfo version` to generate files
+  (e.g., `python/lsst/<pkg>/version.py`) needed before the package can be
+  imported or tested.
+- **Full build, lint, and test**: Run `scons` with no targets. This performs a
+  complete build, lint, and test cycle. Recommended for final verification of
+  changes.
+- **Targeted testing**: Use `pytest` directly when targeting specific tests
+  during development.
+
+Agents may use up to 4 cores (`scons -j` or `pytest -n`) when running many tests at once.
+
+## Conventions
+
+- **Python**: See `pyproject.toml` for per-package minimum versions.
+- **Line length**: 110 characters (code), 79 characters (docstrings). Check
+  `pyproject.toml` or `setup.cfg` for package-specific settings.
+- **Docstrings**: Numpy convention. See `pyproject.toml` for validation rules.
