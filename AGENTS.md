@@ -7,6 +7,7 @@
 - **Python**: 3.13
 - **Dependencies**: `click`, `GitPython`, `pyyaml`, `json5`
 - **License**: BSD-3-Clause; all `.py` files include a license header — preserve it for new files.
+- **Distribution**: `tkt` is **not** distributed via pip or any package index. It is intended to be used directly from a git clone. There is no `setup.py`, `setup.cfg` (for packaging), or `MANIFEST.in`. Non-`.py` files (e.g. `tkt/AGENTS.md.in`, `pyrightconfig.json`) live alongside the Python source and are located at runtime via `os.path.dirname(__file__)`. Do **not** add packaging configuration.
 
 ## Code style & linting
 
@@ -24,17 +25,17 @@ mypy tkt/
 
 ## File layout
 
-| File | Role |
-|------|------|
-| `tkt/__init__.py` | Public API exports: `cli`, `Environment`, `Workspace`. |
-| `tkt/_cli.py` | Click-based CLI commands: `new`, `update`, `upgrade-metapackage`, `rm`, `agent-run`. |
+| File                  | Role                                                                                                                                                                                            |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tkt/__init__.py`     | Public API exports: `cli`, `Environment`, `Workspace`.                                                                                                                                          |
+| `tkt/_cli.py`         | Click-based CLI commands: `new`, `update`, `upgrade-metapackage`, `rm`, `agent-run`.                                                                                                            |
 | `tkt/_environment.py` | Abstract base classes `Environment` and `Tool`. `Environment` is subclassed per observatory (e.g. `RubinEnvironment`); `Tool` is subclassed per integration (e.g. `Zed`, `Pyright`, `Sandbox`). |
-| `tkt/_workspace.py` | `Workspace` class: manages the git/EUPS workspace lifecycle (create, update, upgrade metapackage, remove). |
-| `tkt/rubin.py` | `RubinEnvironment`: LSST DM-specific `Environment` subclass. Reads `repos.yaml` for package origins. |
-| `tkt/sandbox.py` | `Sandbox` tool: runs an LLM agent inside a `bwrap` sandbox with a read-only view of the human's worktree and a writable git worktree on a separate branch. |
-| `tkt/zed.py` | `Zed` tool: writes Zed editor configuration into the workspace. |
-| `tkt/pyright.py` | `Pyright` tool: writes `pyrightconfig.json` into the workspace. |
-| `tkt/utils.py` | JSON read/write helpers (uses `json5` for reading to allow trailing commas). |
+| `tkt/_workspace.py`   | `Workspace` class: manages the git/EUPS workspace lifecycle (create, update, upgrade metapackage, remove).                                                                                      |
+| `tkt/rubin.py`        | `RubinEnvironment`: LSST DM-specific `Environment` subclass. Reads `repos.yaml` for package origins.                                                                                            |
+| `tkt/sandbox.py`      | `Sandbox` tool: runs an LLM agent inside a `bwrap` sandbox with a read-only view of the human's worktree and a writable git worktree on a separate branch.                                      |
+| `tkt/zed.py`          | `Zed` tool: writes Zed editor configuration into the workspace.                                                                                                                                 |
+| `tkt/pyright.py`      | `Pyright` tool: writes `pyrightconfig.json` into the workspace.                                                                                                                                 |
+| `tkt/utils.py`        | JSON read/write helpers (uses `json5` for reading to allow trailing commas).                                                                                                                    |
 
 ## Configuration
 
