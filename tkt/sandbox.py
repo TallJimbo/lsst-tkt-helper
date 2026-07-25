@@ -191,6 +191,10 @@ class Sandbox(Tool):
             "/proc",
             "--tmpfs",
             "/tmp",
+            # $HOME is a tmpfs (empty writable directory), so ~/.ssh/,
+            # ~/.git-credentials, ~/.config/git/credentials/, and other
+            # credential stores are NOT visible to the agent. This prevents the
+            # agent from authenticating git pushes to existing remotes.
             "--tmpfs",
             home,
             "--setenv",
