@@ -210,8 +210,10 @@ class Sandbox(Tool):
             argv += ["--ro-bind", ups_dir, ups_dir]
         for package in workspace.packages:
             package_dir = os.path.join(workspace.directory, package)
+            git_dir = os.path.join(package_dir, ".git")
             if os.path.exists(package_dir):
                 argv += ["--ro-bind", package_dir, package_dir]
+                argv += ["--bind", git_dir, git_dir]
         for external_path in workspace.externals.values():
             if os.path.exists(external_path):
                 argv += ["--ro-bind", external_path, external_path]
