@@ -27,7 +27,6 @@
       "module": "tkt.sandbox",
       "cls": "Sandbox",
       "command": ["/home/jbosch/.opencode/bin/opencode", "acp"],
-      "setup_script": "/home/jbosch/LSST/install/loadLSST.bash",
       "mounts": {
         "ro": [
           "/home/jbosch/LSST/install",

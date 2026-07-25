@@ -59,9 +59,6 @@ class Sandbox(Tool):
     command
         Command (as an argv list) to ``exec`` inside the sandbox after the
         Rubin environment has been set up.
-    setup_script
-        Absolute path to a shell script (e.g. ``loadLSST.bash``) that must be
-        ``source``d before ``setup -r .`` will work inside the sandbox.
     mounts_ro
         Absolute host paths to bind-mount read-only into the sandbox at the
         same path.  ``~`` is expanded to ``$HOME``.
@@ -76,13 +73,11 @@ class Sandbox(Tool):
         self,
         *,
         command: Sequence[str],
-        setup_script: str,
         mounts_ro: Sequence[str] = (),
         mounts_rw: Sequence[str] = (),
         env: dict[str, str] | None = None,
     ):
         self._command = tuple(command)
-        self._setup_script = setup_script
         self._mounts_ro = tuple(mounts_ro)
         self._mounts_rw = tuple(mounts_rw)
         self._env = dict(env) if env is not None else {}
@@ -92,7 +87,6 @@ class Sandbox(Tool):
         command = data.pop("command")
         if isinstance(command, str):
             command = shlex.split(command)
-        setup_script = data.pop("setup_script")
         mounts = data.pop("mounts", {})
         mounts_ro = mounts.pop("ro", [])
         mounts_rw = mounts.pop("rw", [])
@@ -103,7 +97,6 @@ class Sandbox(Tool):
             raise ValueError(f"Unexpected entries in sandbox configuration: {data}.")
         return cls(
             command=command,
-            setup_script=setup_script,
             mounts_ro=mounts_ro,
             mounts_rw=mounts_rw,
             env=env,
@@ -263,36 +256,14 @@ class Sandbox(Tool):
             agent_dir,
             "--",
         ]
-        # Redirect stderr from the environment setup phase to a per-workspace
-        # log file: Rubin's setup scripts print noise (e.g. harmless "grep:
-        # write error: Broken pipe") that confuses ACP clients reading the
-        # sandbox process's stderr.  OpenCode's own stderr is left untouched
-        # so real errors surface to the client.
-        #
-        # This is a sequence of independent statements rather than a
-        # bash-`-c` compound group; grouping statements causes bash to fork
-        # a subshell to apply the group's redirection, which prevents the
-        # final `exec` from replacing the top-level bash process.
-        setup_log = shlex.quote(os.path.join(agent_dir, "setup.log"))
-        setup_script = shlex.quote(self._setup_script)
-        # Redirect stdout and stderr at the shell level (not per-command)
-        # so they apply to every subshell spawned by Rubin's setup scripts.
-        # ACP clients only start reading the sandbox process's streams
-        # after their end of the JSON-RPC handshake completes; if setup
-        # writes to those streams first the writes block on a full pipe
-        # buffer and the whole environment hangs.
-        #
-        # The original stdout and stderr are saved on fds 3 and 4 so that
-        # the target command can restore them and speak ACP normally.
         lines = [
-            f"exec 3>&1 4>&2 >>{setup_log} 2>&1",
-            f"source {setup_script}",
+            "exec",
             "setup -r .",
         ]
         if shell:
-            lines.append("exec /bin/bash --login -i >&3 2>&4 3>&- 4>&-")
+            lines.append("exec /bin/bash --login -i")
         else:
-            lines.append(f"exec {shlex.join(self._command)} >&3 2>&4 3>&- 4>&-")
+            lines.append(f"exec {shlex.join(self._command)}")
         inner = "\n".join(lines)
         argv += ["/bin/bash", "-c", inner]
         return argv
