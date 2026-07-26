@@ -119,7 +119,7 @@ class Sandbox(Tool):
         os.makedirs(agent_dir, exist_ok=True)
         # Install the AGENTS.md boilerplate into the agent directory so the
         # LLM agent has context about the sandbox setup.
-        shutil.copy2(_AGENTS_MD_TEMPLATE, os.path.join(agent_dir, "AGENTS.md"))
+        shutil.copy2(_AGENTS_MD_TEMPLATE, os.path.join(directory, "AGENTS.md"))
         for package in packages:
             package_dir = os.path.join(directory, package)
             agent_package_dir = os.path.join(agent_dir, package)
