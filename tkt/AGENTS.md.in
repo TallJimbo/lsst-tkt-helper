@@ -32,6 +32,9 @@ the parent ticket directory.
 
 4. **Type checking**: If `mypy.ini` or `tool.mypy` is present in
    `pyproject.toml`, run `mypy .` to type-check the package.
+   Tests are not type-checked, in order to make it easier to write
+   intentionally incorrect calls in `pytest.raises` blocks (etc).
+   Type annotations are nevertheless permitted in tests, as an aid to IDEs.
 
 5. **Commits**: Write concise commit messages — a one-line summary (≤72 chars)
    followed by at most 5-6 bullet points of detail. Do not mention ticket
