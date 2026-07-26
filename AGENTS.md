@@ -23,7 +23,7 @@ mypy tkt/
 
 - **ruff**: line-length 110, doc-length 79, numpy docstring convention. See `pyproject.toml` for the full configuration.
 - **mypy**: type checking. See `pyproject.toml` for configuration.
-- **pyright**: `pyrightconfig.json` is for human IDE use only and is **not** canonical. MyPy lacks a good LSP, so the pyright config exists solely to roughly approximate MyPy's behavior in editors. Do not treat pyright as a source of truth.
+- **pyright**: `pyrightconfig.json` is for human IDE use only and is **not** for linting.
 
 ## File layout
 
