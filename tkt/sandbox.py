@@ -201,13 +201,11 @@ class Sandbox(Tool):
             "HOME",
             home,
         ]
-        # Workspace-specific mounts.  The agent's directory is the only
-        # writable location in the workspace; the human's worktrees, the
-        # top-level ups/, and each external are read-only.
+        # Workspace-specific mounts. The agent's directory and the .git
+        # subdirectories are the only writable locations in the workspace; main
+        # workspace and each external are read-only.
+        argv += ["--ro-bind", workspace.directory, workspace.directory]
         argv += ["--bind", agent_dir, agent_dir]
-        ups_dir = os.path.join(workspace.directory, "ups")
-        if os.path.exists(ups_dir):
-            argv += ["--ro-bind", ups_dir, ups_dir]
         for package in workspace.packages:
             package_dir = os.path.join(workspace.directory, package)
             git_dir = os.path.join(package_dir, ".git")
