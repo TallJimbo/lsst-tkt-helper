@@ -51,7 +51,7 @@
           "~/.local/share/openspec",
           "~/.cache/opencode",
           "~/.eups",
-          "~/LSST/opencode"
+          "~/LSST/openspec"
         ]
       },
       "env": {
