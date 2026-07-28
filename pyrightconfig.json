@@ -10,4 +10,5 @@
     "*-gdb.py",
   ],
   "typeCheckingMode": "off",
+  "reportCallIssue": "none",
 }
