@@ -23,29 +23,41 @@
       "module": "tkt.zed",
       "cls": "Zed"
     },
+    "openspec": {
+      "module": "tkt.openspec",
+      "cls": "OpenSpec",
+      "store": "lsst"
+    },
     "sandbox": {
       "module": "tkt.sandbox",
       "cls": "Sandbox",
       "command": ["/home/jbosch/.opencode/bin/opencode", "acp"],
       "mounts": {
         "ro": [
-          "/home/jbosch/LSST/install",
+          "~/LSST/install",
           "~/.opencode",
           "~/.gitconfig",
           "~/.gitignore-global",
           "~/.bashrc",
           "~/.profile",
           "~/.bash_profile",
-          "~/.inputrc"
+          "~/.inputrc",
+          "~/.nvm/versions/node/v24.18.0"
         ],
         "rw": [
           "~/.config/opencode",
+          "~/.config/openspec",
           "~/.local/share/opencode",
+          "~/.local/share/openspec",
           "~/.cache/opencode",
-          "~/.eups"
+          "~/.eups",
+          "~/LSST/opencode"
         ]
       },
-      "env": {}
+      "env": {
+        "GIT_EDITOR": "true",
+        "GIT_SEQUENCE_EDITOR": "true"
+      }
     },
     "precommit": {
       "module": "tkt.precommit",

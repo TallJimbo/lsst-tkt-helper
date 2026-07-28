@@ -4,6 +4,9 @@ This directory is a single-ticket workspace for LSST Science Pipelines
 development. Each subdirectory (e.g., `images/`) is a separate git repository
 with a worktree checked out in `.agent/<repo-name>/`.
 
+Most LSST Science Pipelines are pure Python, but a few have C++ or Rust
+libraries (with Python bindings using `pybind11` or `pyo3`, respectively).
+
 ## Repository Layout
 
 - **Main ticket directory**: Read-only. Human developers may make changes here
@@ -22,19 +25,24 @@ the parent ticket directory.
 
 1. **Work in `.agent/<repo-name>/`** — this is your writable worktree.
 
-2. **Run tests** using pytest from the `.agent/<repo-name>/` directory.
+2. **Run tests** using pytest from the `.agent/<repo-name>/` directory, just
+   targeting the modified code. Use `scons` (see below) for final tests.
 
-3. **Linting**: Check `pyproject.toml` for `tool.ruff` or `tool.flake8`
-   entries.
-   - If `tool.ruff` is present, use `ruff check .` and `ruff format .`.
-   - If only `flake8` is configured (via `setup.cfg` or `tool.flake8`), follow
-     the prevailing style and never reformat untouched code.
+3. **Pre-commit hooks**: Most repositories use pre-commit hooks that
+   automatically fix formatting, import order, and most style issues. Focus on
+   getting the logic and tests right first — don't spend effort on formatting
+   or style. Commit your changes and let the hooks fix style automatically.
+   Only address linting issues that the hooks can't fix, or that involve
+   semantic decisions (e.g., ignoring a specific line).
+
+   To run hooks manually: `pre-commit run --files <path>` or `git commit` to
+   trigger them on staged files.
 
 4. **Type checking**: If `mypy.ini` or `tool.mypy` is present in
-   `pyproject.toml`, run `mypy .` to type-check the package.
-   Tests are not type-checked, in order to make it easier to write
-   intentionally incorrect calls in `pytest.raises` blocks (etc).
-   Type annotations are nevertheless permitted in tests, as an aid to IDEs.
+   `pyproject.toml`, run `mypy python` to type-check the package. Tests are not
+   expected to by MyPy-clean, in order to make it easier to write intentionally
+   incorrect calls in `pytest.raises` blocks (etc). Type annotations are
+   nevertheless permitted in tests, as an aid to IDEs.
 
 5. **Commits**: Write concise commit messages — a one-line summary (≤72 chars)
    followed by at most 5-6 bullet points of detail. Do not mention ticket
@@ -62,6 +70,5 @@ Agents may use up to 4 cores (`scons -j` or `pytest -n`) when running many tests
 ## Conventions
 
 - **Python**: See `pyproject.toml` for per-package minimum versions.
-- **Line length**: 110 characters (code), 79 characters (docstrings). Check
-  `pyproject.toml` or `setup.cfg` for package-specific settings.
-- **Docstrings**: Numpy convention. See `pyproject.toml` for validation rules.
+- **Documentation**: Sphinx + numpydoc. Omit types from `Parameters` entries
+  when the signature has type annotations.
