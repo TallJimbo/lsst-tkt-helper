@@ -204,7 +204,7 @@ def rm(
     workspace.remove()
 
 
-@cli.command("agent-run")
+@cli.command("sandbox-run")
 @click.option(
     "-d",
     "--directory",
@@ -222,7 +222,7 @@ def rm(
     help="Drop into an interactive shell in the sandbox instead of launching the agent command.",
 )
 @click.option("-v", "--verbose", count=True)
-def agent_run(
+def sandbox_run(
     *,
     ticket: str | None,
     directory: str | None,
