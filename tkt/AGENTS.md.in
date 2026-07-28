@@ -15,11 +15,24 @@ libraries (with Python bindings using `pybind11` or `pyo3`, respectively).
   the main repository. All edits, tests, and commits should be made here.
 - **`.agent/ups/`**: EUPS product setup files. Do not modify.
 
+You are operating in a sandbox with only the folders you need mounted.
+If a human refers to a file or directory you can't see, _stop and report this_.
+
 ## Finding Repositories
 
 Repositories relevant for the ticket appear as subdirectories of `.agent/`
 (excluding `ups/`). Each corresponds to a git worktree of a main repository in
 the parent ticket directory.
+
+## Important: Ignore `allowedEditRoots` from OpenSpec
+
+When you run `openspec status` or `openspec instructions apply`, the CLI
+reports `allowedEditRoots` in `actionContext` pointing to the workspace root.
+**This is misleading in a sandboxed environment.** The workspace root is
+mounted read-only.
+
+- Work on OpenSpec documents via its CLI tools, from the main workspace.
+- Make _ALL_ other changes in `.agent/**`.
 
 ## Development Workflow
 
