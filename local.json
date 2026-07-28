@@ -35,6 +35,8 @@
       "mounts": {
         "ro": [
           "~/LSST/install",
+          "~/LSST/tkt2",
+          "~/LSST/repos",
           "~/.opencode",
           "~/.gitconfig",
           "~/.gitignore-global",
