@@ -161,6 +161,7 @@ class Sandbox(Tool):
         workspace: Workspace,
         *,
         shell: bool = False,
+        command: str | None = None,
     ) -> None:
         """Launch the sandbox for ``workspace``.
 
@@ -172,8 +173,11 @@ class Sandbox(Tool):
             If ``True``, launch an interactive login shell inside the sandbox
             (with the Rubin environment set up) instead of the configured
             command.  Useful for debugging the sandbox contents.
+        command
+            If given, override the configured final command with this
+            shlex-split string.  Mutually exclusive with ``shell``.
         """
-        argv = self._build_bwrap_argv(workspace, shell=shell)
+        argv = self._build_bwrap_argv(workspace, shell=shell, command=command)
         logging.debug("exec: %s", shlex.join(argv))
         os.execvp(argv[0], argv)
 
@@ -183,6 +187,7 @@ class Sandbox(Tool):
         *,
         shell: bool = False,
         conda_env: str | None = None,
+        command: str | None = None,
     ) -> None:
         """Launch the sandbox for a single repository (not a ticket workspace).
 
@@ -199,12 +204,17 @@ class Sandbox(Tool):
         conda_env
             If given, activate this conda environment before setting up the
             Rubin environment inside the sandbox.
+        command
+            If given, override the configured final command with this
+            shlex-split string.  Mutually exclusive with ``shell``.
         """
-        argv = self._build_single_repo_argv(repo_dir, shell=shell, conda_env=conda_env)
+        argv = self._build_single_repo_argv(repo_dir, shell=shell, conda_env=conda_env, command=command)
         logging.debug("exec: %s", shlex.join(argv))
         os.execvp(argv[0], argv)
 
-    def _build_bwrap_argv(self, workspace: Workspace, *, shell: bool) -> list[str]:
+    def _build_bwrap_argv(
+        self, workspace: Workspace, *, shell: bool, command: str | None = None
+    ) -> list[str]:
         home = os.path.expanduser("~")
         agent_dir = os.path.join(workspace.directory, AGENT_SUBDIR)
         # Workspace-specific mounts. The agent's directory and the .git
@@ -226,7 +236,7 @@ class Sandbox(Tool):
                 mounts += ["--ro-bind", external_path, external_path]
             else:
                 logging.warning(f"External path {external_path} does not exist; skipping mount.")
-        inner = self._build_inner_script(shell=shell)
+        inner = self._build_inner_script(shell=shell, command=command)
         return self._build_common_argv(home=home, mounts=mounts, inner=inner)
 
     def _build_single_repo_argv(
@@ -235,12 +245,13 @@ class Sandbox(Tool):
         *,
         shell: bool,
         conda_env: str | None = None,
+        command: str | None = None,
     ) -> list[str]:
         home = os.path.expanduser("~")
         # The whole repository is writable by the agent; no separate .git
         # handling is needed since there are no per-package worktrees.
         mounts: list[str] = ["--bind", repo_dir, repo_dir]
-        inner = self._build_inner_script(shell=shell, conda_env=conda_env, repo_dir=repo_dir)
+        inner = self._build_inner_script(shell=shell, conda_env=conda_env, repo_dir=repo_dir, command=command)
         return self._build_common_argv(home=home, mounts=mounts, inner=inner)
 
     def _build_common_argv(self, *, home: str, mounts: list[str], inner: str) -> list[str]:
@@ -301,6 +312,7 @@ class Sandbox(Tool):
         self,
         *,
         shell: bool,
+        command: str | None = None,
         conda_env: str | None = None,
         repo_dir: str | None = None,
     ) -> str:
@@ -320,6 +332,8 @@ class Sandbox(Tool):
             lines += ["exec", "setup -r ."]
         if shell:
             lines.append("exec /bin/bash --login -i")
+        elif command is not None:
+            lines.append(f"exec {shlex.join(shlex.split(command))}")
         else:
             lines.append(f"exec {shlex.join(self._command)}")
         return "\n".join(lines)

@@ -234,6 +234,15 @@ def rm(
     type=str,
     help="Activate this conda environment inside the sandbox before anything else.",
 )
+@click.option(
+    "--command",
+    "cmd",
+    type=str,
+    help=(
+        "Override the configured final command with this (shlex-split string). "
+        "Mutually exclusive with --shell."
+    ),
+)
 @click.option("-v", "--verbose", count=True)
 def sandbox_run(
     *,
@@ -242,11 +251,14 @@ def sandbox_run(
     environment: TextIO | None,
     shell: bool = False,
     conda_env: str | None = None,
+    cmd: str | None = None,
     verbose: int = 0,
 ) -> None:
     _setup_logging(verbose)
     if environment is None:
         raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
+    if cmd is not None and shell:
+        raise click.UsageError("--command and --shell are mutually exclusive.")
     from .sandbox import Sandbox
 
     cwd = os.path.abspath(".")
@@ -261,7 +273,7 @@ def sandbox_run(
             raise click.UsageError(
                 f"Configured 'sandbox' tool is {type(tool).__name__}, not tkt.sandbox.Sandbox."
             )
-        tool.run(workspace, shell=shell)
+        tool.run(workspace, shell=shell, command=cmd)
     else:
         # Single-repo mode: treat the CWD as the repository root.
         cls, data = Environment.load_config(environment)
@@ -274,4 +286,4 @@ def sandbox_run(
                 f"Configured 'sandbox' tool is {type(sandbox).__name__}, not tkt.sandbox.Sandbox."
             )
         repo_dir = directory if directory is not None else cwd
-        sandbox.run_single_repo(repo_dir, shell=shell, conda_env=conda_env)
+        sandbox.run_single_repo(repo_dir, shell=shell, conda_env=conda_env, command=cmd)
