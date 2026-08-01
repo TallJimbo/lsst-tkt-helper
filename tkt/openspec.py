@@ -27,6 +27,8 @@ from __future__ import annotations
 __all__ = ("OpenSpec",)
 
 import os
+import shutil
+import subprocess
 from collections.abc import Iterable
 from typing import Any
 
@@ -65,6 +67,19 @@ class OpenSpec(Tool):
         workspace: Workspace,
         environment: Environment,
     ) -> None:
-        os.makedirs(os.path.join(directory, "openspec"), exist_ok=True)
-        with open(os.path.join(directory, "openspec", "config.yaml"), "w") as stream:
-            stream.write(f"store: {self.store}\n")
+        openspec_dir = os.path.join(directory, "openspec")
+        if not os.path.exists(os.path.join(directory, ".opencode")):
+            old_dir = os.curdir
+            # We need to run 'openspec init' first to install skills, but then
+            # we need to delete and recreate the openspec doc directory it creates
+            # in favor of a pointer to a shared store.
+            try:
+                os.chdir(directory)
+                subprocess.run(["openspec", "init", "--tools", "opencode"], capture_output=True, check=True)
+            finally:
+                os.chdir(old_dir)
+            shutil.rmtree(openspec_dir)
+        if not os.path.exists(openspec_dir):
+            os.makedirs(openspec_dir, exist_ok=True)
+            with open(os.path.join(openspec_dir, "config.yaml"), "w") as stream:
+                stream.write(f"store: {self.store}\n")

@@ -56,10 +56,16 @@ class Tool(ABC):
 
 class Environment(ABC):
     @staticmethod
-    def from_file(f: TextIO) -> Environment:
+    def load_config(f: TextIO) -> tuple[type[Environment], dict[str, Any]]:
+        """Load config and resolve the Environment class."""
         data = json.load(f)
         mod = importlib.import_module(data["module"])
         cls = getattr(mod, data["cls"])
+        return cls, data
+
+    @staticmethod
+    def from_file(f: TextIO) -> Environment:
+        cls, data = Environment.load_config(f)
         return cls.from_json_data(data)
 
     @classmethod
@@ -68,7 +74,7 @@ class Environment(ABC):
         raise NotImplementedError()
 
     @classmethod
-    def _read_tools(cls, data: dict[str, Any]) -> dict[str, Tool]:
+    def load_tools(cls, data: dict[str, Any]) -> dict[str, Tool]:
         result: dict[str, Tool] = {}
         for name, section in data.pop("tools", {}).items():
             mod = importlib.import_module(section.pop("module"))

@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterable
 from typing import TextIO
 
@@ -204,7 +205,14 @@ def rm(
     workspace.remove()
 
 
-@cli.command("sandbox-run")
+@cli.command(
+    "sandbox-run",
+    help=(
+        "Run the LLM agent sandbox. Autodetects mode from the current directory: "
+        "if a `.agent` subdirectory is present it runs in workspace mode; otherwise "
+        "it treats the current directory as a single git repository (single-repo mode)."
+    ),
+)
 @click.option(
     "-d",
     "--directory",
@@ -221,6 +229,11 @@ def rm(
     is_flag=True,
     help="Drop into an interactive shell in the sandbox instead of launching the agent command.",
 )
+@click.option(
+    "--conda-env",
+    type=str,
+    help="Activate this conda environment inside the sandbox before anything else.",
+)
 @click.option("-v", "--verbose", count=True)
 def sandbox_run(
     *,
@@ -228,20 +241,37 @@ def sandbox_run(
     directory: str | None,
     environment: TextIO | None,
     shell: bool = False,
+    conda_env: str | None = None,
     verbose: int = 0,
 ) -> None:
     _setup_logging(verbose)
     if environment is None:
         raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
-    env = Environment.from_file(environment)
-    workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
-    tool = env.get_tool("sandbox")
-    if tool is None:
-        raise click.UsageError("No 'sandbox' tool configured in the tkt environment.")
     from .sandbox import Sandbox
 
-    if not isinstance(tool, Sandbox):
-        raise click.UsageError(
-            f"Configured 'sandbox' tool is {type(tool).__name__}, not tkt.sandbox.Sandbox."
-        )
-    tool.run(workspace, shell=shell)
+    cwd = os.path.abspath(".")
+    if os.path.isdir(os.path.join(cwd, ".agent")):
+        # Workspace mode: existing behavior.
+        env = Environment.from_file(environment)
+        workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
+        tool = env.get_tool("sandbox")
+        if tool is None:
+            raise click.UsageError("No 'sandbox' tool configured in the tkt environment.")
+        if not isinstance(tool, Sandbox):
+            raise click.UsageError(
+                f"Configured 'sandbox' tool is {type(tool).__name__}, not tkt.sandbox.Sandbox."
+            )
+        tool.run(workspace, shell=shell)
+    else:
+        # Single-repo mode: treat the CWD as the repository root.
+        cls, data = Environment.load_config(environment)
+        tools = cls.load_tools(data)
+        sandbox = tools.get("sandbox")
+        if sandbox is None:
+            raise click.UsageError("No 'sandbox' tool configured in the tkt environment.")
+        if not isinstance(sandbox, Sandbox):
+            raise click.UsageError(
+                f"Configured 'sandbox' tool is {type(sandbox).__name__}, not tkt.sandbox.Sandbox."
+            )
+        repo_dir = directory if directory is not None else cwd
+        sandbox.run_single_repo(repo_dir, shell=shell, conda_env=conda_env)
