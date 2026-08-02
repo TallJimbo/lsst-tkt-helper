@@ -287,3 +287,48 @@ def sandbox_run(
             )
         repo_dir = directory if directory is not None else cwd
         sandbox.run_single_repo(repo_dir, shell=shell, conda_env=conda_env, command=cmd)
+
+
+@cli.command(
+    "sandbox-reset",
+    help=(
+        "Reset all `.agent` worktrees to the state of the corresponding "
+        "human-workspace branch. Uncommitted work is saved to the git stash; "
+        "unmerged agent commits are saved to a timestamped backup branch "
+        "(`<branch>-saved-<timestamp>`) before the reset."
+    ),
+)
+@click.option(
+    "-d",
+    "--directory",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+)
+@click.option("--ticket")
+@click.option(
+    "--environment",
+    envvar="TKT_ENVIRONMENT",
+    type=click.File(),
+)
+@click.option("-v", "--verbose", count=True)
+def sandbox_reset(
+    *,
+    ticket: str | None,
+    directory: str | None,
+    environment: TextIO | None,
+    verbose: int = 0,
+) -> None:
+    _setup_logging(verbose)
+    if environment is None:
+        raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
+    from .sandbox import Sandbox
+
+    env = Environment.from_file(environment)
+    workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
+    tool = env.get_tool("sandbox")
+    if tool is None:
+        raise click.UsageError("No 'sandbox' tool configured in the tkt environment.")
+    if not isinstance(tool, Sandbox):
+        raise click.UsageError(
+            f"Configured 'sandbox' tool is {type(tool).__name__}, not tkt.sandbox.Sandbox."
+        )
+    tool.reset(workspace)

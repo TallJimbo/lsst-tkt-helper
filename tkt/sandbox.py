@@ -31,6 +31,7 @@ import os
 import shlex
 import shutil
 from collections.abc import Iterable, Sequence
+from datetime import datetime
 from typing import Any
 
 import git
@@ -155,6 +156,56 @@ class Sandbox(Tool):
             repo.git.worktree("add", agent_package_dir, agent_branch)
         else:
             repo.git.worktree("add", "-b", agent_branch, agent_package_dir, source_branch)
+
+    def reset(self, workspace: Workspace) -> None:
+        """Restore every agent worktree to its human-workspace branch.
+
+        For each package with a worktree at ``<workspace>/.agent/<package>``,
+        save the agent's work before discarding it:
+
+        - Uncommitted work (staged, unstaged, untracked, and ignored files) is
+          pushed to the git stash with a message naming the package.
+        - Any commits on the agent branch not reachable from the human branch
+          are saved to a timestamped backup branch
+          ``<agent-branch>-saved-<%Y%m%dT%H%M%S>``.
+
+        Then the worktree is reset to the human branch
+        (``git reset --hard``) and cleaned of remaining untracked/ignored
+        files (``git clean -fdx``). Packages without a ``.agent/<package>``
+        worktree are skipped.
+        """
+        agent_dir = os.path.join(workspace.directory, AGENT_SUBDIR)
+        for package, human_branch in workspace.packages.items():
+            agent_package_dir = os.path.join(agent_dir, package)
+            if not os.path.exists(agent_package_dir):
+                logging.info(
+                    f"Skipping agent worktree for {package}: no .agent worktree at {agent_package_dir}."
+                )
+                continue
+            self._reset_agent_worktree(agent_package_dir, package, human_branch)
+
+    def _reset_agent_worktree(self, agent_package_dir: str, package: str, human_branch: str) -> None:
+        repo = git.Repo(agent_package_dir)
+        agent_branch = repo.active_branch.name
+        logging.info(f"Resetting agent worktree for {package} ({agent_branch}) to {human_branch}.")
+        # Save uncommitted work (staged, unstaged, untracked, and ignored)
+        # to the stash. `git stash push` is a no-op on a clean worktree
+        # (it reports "No local changes to save" and creates no entry), so it
+        # is safe to run unconditionally. `--all` also captures ignored files,
+        # which `git clean -fdx` below would otherwise delete.
+        repo.git.stash("push", "--all", "-m", f"tkt reset backup: {package}")
+        # Save any commits on the agent branch not reachable from the human
+        # branch to a uniquely-named backup branch so the reset does not
+        # discard them.
+        unmerged = repo.git.rev_list(f"{human_branch}..HEAD").split()
+        if unmerged:
+            backup = f"{agent_branch}-saved-{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+            repo.git.branch(backup, agent_branch)
+            logging.info(f"Saved unmerged commits to backup branch {backup}.")
+        # Restore the worktree to the state of the human branch.
+        repo.git.reset("--hard", human_branch)
+        repo.git.clean("-fdx")
+        logging.info(f"Reset {agent_branch} to {human_branch} and cleaned.")
 
     def run(
         self,

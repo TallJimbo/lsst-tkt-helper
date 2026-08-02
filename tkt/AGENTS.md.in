@@ -18,6 +18,10 @@ libraries (with Python bindings using `pybind11` or `pyo3`, respectively).
 You are operating in a sandbox with only the folders you need mounted.
 If a human refers to a file or directory you can't see, _stop and report this_.
 
+If the human runs `tkt sandbox-reset`, your worktree will be restored to the
+ticket branch: uncommitted work is saved to the git stash, and any commits not on
+the ticket branch are saved to a `<branch>-saved-<timestamp>` backup branch.
+
 ## Finding Repositories
 
 Repositories relevant for the ticket appear as subdirectories of `.agent/`
