@@ -278,6 +278,8 @@ class Workspace:
             os.path.join(self._directory, "ups", f"{self._workspace_eups_product}.table"),
             "w",
         ) as f:
+            tkt_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            f.write(f"setupRequired(tkt -r {tkt_dir})\n")
             f.write(f"setupRequired({self.metapackage_name} -t {self.metapackage_tag})\n")
             for product, path in self._externals.items():
                 f.write(f"setupRequired({product} -j -r {path})\n")

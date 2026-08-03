@@ -64,6 +64,15 @@
     "precommit": {
       "module": "tkt.precommit",
       "cls": "PreCommit"
+    },
+    "direnv": {
+      "module": "tkt.direnv",
+      "cls": "DirEnv",
+      "env": ["LSST_CONDA_ENV_NAME", "NVM_DIR"],
+      "scripts": [
+        "/home/jbosch/.nvm/nvm.sh",
+        "/home/jbosch/LSST/install/loadLSST.bash"
+      ]
     }
   }
 }

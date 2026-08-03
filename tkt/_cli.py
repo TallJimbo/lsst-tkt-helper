@@ -64,7 +64,11 @@ def cli() -> None:
     type=click.File(),
 )
 @click.option(
-    "--tool", "tools", multiple=True, default=("zed", "pyright", "sandbox", "precommit", "openspec"), type=str
+    "--tool",
+    "tools",
+    multiple=True,
+    default=("zed", "pyright", "sandbox", "precommit", "openspec", "direnv"),
+    type=str,
 )
 @click.option("-n", "--dry-run", is_flag=True)
 @click.option("-v", "--verbose", count=True)
