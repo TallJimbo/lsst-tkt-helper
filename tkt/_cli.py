@@ -64,11 +64,20 @@ def cli() -> None:
     type=click.File(),
 )
 @click.option(
-    "--tool",
-    "tools",
+    "--add-tool",
+    "add_tools",
     multiple=True,
-    default=("zed", "pyright", "sandbox", "precommit", "openspec", "direnv"),
+    default=(),
     type=str,
+    help="Add a tool to the new workspace in addition to the configured defaults.",
+)
+@click.option(
+    "--remove-tool",
+    "remove_tools",
+    multiple=True,
+    default=(),
+    type=str,
+    help="Remove a tool from the new workspace relative to the configured defaults.",
 )
 @click.option("-n", "--dry-run", is_flag=True)
 @click.option("-v", "--verbose", count=True)
@@ -81,7 +90,8 @@ def new(
     metapackage: str | None,
     workspace_eups_product: str | None,
     environment: TextIO | None,
-    tools: Iterable[str] = (),
+    add_tools: Iterable[str] = (),
+    remove_tools: Iterable[str] = (),
     dry_run: bool = False,
     verbose: int = 0,
 ) -> None:
@@ -90,6 +100,12 @@ def new(
         raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
     else:
         env = Environment.from_file(environment)
+    tools = env.default_tools
+    for name in add_tools:
+        if name not in tools:
+            tools = (*tools, name)
+    for name in remove_tools:
+        tools = tuple(t for t in tools if t != name)
     Workspace.new(
         ticket=ticket,
         packages=packages,
@@ -133,8 +149,25 @@ def update(
     else:
         env = Environment.from_file(environment)
     workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
+    missing = [t for t in env.default_tools if t not in workspace.tools]
+    stale = [t for t in workspace.tools if env.get_tool(t) is None]
+    if dry_run:
+        for t in missing:
+            logging.warning(f"Would ask to add missing default tool {t}.")
+        for t in stale:
+            logging.warning(f"Would remove unconfigured tool {t}.")
+        workspace.update(packages=packages, environment=env, dry_run=True)
+        return
+    for t in stale:
+        logging.warning(f"Removing tool {t} because it is no longer configured.")
+    workspace.remove_tools(stale)
+    additions: list[str] = []
+    if missing:
+        if click.confirm("Missing default tools: " + ", ".join(missing) + ". Add them?"):
+            additions = missing
     workspace.update(
         packages=packages,
+        tools=additions,
         environment=env,
         dry_run=dry_run,
     )

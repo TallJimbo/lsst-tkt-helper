@@ -89,6 +89,11 @@ class Environment(ABC):
 
     @property
     @abstractmethod
+    def default_tools(self) -> tuple[str, ...]:
+        raise NotImplementedError()
+
+    @property
+    @abstractmethod
     def default_tag(self) -> str:
         raise NotImplementedError()
 

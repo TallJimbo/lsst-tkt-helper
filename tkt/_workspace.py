@@ -87,6 +87,11 @@ class Workspace:
         """Names of the `Tool` objects configured for this workspace."""
         return self._tools
 
+    def remove_tools(self, tools: Iterable[str]) -> None:
+        """Remove tool names from this workspace's configured set."""
+        remove = set(tools)
+        self._tools = tuple(t for t in self._tools if t not in remove)
+
     @classmethod
     def from_directory(cls, directory: str) -> Workspace:
         directory = os.path.abspath(directory)
@@ -180,6 +185,7 @@ class Workspace:
         packages: Iterable[str],
         *,
         externals: Mapping[str, str] | None = None,
+        tools: Iterable[str] = (),
         environment: Environment,
         dry_run: bool = False,
     ) -> None:
@@ -191,6 +197,9 @@ class Workspace:
         )
         self._packages.update(packages)
         self._externals.update(externals)
+        for tool in tools:
+            if tool not in self._tools:
+                self._tools = (*self._tools, tool)
         for package in packages:
             self._checkout_package(package, environment, dry_run=dry_run)
         if not dry_run:

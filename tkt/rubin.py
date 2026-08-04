@@ -47,6 +47,7 @@ class RubinEnvironment(Environment):
         default_tag: str,
         externals: Mapping[str, str],
         tools: Mapping[str, Tool],
+        default_tools: tuple[str, ...],
     ):
         self._workspace_path = workspace_path
         with open(repos_yaml) as f:
@@ -55,6 +56,7 @@ class RubinEnvironment(Environment):
         self._externals = externals
         self._tools = tools
         self._default_tag = default_tag
+        self._default_tools = tuple(default_tools)
 
     @classmethod
     def from_json_data(cls, data: dict[str, Any]) -> Environment:
@@ -65,11 +67,16 @@ class RubinEnvironment(Environment):
             externals=data.get("externals", {}),
             tools=cls.load_tools(data),
             default_tag=data.get("default_tag", "w_latest"),
+            default_tools=tuple(data["default_tools"]),
         )
 
     @property
     def default_metapackage(self) -> str:
         return "lsst_distrib"
+
+    @property
+    def default_tools(self) -> tuple[str, ...]:
+        return self._default_tools
 
     @property
     def default_tag(self) -> str:
