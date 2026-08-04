@@ -279,6 +279,7 @@ class Workspace:
             "w",
         ) as f:
             tkt_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            f.write(f"envSet(TAB_TITLE, {self.ticket})\n")
             f.write(f"setupRequired(tkt -r {tkt_dir})\n")
             f.write(f"setupRequired({self.metapackage_name} -t {self.metapackage_tag})\n")
             for product, path in self._externals.items():
