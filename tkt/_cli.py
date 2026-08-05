@@ -33,6 +33,7 @@ import click
 
 from ._environment import Environment
 from ._workspace import Workspace
+from .openspec import OpenSpec
 
 
 def _setup_logging(verbose: int) -> None:
@@ -45,6 +46,33 @@ def _setup_logging(verbose: int) -> None:
 @click.group()
 def cli() -> None:
     pass
+
+
+@cli.command(
+    "fix-openspec",
+    help=(
+        "Rewrite OpenSpec skill files under DIR for OpenCode's harness. "
+        "Standalone (no environment required); DIR defaults to the current "
+        "directory. Exits with status 2 if no SKILL.md is found."
+    ),
+)
+@click.argument(
+    "directory",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    required=False,
+)
+@click.option("-n", "--dry-run", is_flag=True)
+@click.option("-v", "--verbose", count=True)
+def fix_openspec(directory: str | None, *, dry_run: bool = False, verbose: int = 0) -> None:
+    _setup_logging(verbose)
+    if directory is None:
+        directory = os.path.abspath(os.curdir)
+    result = OpenSpec.fix_skills(directory, dry_run=dry_run)
+    if result.files_found == 0:
+        click.echo(f"No SKILL.md files found under {directory}.", err=True)
+        raise SystemExit(2)
+    verb = "would be" if dry_run else "were"
+    click.echo(f"done: {result.files_changed} file(s) {verb} updated, {len(result.warnings)} warning(s)")
 
 
 @cli.command()

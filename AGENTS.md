@@ -38,6 +38,7 @@ mypy tkt/
 | `tkt/zed.py`          | `Zed` tool: writes Zed editor configuration into the workspace.                                                                                                                                 |
 | `tkt/pyright.py`      | `Pyright` tool: writes `pyrightconfig.json` into the workspace.                                                                                                                                 |
 | `tkt/precommit.py`    | `PreCommit` tool: installs pre-commit or prek git hooks when configuration files are present in packages.                                                                                       |
+| `tkt/openspec.py`     | `OpenSpec` tool: runs `openspec init` into the workspace and rewrites the generated `.opencode/skills/` files for OpenCode's harness (`fix_skills`, exposed via `tkt fix-openspec`).              |
 | `tkt/utils.py`        | JSON read/write helpers (uses `json5` for reading to allow trailing commas).                                                                                                                    |
 
 ## Configuration
