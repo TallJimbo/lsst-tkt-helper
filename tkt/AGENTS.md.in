@@ -18,6 +18,13 @@ libraries (with Python bindings using `pybind11` or `pyo3`, respectively).
 You are operating in a sandbox with only the folders you need mounted.
 If a human refers to a file or directory you can't see, _stop and report this_.
 
+This sandbox is network-**restricted** by default: only the bridged localhost
+LLM port (where the causal model serving you lives) is reachable. You have no
+general internet or DNS access. If a task genuinely requires network access
+(e.g. `pip install`, fetching remote git refs), do not try to work around the
+restriction; instead ask the human to rerun the sandbox with `tkt sandbox-run
+--network`.
+
 If the human runs `tkt sandbox-reset`, your worktree will be restored to the
 ticket branch: uncommitted work is saved to the git stash, and any commits not on
 the ticket branch are saved to a `<branch>-saved-<timestamp>` backup branch.

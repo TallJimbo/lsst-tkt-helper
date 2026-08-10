@@ -24,6 +24,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 
 import git
@@ -31,6 +33,11 @@ import pytest
 
 from tkt._workspace import Workspace
 from tkt.sandbox import Sandbox
+
+
+def _inner_of(argv):
+    """Return the inner bash script from a built bwrap argv."""
+    return argv[argv.index("--") + 3]
 
 
 @pytest.fixture
@@ -139,3 +146,91 @@ def test_reset_skips_package_without_agent_worktree(workspace, sandbox):
     repo = git.Repo(f"{workspace.directory}/pkg")
     repo.git.worktree("remove", f"{workspace.directory}/.agent/pkg")
     sandbox.reset(workspace)
+
+
+def test_restricted_argv_isolates_network_and_bridges(workspace, sandbox, tmp_path):
+    """Restricted mode isolates net and bridges the port."""
+    net_dir = tmp_path / "net"
+    net_dir.mkdir()
+    argv = sandbox._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), port=8080)
+    assert "--unshare-net" in argv
+    assert ("--bind", str(net_dir), str(net_dir)) in [tuple(argv[i : i + 3]) for i in range(len(argv) - 2)]
+    inner = _inner_of(argv)
+    assert "socat TCP4-LISTEN:8080,fork,reuseaddr UNIX-CONNECT:" in inner
+    assert f"{net_dir}/llm.sock" in inner
+
+
+def test_full_network_argv_shares_host_network(workspace, sandbox):
+    """Full-network mode omits --unshare-net and any bridge socket mount."""
+    argv = sandbox._build_bwrap_argv(workspace, shell=False, network=True)
+    assert "--unshare-net" not in argv
+    assert "llm.sock" not in argv
+    assert "socat TCP4-LISTEN" not in _inner_of(argv)
+
+
+def test_single_repo_network_modes(tmp_path, sandbox):
+    """Single-repo restricted vs. full differ like the workspace modes."""
+    net_dir = tmp_path / "net"
+    net_dir.mkdir()
+    restricted = sandbox._build_single_repo_argv(
+        str(tmp_path), shell=False, network=False, net_dir=str(net_dir), port=8080
+    )
+    assert "--unshare-net" in restricted
+    assert ("--bind", str(net_dir), str(net_dir)) in [
+        tuple(restricted[i : i + 3]) for i in range(len(restricted) - 2)
+    ]
+    full = sandbox._build_single_repo_argv(str(tmp_path), shell=False, network=True)
+    assert "--unshare-net" not in full
+    assert "llm.sock" not in full
+    assert "socat TCP4-LISTEN" not in _inner_of(full)
+
+
+def test_bridge_port_default_and_override(workspace, tmp_path):
+    """The bridge port defaults to 8080 and can be overridden via config."""
+    net_dir = tmp_path / "net"
+    net_dir.mkdir()
+
+    default = Sandbox(command=[])
+    inner = _inner_of(
+        default._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), port=8080)
+    )
+    assert "TCP4-LISTEN:8080" in inner
+
+    custom = Sandbox.from_json_data({"command": [], "port": 9999})
+    assert custom._port == 9999
+    inner = _inner_of(
+        custom._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), port=9999)
+    )
+    assert "TCP4-LISTEN:9999" in inner
+
+
+def test_from_json_data_accepts_network_flag():
+    """from_json_data parses the network boolean."""
+    restricted = Sandbox.from_json_data({"command": []})
+    assert restricted._network is False
+    full = Sandbox.from_json_data({"command": [], "network": True})
+    assert full._network is True
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data({"command": [], "network": "yes"})
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data({"command": [], "port": "8080"})
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data({"command": [], "port": True})
+
+
+@pytest.mark.skipif(shutil.which("socat") is None, reason="socat not installed")
+def test_bridge_lifecycle(tmp_path, monkeypatch):
+    """The host-side bridge starts a socat and tears it down cleanly."""
+    monkeypatch.setenv("HOME", str(tmp_path))  # state dir lands under tmp_path
+    sandbox = Sandbox(command=[], port=18089)
+
+    net_dir, proc = sandbox._start_bridge()
+    try:
+        assert os.path.isdir(net_dir)
+        assert os.path.exists(os.path.join(net_dir, "llm.sock"))
+        assert proc.poll() is None  # socat is alive
+    finally:
+        sandbox._stop_bridge(net_dir, proc)
+
+    assert proc.poll() is not None  # socat terminated
+    assert not os.path.exists(net_dir)  # socket dir removed

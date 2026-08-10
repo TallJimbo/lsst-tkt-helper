@@ -26,10 +26,15 @@ from __future__ import annotations
 
 __all__ = ("Sandbox",)
 
+import ctypes
 import logging
 import os
 import shlex
 import shutil
+import signal
+import subprocess
+import tempfile
+import time
 from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Any
@@ -48,6 +53,23 @@ AGENT_BRANCH_SUFFIX = "-agent"
 # Path to the AGENTS.md boilerplate template installed into the agent
 # directory to guide the LLM agent.
 _AGENTS_MD_TEMPLATE = os.path.join(os.path.dirname(__file__), "AGENTS.md.in")
+
+# Default host port bridged into restricted sandboxes; the LLM endpoint that
+# the agent reaches via localhost (backed by an ssh port-forward outside the
+# sandbox).  Overridable through the ``port`` configuration entry.
+_DEFAULT_PORT = 8080
+
+
+def _set_pdeathsig() -> None:
+    """Arrange for the current process to be SIGTERM'd when its parent dies.
+
+    Used as a ``preexec_fn`` for the host-side bridge ``socat`` so that even if
+    ``tkt`` is killed abruptly (e.g. SIGKILL/OOM), the kernel reaps the bridge
+    instead of leaving an orphaned forwarder and its socket behind.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    PR_SET_PDEATHSIG = 1
+    libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
 
 
 class Sandbox(Tool):
@@ -72,6 +94,17 @@ class Sandbox(Tool):
         same path.  ``~`` is expanded to ``$HOME``.
     env
         Extra environment variables to set inside the sandbox.
+    network
+        If ``True``, give the sandbox full, unrestricted network access by
+        sharing the host network namespace (the historical default).  If
+        ``False`` (the default), isolate the sandbox with ``--unshare-net``
+        and bridge a single localhost port (see ``port``) back to the host so
+        the LLM endpoint remains reachable while everything else is blocked.
+    port
+        Host port (default :data:`_DEFAULT_PORT`) bridged into the sandbox's
+        isolated network namespace so tools can reach the LLM via localhost.
+        Only used when ``network`` is ``False``.  The bridge connects to the
+        same port on the host's loopback (the ssh tunnel's listen port).
     """
 
     def __init__(
@@ -81,11 +114,15 @@ class Sandbox(Tool):
         mounts_ro: Sequence[str] = (),
         mounts_rw: Sequence[str] = (),
         env: dict[str, str] | None = None,
+        network: bool = False,
+        port: int = _DEFAULT_PORT,
     ):
         self._command = tuple(command)
         self._mounts_ro = tuple(mounts_ro)
         self._mounts_rw = tuple(mounts_rw)
         self._env = dict(env) if env is not None else {}
+        self._network = bool(network)
+        self._port = int(port)
 
     @classmethod
     def from_json_data(cls, data: dict[str, Any]) -> Tool:
@@ -98,6 +135,12 @@ class Sandbox(Tool):
         if mounts:
             raise ValueError(f"Unexpected entries in sandbox mounts configuration: {mounts}.")
         env = data.pop("env", {})
+        network = data.pop("network", False)
+        if not isinstance(network, bool):
+            raise ValueError(f"'network' must be a boolean, got {network!r}.")
+        port = data.pop("port", _DEFAULT_PORT)
+        if isinstance(port, bool) or not isinstance(port, int):
+            raise ValueError(f"'port' must be an integer, got {port!r}.")
         if data:
             raise ValueError(f"Unexpected entries in sandbox configuration: {data}.")
         return cls(
@@ -105,6 +148,8 @@ class Sandbox(Tool):
             mounts_ro=mounts_ro,
             mounts_rw=mounts_rw,
             env=env,
+            network=network,
+            port=port,
         )
 
     def write(
@@ -213,6 +258,7 @@ class Sandbox(Tool):
         *,
         shell: bool = False,
         command: str | None = None,
+        network: bool | None = None,
     ) -> None:
         """Launch the sandbox for ``workspace``.
 
@@ -227,10 +273,33 @@ class Sandbox(Tool):
         command
             If given, override the configured final command with this
             shlex-split string.  Mutually exclusive with ``shell``.
+        network
+            Override the configured network mode for this run; ``None`` uses
+            the value from configuration.  ``True`` grants full network
+            access; ``False`` restricts to the bridged localhost port.
         """
-        argv = self._build_bwrap_argv(workspace, shell=shell, command=command)
-        logging.debug("exec: %s", shlex.join(argv))
-        os.execvp(argv[0], argv)
+        if network is None:
+            network = self._network
+        if network:
+            argv = self._build_bwrap_argv(workspace, shell=shell, command=command, network=True)
+            logging.debug("exec: %s", shlex.join(argv))
+            os.execvp(argv[0], argv)
+        # Restricted mode: bridge the LLM port back to the host.
+        net_dir, host_socat = self._start_bridge()
+        try:
+            argv = self._build_bwrap_argv(
+                workspace,
+                shell=shell,
+                command=command,
+                network=False,
+                net_dir=net_dir,
+                port=self._port,
+            )
+            logging.debug("exec: %s", shlex.join(argv))
+            rc = subprocess.Popen(argv).wait()
+        finally:
+            self._stop_bridge(net_dir, host_socat)
+        raise SystemExit(rc)
 
     def run_single_repo(
         self,
@@ -239,6 +308,7 @@ class Sandbox(Tool):
         shell: bool = False,
         conda_env: str | None = None,
         command: str | None = None,
+        network: bool | None = None,
     ) -> None:
         """Launch the sandbox for a single repository (not a ticket workspace).
 
@@ -258,13 +328,120 @@ class Sandbox(Tool):
         command
             If given, override the configured final command with this
             shlex-split string.  Mutually exclusive with ``shell``.
+        network
+            Override the configured network mode for this run; ``None`` uses
+            the value from configuration.  ``True`` grants full network
+            access; ``False`` restricts to the bridged localhost port.
         """
-        argv = self._build_single_repo_argv(repo_dir, shell=shell, conda_env=conda_env, command=command)
-        logging.debug("exec: %s", shlex.join(argv))
-        os.execvp(argv[0], argv)
+        if network is None:
+            network = self._network
+        if network:
+            argv = self._build_single_repo_argv(
+                repo_dir, shell=shell, conda_env=conda_env, command=command, network=True
+            )
+            logging.debug("exec: %s", shlex.join(argv))
+            os.execvp(argv[0], argv)
+        net_dir, host_socat = self._start_bridge()
+        try:
+            argv = self._build_single_repo_argv(
+                repo_dir,
+                shell=shell,
+                conda_env=conda_env,
+                command=command,
+                network=False,
+                net_dir=net_dir,
+                port=self._port,
+            )
+            logging.debug("exec: %s", shlex.join(argv))
+            rc = subprocess.Popen(argv).wait()
+        finally:
+            self._stop_bridge(net_dir, host_socat)
+        raise SystemExit(rc)
+
+    def _start_bridge(self) -> tuple[str, subprocess.Popen[Any]]:
+        """Start the host-side bridge for a restricted sandbox.
+
+        Creates a private directory for the shared unix socket under the
+        user's state directory and launches a host-side ``socat`` that accepts
+        connections on the unix socket (visible inside the sandbox via a
+        read-write bind mount) and forwards them to the host's localhost
+        ``port`` (where an ssh port-forward exposes the LLM).
+
+        Returns the socket directory and the host ``socat`` subprocess.
+        """
+        state_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "tkt")
+        os.makedirs(state_dir, exist_ok=True)
+        net_dir = tempfile.mkdtemp(prefix="net-", dir=state_dir)
+        sock = os.path.join(net_dir, "llm.sock")
+        log = os.path.join(net_dir, "host-socat.log")
+        try:
+            with open(log, "w", encoding="utf-8") as f:
+                proc = subprocess.Popen(
+                    ["socat", f"UNIX-LISTEN:{sock},fork", f"TCP4:127.0.0.1:{self._port}"],
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    # Isolate the forwarder in its own process group (so we can
+                    # signal its forked children during teardown) and arrange
+                    # for it to be SIGTERM'd if we are killed abruptly.
+                    start_new_session=True,
+                    preexec_fn=_set_pdeathsig,
+                )
+            # Wait for the listener to create its socket before the sandbox's
+            # socat tries to connect, so there is no startup race.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if os.path.exists(sock):
+                    break
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.05)
+            if proc.poll() is not None:
+                tail = ""
+                try:
+                    with open(log, encoding="utf-8") as f:
+                        tail = f.read().strip()
+                except OSError:
+                    pass
+                detail = f": {tail}" if tail else ""
+                raise RuntimeError(
+                    f"host socat for sandbox bridge exited early (rc={proc.returncode}){detail}"
+                )
+            if not os.path.exists(sock):
+                raise RuntimeError(f"host socat did not create socket {sock}")
+        except BaseException:
+            shutil.rmtree(net_dir, ignore_errors=True)
+            raise
+        return net_dir, proc
+
+    def _stop_bridge(self, net_dir: str, proc: subprocess.Popen[Any]) -> None:
+        """Tear down the host-side bridge and remove its socket directory."""
+        # The socat is its own session/process-group leader (start_new_session
+        # in _start_bridge), so its pgid equals its pid; signal the whole group
+        # to also reach any processes forked by socat's `,fork`.
+        try:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                # The process group may already be gone (e.g. abnormal exit).
+                proc.terminate()
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            proc.wait()
+        shutil.rmtree(net_dir, ignore_errors=True)
 
     def _build_bwrap_argv(
-        self, workspace: Workspace, *, shell: bool, command: str | None = None
+        self,
+        workspace: Workspace,
+        *,
+        shell: bool,
+        command: str | None = None,
+        network: bool = True,
+        net_dir: str | None = None,
+        port: int = _DEFAULT_PORT,
     ) -> list[str]:
         home = os.path.expanduser("~")
         agent_dir = os.path.join(workspace.directory, AGENT_SUBDIR)
@@ -288,7 +465,9 @@ class Sandbox(Tool):
             else:
                 logging.warning(f"External path {external_path} does not exist; skipping mount.")
         inner = self._build_inner_script(shell=shell, command=command)
-        return self._build_common_argv(home=home, mounts=mounts, inner=inner)
+        return self._build_common_argv(
+            home=home, mounts=mounts, inner=inner, network=network, net_dir=net_dir, port=port
+        )
 
     def _build_single_repo_argv(
         self,
@@ -297,15 +476,29 @@ class Sandbox(Tool):
         shell: bool,
         conda_env: str | None = None,
         command: str | None = None,
+        network: bool = True,
+        net_dir: str | None = None,
+        port: int = _DEFAULT_PORT,
     ) -> list[str]:
         home = os.path.expanduser("~")
         # The whole repository is writable by the agent; no separate .git
         # handling is needed since there are no per-package worktrees.
         mounts: list[str] = ["--bind", repo_dir, repo_dir]
         inner = self._build_inner_script(shell=shell, conda_env=conda_env, repo_dir=repo_dir, command=command)
-        return self._build_common_argv(home=home, mounts=mounts, inner=inner)
+        return self._build_common_argv(
+            home=home, mounts=mounts, inner=inner, network=network, net_dir=net_dir, port=port
+        )
 
-    def _build_common_argv(self, *, home: str, mounts: list[str], inner: str) -> list[str]:
+    def _build_common_argv(
+        self,
+        *,
+        home: str,
+        mounts: list[str],
+        inner: str,
+        network: bool = True,
+        net_dir: str | None = None,
+        port: int = _DEFAULT_PORT,
+    ) -> list[str]:
         argv: list[str] = [
             "bwrap",
             "--ro-bind",
@@ -329,6 +522,20 @@ class Sandbox(Tool):
         ]
         # Mode-specific mounts go between the base and config mounts.
         argv += mounts
+        if not network:
+            if net_dir is None or not os.path.isdir(net_dir):
+                raise ValueError("restricted network requires a valid net_dir socket directory")
+            # Share the bridge socket directory read-write with the sandbox.
+            argv += ["--bind", net_dir, net_dir]
+            # Start the in-sandbox socat first so the agent's localhost:<port>
+            # reaches the host bridge.  Background it (the inner script ends
+            # with `exec`), and redirect its logs into the shared net_dir.
+            sock_path = shlex.quote(os.path.join(net_dir, "llm.sock"))
+            log_path = shlex.quote(os.path.join(net_dir, "sandbox-socat.log"))
+            inner = (
+                f"socat TCP4-LISTEN:{port},fork,reuseaddr "
+                f"UNIX-CONNECT:{sock_path} >{log_path} 2>&1 &\n" + inner
+            )
         # Track destinations already mounted read-write (from the mode-specific
         # mounts and the configured rw mounts) so we can avoid re-mounting them
         # read-only, which would override the rw mount and make it read-only.
@@ -346,16 +553,20 @@ class Sandbox(Tool):
         # Extra environment variables from configuration.
         for name, value in self._env.items():
             argv += ["--setenv", name, value]
-        # Namespaces and cleanup.  Note: --unshare-net is intentionally
-        # absent -- OpenCode needs to reach the LLM API.
+        # Namespaces and cleanup.  Network access is isolated by default: only
+        # the bridged localhost port is reachable from the agent.  When full
+        # network access is requested we deliberately omit --unshare-net so the
+        # sandbox shares the host's network namespace.
         argv += [
             "--unshare-user",
             "--unshare-ipc",
             "--unshare-uts",
             "--unshare-cgroup-try",
             "--die-with-parent",
-            "--",
         ]
+        if not network:
+            argv += ["--unshare-net"]
+        argv += ["--"]
         argv += ["/bin/bash", "-c", inner]
         return argv
 

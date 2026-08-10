@@ -308,6 +308,17 @@ def rm(
         "Mutually exclusive with --shell."
     ),
 )
+@click.option(
+    "--network",
+    is_flag=True,
+    default=None,
+    help=(
+        "Run with full, unrestricted network access (shared host network "
+        "namespace). By default the sandbox is network-restricted: only the "
+        "bridged localhost LLM port is reachable. If not given, the sandbox "
+        "tool's configured 'network' value is used."
+    ),
+)
 @click.option("-v", "--verbose", count=True)
 def sandbox_run(
     *,
@@ -317,6 +328,7 @@ def sandbox_run(
     shell: bool = False,
     conda_env: str | None = None,
     cmd: str | None = None,
+    network: bool | None = None,
     verbose: int = 0,
 ) -> None:
     _setup_logging(verbose)
@@ -338,7 +350,7 @@ def sandbox_run(
             raise click.UsageError(
                 f"Configured 'sandbox' tool is {type(tool).__name__}, not tkt.sandbox.Sandbox."
             )
-        tool.run(workspace, shell=shell, command=cmd)
+        tool.run(workspace, shell=shell, command=cmd, network=network)
     else:
         # Single-repo mode: treat the CWD as the repository root.
         cls, data = Environment.load_config(environment)
@@ -351,7 +363,7 @@ def sandbox_run(
                 f"Configured 'sandbox' tool is {type(sandbox).__name__}, not tkt.sandbox.Sandbox."
             )
         repo_dir = directory if directory is not None else cwd
-        sandbox.run_single_repo(repo_dir, shell=shell, conda_env=conda_env, command=cmd)
+        sandbox.run_single_repo(repo_dir, shell=shell, conda_env=conda_env, command=cmd, network=network)
 
 
 @cli.command(
