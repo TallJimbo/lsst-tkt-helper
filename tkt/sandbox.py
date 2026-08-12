@@ -587,10 +587,11 @@ class Sandbox(Tool):
                 "|| source $(dirname $(dirname $(which conda)))/etc/profile.d/conda.sh"
             )
             lines.append(f"conda activate {conda_env}")
-        # `setup -r .` runs unconditionally for workspace mode (repo_dir is
-        # None) since the workspace always has an ups/; in single-repo mode it
-        # only runs when the repository actually contains an ups/ directory.
-        if repo_dir is None or os.path.isdir(os.path.join(repo_dir, "ups")):
+        if repo_dir is None:
+            # in workspace mode, set up the .agent tree
+            lines += ["exec", "setup -r .agent"]
+        elif os.path.isdir(os.path.join(repo_dir, "ups")):
+            # in standalone mode, if there is a ups directory, set that up.
             lines += ["exec", "setup -r ."]
         if shell:
             lines.append("exec /bin/bash --login -i")
