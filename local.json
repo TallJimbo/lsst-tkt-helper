@@ -60,6 +60,7 @@
           "~/.local/share/opencode",
           "~/.local/share/openspec",
           "~/.cache/opencode",
+          "~/.cache/prek",
           "~/.eups",
           "~/LSST/openspec"
         ]

@@ -106,8 +106,12 @@ class PreCommit(Tool):
                 )
             executable = "pre-commit"
         logging.info(f"Installing {executable} hooks for {package}.")
+        # Pre-install the hook environments (in addition to registering the
+        # hook shim) so that an agent's first commit in the network-restricted
+        # sandbox can run the hooks without downloading their dependencies.
+        install_flag = "--prepare-hooks" if use_prek else "--install-hooks"
         result = subprocess.run(
-            [executable, "install"],
+            [executable, "install", install_flag],
             cwd=package_dir,
             capture_output=True,
             text=True,
