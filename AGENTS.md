@@ -30,11 +30,12 @@ mypy tkt/
 | File                  | Role                                                                                                                                                                                            |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `tkt/__init__.py`     | Public API exports: `cli`, `Environment`, `Workspace`.                                                                                                                                          |
-| `tkt/_cli.py`         | Click-based CLI commands: `new`, `update`, `upgrade-metapackage`, `rm`, `agent-run`.                                                                                                            |
+| `tkt/_cli.py`         | Click-based CLI commands: `new`, `update`, `upgrade-metapackage`, `rm`, `agent-run` (as `sandbox-run`), `sandbox-reset`, `pull-sandbox`.                                                              |
 | `tkt/_environment.py` | Abstract base classes `Environment` and `Tool`. `Environment` is subclassed per observatory (e.g. `RubinEnvironment`); `Tool` is subclassed per integration (e.g. `Zed`, `Pyright`, `Sandbox`). |
 | `tkt/_workspace.py`   | `Workspace` class: manages the git/EUPS workspace lifecycle (create, update, upgrade metapackage, remove).                                                                                      |
 | `tkt/rubin.py`        | `RubinEnvironment`: LSST DM-specific `Environment` subclass. Reads `repos.yaml` for package origins.                                                                                            |
 | `tkt/sandbox.py`      | `Sandbox` tool: runs an LLM agent inside a `bwrap` sandbox with a read-only view of the human's worktree and a writable git worktree on a separate branch.                                      |
+| `tkt/pull.py`         | `Pull` helper: implements `tkt pull-sandbox`, transferring committed and/or uncommitted agent work from `.agent/<pkg>` worktrees onto human-workspace branches, with a resumable `--finish`/`--abort` lifecycle and a per-workspace ledger. |
 | `tkt/zed.py`          | `Zed` tool: writes Zed editor configuration into the workspace.                                                                                                                                 |
 | `tkt/pyright.py`      | `Pyright` tool: writes `pyrightconfig.json` into the workspace.                                                                                                                                 |
 | `tkt/precommit.py`    | `PreCommit` tool: installs pre-commit or prek git hooks when configuration files are present in packages.                                                                                       |
@@ -50,4 +51,5 @@ mypy tkt/
 
 ## Testing
 
-No tests currently exist. Future tests should use `pytest`.
+Uses `pytest` (`tests/`) for git-worktree behaviors; see `tests/test_sandbox.py`
+and `tests/test_pull.py`. Run with `python -m pytest`.

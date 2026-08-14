@@ -367,6 +367,94 @@ def sandbox_run(
 
 
 @cli.command(
+    "pull-sandbox",
+    help=(
+        "Transfer work from `.agent` worktrees onto the human-workspace "
+        "branches. Committed agent work is classified and fast-forwarded or "
+        "snapshotted + interactively rebased; uncommitted work is transferred "
+        "as unstaged changes. Use -f/--finish to finalize an in-progress sync "
+        "or -a/--abort to cancel it. Use -s/--skip-uncommitted or "
+        "-o/--only-uncommitted to process one side of a mixed package."
+    ),
+)
+@click.option(
+    "-d",
+    "--directory",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+)
+@click.option("--ticket")
+@click.option(
+    "--environment",
+    envvar="TKT_ENVIRONMENT",
+    type=click.File(),
+)
+@click.option(
+    "-s",
+    "--skip-uncommitted",
+    is_flag=True,
+    help="Transfer committed work only, deferring any dirty agent worktree.",
+)
+@click.option(
+    "-o",
+    "--only-uncommitted",
+    is_flag=True,
+    help="Transfer uncommitted work only (committed side assumed reconciled).",
+)
+@click.option(
+    "-f",
+    "--finish",
+    is_flag=True,
+    help="Finalize an in-progress pull-sandbox sync across all packages.",
+)
+@click.option(
+    "-a",
+    "--abort",
+    is_flag=True,
+    help="Cancel an in-progress pull-sandbox sync across all packages.",
+)
+@click.option("-n", "--dry-run", is_flag=True)
+@click.option("-v", "--verbose", count=True)
+def pull_sandbox(
+    *,
+    ticket: str | None,
+    directory: str | None,
+    environment: TextIO | None,
+    skip_uncommitted: bool = False,
+    only_uncommitted: bool = False,
+    finish: bool = False,
+    abort: bool = False,
+    dry_run: bool = False,
+    verbose: int = 0,
+) -> None:
+    _setup_logging(verbose)
+    if skip_uncommitted and only_uncommitted:
+        raise click.UsageError("--skip-uncommitted and --only-uncommitted are mutually exclusive.")
+    if finish and abort:
+        raise click.UsageError("--finish and --abort are mutually exclusive.")
+    if (finish or abort) and (skip_uncommitted or only_uncommitted):
+        raise click.UsageError(
+            "--finish/--abort cannot be combined with --skip-uncommitted/--only-uncommitted."
+        )
+    if environment is None:
+        raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
+    from .pull import Pull
+
+    env = Environment.from_file(environment)
+    workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
+    if abort:
+        Pull.abort(workspace, dry_run=dry_run)
+    elif finish:
+        Pull.finish(workspace, dry_run=dry_run)
+    else:
+        Pull.run(
+            workspace,
+            skip_uncommitted=skip_uncommitted,
+            only_uncommitted=only_uncommitted,
+            dry_run=dry_run,
+        )
+
+
+@cli.command(
     "sandbox-reset",
     help=(
         "Reset all `.agent` worktrees to the state of the corresponding "
