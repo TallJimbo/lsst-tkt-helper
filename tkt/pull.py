@@ -447,11 +447,13 @@ class Pull:
         assert st.agent_dir is not None
         logger = logging.getLogger(__name__)
         # 1. Capture dirty agent worktree and untracked files as a WIP commit.
+        #    --no-verify skips the package's pre-commit hooks on this temporary
+        #    commit; they must not be able to fail the transfer.
         pre_wip_human = st.H
         pre_wip_agent = st.A
         assert pre_wip_agent is not None
         st.agent_repo.git.add("-A")
-        st.agent_repo.git.commit("-m", _WIP_COMMIT_MESSAGE)
+        st.agent_repo.git.commit("-m", _WIP_COMMIT_MESSAGE, no_verify=True)
         wip = st.agent_repo.head.commit.hexsha
         # 2. Apply the WIP delta onto the human branch via cherry-pick.
         try:
@@ -474,6 +476,10 @@ class Pull:
             return
         # 3. Expose the applied work as unstaged changes.
         st.human_repo.git.reset("--mixed", pre_wip_human)
+        # 4. Drop the temporary WIP commit from the agent branch; the agent
+        #    worktree returns to its original uncommitted/untracked state (the
+        #    human branch now holds a copy of the work).
+        st.agent_repo.git.reset("--mixed", pre_wip_agent)
         logger.info(f"{pkg}: transferred uncommitted work as unstaged changes.")
 
     @classmethod
@@ -522,11 +528,19 @@ class Pull:
             # aborting a still-in-progress cherry-pick/rebase first keeps the
             # final reset clean (Decision 5). The underlying work survives in
             # the agent's WIP commit.
+            cp_in_progress = _is_cherry_pick_in_progress(st.human_repo)
             if _is_rebase_in_progress(st.human_repo):
                 st.human_repo.git.rebase("--abort")
-            if _is_cherry_pick_in_progress(st.human_repo):
+            if cp_in_progress:
                 st.human_repo.git.cherry_pick("--abort")
             st.human_repo.git.reset("--mixed", state.pending_uncommitted_finalize)
+            # Drop the temporary WIP commit from the agent branch, but only if
+            # the transfer actually completed (the human-side cherry-pick was
+            # continued). If --finish had to abandon an in-progress cherry-pick
+            # above, the agent's WIP commit is the only surviving copy of the
+            # work, and must be kept.
+            if state.agent_pre_wip and not cp_in_progress and st.agent_repo is not None:
+                st.agent_repo.git.reset("--mixed", state.agent_pre_wip)
 
     @classmethod
     def _offer_sandbox_reset(cls, workspace: Workspace, pkg: str, state: _State) -> None:

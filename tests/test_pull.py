@@ -32,7 +32,13 @@ import git
 import pytest
 
 from tkt._workspace import Workspace
-from tkt.pull import Pull, PullError, _is_cherry_pick_in_progress, _is_rebase_in_progress
+from tkt.pull import (
+    _WIP_COMMIT_MESSAGE,
+    Pull,
+    PullError,
+    _is_cherry_pick_in_progress,
+    _is_rebase_in_progress,
+)
 
 
 @pytest.fixture
@@ -106,6 +112,7 @@ def test_uncommitted_transfer_as_staged_restore(workspace):
     agent.config_writer().set_value("user", "name", "agent").release()
     agent.config_writer().set_value("user", "email", "agent@agent").release()
     pre = _human(workspace).head.commit
+    agent_pre = _agent(workspace).head.commit
     (_agent_dir(workspace) / "file1.txt").write_text("file1\nhuman change\nagent edit\n")
     (_agent_dir(workspace) / "untracked.txt").write_text("untracked\n")
 
@@ -119,6 +126,31 @@ def test_uncommitted_transfer_as_staged_restore(workspace):
     assert human.is_dirty(untracked_files=True)
     # The untracked file is not staged.
     assert "untracked.txt" not in human.git.diff("--cached", "--name-only")
+    # The temporary WIP commit is removed from the agent branch: it is back at
+    # its pre-WIP tip and the work is uncommitted/untracked there again.
+    agent = _agent(workspace)
+    assert agent.head.commit == agent_pre
+    assert _WIP_COMMIT_MESSAGE not in agent.git.log("--format=%s")
+    assert agent.is_dirty(untracked_files=True)
+
+
+def test_uncommitted_transfer_skips_failing_pre_commit_hook(workspace):
+    """A failing pre-commit hook must not block the uncommitted transfer."""
+    human = _human(workspace)
+    hooks = Path(human.git_dir) / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+    os.chmod(hooks / "pre-commit", 0o755)
+    agent = _agent(workspace)
+    agent.config_writer().set_value("user", "name", "agent").release()
+    agent.config_writer().set_value("user", "email", "agent@agent").release()
+    (_agent_dir(workspace) / "file1.txt").write_text("file1\nhuman change\nagent edit\n")
+
+    Pull.run(workspace)
+
+    human = _human(workspace)
+    assert human.is_dirty(untracked_files=True)
+    assert (Path(f"{workspace.directory}/pkg/file1.txt")).read_text() == ("file1\nhuman change\nagent edit\n")
 
 
 def test_diverged_interactive_rebase(workspace, monkeypatch):
@@ -339,6 +371,7 @@ def test_uncommitted_conflict_resolved_then_finish(workspace, monkeypatch):
     human.git.commit("-m", "human extra")
     my_human = _human(workspace)
     pre = my_human.head.commit
+    agent_pre = _agent(workspace).head.commit
     (_agent_dir(workspace) / "file1.txt").write_text("file1\nhuman change\nagent wip\n")
 
     Pull.run(workspace)
@@ -359,6 +392,44 @@ def test_uncommitted_conflict_resolved_then_finish(workspace, monkeypatch):
     assert human.is_dirty(untracked_files=True)
     assert (human_dir / "file1.txt").read_text() == "file1\nhuman change\nexpected merged value\n"
     assert not os.path.exists(f"{workspace.directory}/.pull-sandbox.json")
+    # The temporary WIP commit is removed from the agent branch after finish.
+    agent = _agent(workspace)
+    assert agent.head.commit == agent_pre
+    assert _WIP_COMMIT_MESSAGE not in agent.git.log("--format=%s")
+
+
+def test_finish_abandoning_pending_cherry_pick_keeps_wip(workspace):
+    """--finish while the cherry-pick is in progress keeps the agent WIP."""
+    human = _human(workspace)
+    human_dir = Path(f"{workspace.directory}/pkg")
+    (human_dir / "file1.txt").write_text("file1\nhuman change\nhuman extra\n")
+    human.git.add("file1.txt")
+    human.git.commit("-m", "human extra")
+    my_human = _human(workspace)
+    pre = my_human.head.commit
+    agent_pre = _agent(workspace).head.commit
+    (_agent_dir(workspace) / "file1.txt").write_text("file1\nhuman change\nagent wip\n")
+
+    Pull.run(workspace)
+    human = _human(workspace)
+    assert _is_cherry_pick_in_progress(human)
+    wip = _agent(workspace).head.commit
+
+    # --finish without resolving/continuing abandons the in-progress
+    # cherry-pick.
+    Pull.finish(workspace)
+
+    human = _human(workspace)
+    assert human.head.commit == pre
+    assert not _is_cherry_pick_in_progress(human)
+    assert not os.path.exists(f"{workspace.directory}/.pull-sandbox.json")
+    # The agent's WIP commit is the only surviving copy of the work, so it is
+    # kept (the agent branch is not reset back to its pre-WIP tip).
+    agent = _agent(workspace)
+    assert agent.head.commit == wip
+    assert agent.head.commit != agent_pre
+    assert _WIP_COMMIT_MESSAGE in agent.git.log("--format=%s")
+    assert (Path(_agent_dir(workspace) / "file1.txt")).read_text() == ("file1\nhuman change\nagent wip\n")
 
 
 def test_finish_refuses_while_diverged_rebase_in_progress(workspace, monkeypatch):
