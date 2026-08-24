@@ -19,7 +19,7 @@
     "pyright",
     "sandbox",
     "precommit",
-    "openspec",
+    "superpowers",
     "direnv"
   ],
   "tools": {
@@ -35,6 +35,11 @@
       "module": "tkt.openspec",
       "cls": "OpenSpec",
       "store": "lsst"
+    },
+    "superpowers": {
+      "module": "tkt.superpowers",
+      "cls": "Superpowers",
+      "path": "/home/jbosch/LSST/superpowers-docs"
     },
     "sandbox": {
       "module": "tkt.sandbox",
@@ -62,7 +67,8 @@
           "~/.cache/opencode",
           "~/.cache/prek",
           "~/.eups",
-          "~/LSST/openspec"
+          "~/LSST/openspec",
+          "~/LSST/superpowers-docs"
         ]
       },
       "env": {

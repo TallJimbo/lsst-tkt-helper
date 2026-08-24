@@ -204,7 +204,7 @@ class Workspace:
             self._checkout_package(package, environment, dry_run=dry_run)
         if not dry_run:
             self._write_description()
-            self._write_eups_table()
+            self._write_eups_table(environment)
             self._write_tools(environment)
 
     def upgrade_metapackage(
@@ -223,7 +223,7 @@ class Workspace:
             logging.info(f"Changing EUPS base tag to {tag}.")
         if not dry_run:
             self._write_description()
-            self._write_eups_table()
+            self._write_eups_table(environment)
             self._write_tools(environment)
 
     def remove(self) -> None:
@@ -262,7 +262,7 @@ class Workspace:
         for package in self._packages:
             self._checkout_package(package, environment, dry_run=dry_run)
         if not dry_run:
-            self._write_eups_table()
+            self._write_eups_table(environment)
             self._write_tools(environment)
 
     def _write_description(self) -> None:
@@ -281,7 +281,7 @@ class Workspace:
                 indent=2,
             )
 
-    def _write_eups_table(self) -> None:
+    def _write_eups_table(self, environment: Environment) -> None:
         os.makedirs(os.path.join(self._directory, "ups"), exist_ok=True)
         with open(
             os.path.join(self._directory, "ups", f"{self._workspace_eups_product}.table"),
@@ -299,6 +299,11 @@ class Workspace:
                     f.write(f"setupRequired({product} -j -r ${{PRODUCT_DIR}}/{product})\n")
                 else:
                     logging.info(f"Skipping setup line for {product} because {path} does not exist.")
+            for name in self._tools:
+                tool = environment.get_tool(name)
+                if tool is not None:
+                    for line in tool.eups_env_lines(self.ticket):
+                        f.write(line + "\n")
 
     def _write_tools(self, environment: Environment) -> None:
         for name in self._tools:

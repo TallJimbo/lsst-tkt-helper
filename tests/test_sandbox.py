@@ -26,13 +26,15 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+import time
 from pathlib import Path
 
 import git
 import pytest
 
 from tkt._workspace import Workspace
-from tkt.sandbox import Sandbox
+from tkt.sandbox import Sandbox, _bridge_net_dir, cleanup_stale_bridges
 
 
 def _inner_of(argv):
@@ -149,7 +151,7 @@ def test_reset_skips_package_without_agent_worktree(workspace, sandbox):
 
 
 def test_restricted_argv_isolates_network_and_bridges(workspace, sandbox, tmp_path):
-    """Restricted mode isolates net and bridges the port."""
+    """Restricted mode isolates net and bridges the port and companion port."""
     net_dir = tmp_path / "net"
     net_dir.mkdir()
     argv = sandbox._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), port=8080)
@@ -158,6 +160,9 @@ def test_restricted_argv_isolates_network_and_bridges(workspace, sandbox, tmp_pa
     inner = _inner_of(argv)
     assert "socat TCP4-LISTEN:8080,fork,reuseaddr UNIX-CONNECT:" in inner
     assert f"{net_dir}/llm.sock" in inner
+    # Reverse bridge: host -> sandbox for the visual companion.
+    assert f"socat UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:8081" in inner
+    assert f"{net_dir}/vc.sock" in inner
 
 
 def test_full_network_argv_shares_host_network(workspace, sandbox):
@@ -165,6 +170,7 @@ def test_full_network_argv_shares_host_network(workspace, sandbox):
     argv = sandbox._build_bwrap_argv(workspace, shell=False, network=True)
     assert "--unshare-net" not in argv
     assert "llm.sock" not in argv
+    assert "vc.sock" not in argv
     assert "socat TCP4-LISTEN" not in _inner_of(argv)
 
 
@@ -179,9 +185,11 @@ def test_single_repo_network_modes(tmp_path, sandbox):
     assert ("--bind", str(net_dir), str(net_dir)) in [
         tuple(restricted[i : i + 3]) for i in range(len(restricted) - 2)
     ]
+    assert f"socat UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:8081" in _inner_of(restricted)
     full = sandbox._build_single_repo_argv(str(tmp_path), shell=False, network=True)
     assert "--unshare-net" not in full
     assert "llm.sock" not in full
+    assert "vc.sock" not in full
     assert "socat TCP4-LISTEN" not in _inner_of(full)
 
 
@@ -195,6 +203,7 @@ def test_bridge_port_default_and_override(workspace, tmp_path):
         default._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), port=8080)
     )
     assert "TCP4-LISTEN:8080" in inner
+    assert f"UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:8081" in inner
 
     custom = Sandbox.from_json_data({"command": [], "port": 9999})
     assert custom._port == 9999
@@ -202,6 +211,23 @@ def test_bridge_port_default_and_override(workspace, tmp_path):
         custom._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), port=9999)
     )
     assert "TCP4-LISTEN:9999" in inner
+
+
+def test_vc_port_default_and_override(workspace, tmp_path):
+    """The companion port defaults to 8081 and can be overridden via config."""
+    net_dir = tmp_path / "net"
+    net_dir.mkdir()
+
+    default = Sandbox(command=[])
+    inner = _inner_of(default._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir)))
+    assert f"UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:8081" in inner
+
+    custom = Sandbox.from_json_data({"command": [], "vc_port": 9090})
+    assert custom._vc_port == 9090
+    inner = _inner_of(
+        custom._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), vc_port=9090)
+    )
+    assert f"UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:9090" in inner
 
 
 def test_from_json_data_accepts_network_flag():
@@ -216,21 +242,78 @@ def test_from_json_data_accepts_network_flag():
         Sandbox.from_json_data({"command": [], "port": "8080"})
     with pytest.raises(ValueError):
         Sandbox.from_json_data({"command": [], "port": True})
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data({"command": [], "vc_port": "8081"})
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data({"command": [], "vc_port": True})
 
 
 @pytest.mark.skipif(shutil.which("socat") is None, reason="socat not installed")
 def test_bridge_lifecycle(tmp_path, monkeypatch):
-    """The host-side bridge starts a socat and tears it down cleanly."""
+    """The host-side bridges start socats and tear them down cleanly."""
     monkeypatch.setenv("HOME", str(tmp_path))  # state dir lands under tmp_path
-    sandbox = Sandbox(command=[], port=18089)
+    sandbox = Sandbox(command=[], port=18089, vc_port=18090)
 
-    net_dir, proc = sandbox._start_bridge()
+    net_dir, procs = sandbox._start_bridge()
     try:
         assert os.path.isdir(net_dir)
         assert os.path.exists(os.path.join(net_dir, "llm.sock"))
-        assert proc.poll() is None  # socat is alive
+        assert len(procs) == 2
+        assert all(proc.poll() is None for proc in procs)  # both socats alive
     finally:
-        sandbox._stop_bridge(net_dir, proc)
+        sandbox._stop_bridge(net_dir, procs)
 
-    assert proc.poll() is not None  # socat terminated
+    assert all(proc.poll() is not None for proc in procs)  # socats terminated
     assert not os.path.exists(net_dir)  # socket dir removed
+
+
+def test_bridge_net_dir_extracts_from_argv():
+    """_bridge_net_dir parses the shared net dir out of bridge socat argv."""
+    host = [
+        "socat",
+        "TCP4-LISTEN:8080,fork,reuseaddr",
+        "UNIX-CONNECT:/home/jbosch/.local/state/tkt/net-abc123/llm.sock",
+    ]
+    assert _bridge_net_dir(host) == "net-abc123"
+    sandbox_side = [
+        "socat",
+        "UNIX-LISTEN:/home/jbosch/.local/state/tkt/net-abc123/vc.sock,fork",
+        "TCP4:127.0.0.1:8081",
+    ]
+    assert _bridge_net_dir(sandbox_side) == "net-abc123"
+    # Non-bridge or unrelated processes carry no such dir.
+    assert _bridge_net_dir(["socat", "TCP-LISTEN:80,reuseaddr", "TCP4:127.0.0.1:8080"]) is None
+    assert _bridge_net_dir(["python3", "-m", "http.server"]) is None
+
+
+@pytest.mark.skipif(shutil.which("socat") is None, reason="socat not installed")
+def test_cleanup_stale_bridges_dry_run():
+    """cleanup_stale_bridges flags only socats whose net dir is gone."""
+    state_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "tkt")
+
+    # A live bridge keeps its net dir, so it must not be flagged.
+    net_dir, procs = Sandbox(command=[], port=18089, vc_port=18090)._start_bridge()
+    assert os.path.isdir(net_dir)
+
+    # A stale socat: bind into a net dir, then remove the dir (the socat
+    # survives holding the now-unlinked socket, mirroring a bad shutdown).
+    stale_net = os.path.join(state_dir, "net-stale-test")
+    os.makedirs(stale_net, exist_ok=True)
+    stale = subprocess.Popen(
+        ["socat", f"UNIX-LISTEN:{stale_net}/llm.sock,fork", "TCP4:127.0.0.1:18089"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+    )
+    deadline = time.monotonic() + 5.0
+    while not os.path.exists(os.path.join(stale_net, "llm.sock")) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    shutil.rmtree(stale_net, ignore_errors=True)
+    try:
+        killed, dirs = cleanup_stale_bridges(dry_run=True)
+        assert "net-stale-test" in dirs
+        # The live bridge is untouched.
+        assert os.path.basename(net_dir) not in dirs
+    finally:
+        stale.terminate()
+        stale.wait()
+        Sandbox(command=[])._stop_bridge(net_dir, procs)

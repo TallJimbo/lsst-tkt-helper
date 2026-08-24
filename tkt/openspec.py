@@ -193,3 +193,18 @@ class OpenSpec(Tool):
         # Ensure freshly-installed (or re-invoked) skills are OpenCode-ready.
         # Idempotent and warn-only on missing anchors; never fails write().
         self.fix_skills(os.path.join(directory, ".opencode", "skills"))
+
+    def remove(self, directory: str) -> None:
+        """Remove the OpenSpec artifacts this tool wrote into a workspace."""
+        openspec_dir = os.path.join(directory, "openspec")
+        if os.path.isdir(openspec_dir):
+            shutil.rmtree(openspec_dir)
+        skills_dir = os.path.join(directory, ".opencode", "skills")
+        if os.path.isdir(skills_dir):
+            for path in Path(skills_dir).glob("openspec-*"):
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            if not any(Path(skills_dir).iterdir()):
+                shutil.rmtree(skills_dir)

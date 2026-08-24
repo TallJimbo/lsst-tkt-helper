@@ -53,6 +53,16 @@ class Tool(ABC):
     ) -> None:
         raise NotImplementedError()
 
+    def remove(self, directory: str) -> None:
+        """Remove artifacts this tool wrote into a workspace. Default no-op."""
+
+    def eups_env_lines(self, ticket: str) -> Iterable[str]:
+        """Return EUPS ``envSet`` lines for the workspace table. Default: none.
+
+        Subclasses may override to contribute lines.
+        """
+        return ()
+
 
 class Environment(ABC):
     @staticmethod

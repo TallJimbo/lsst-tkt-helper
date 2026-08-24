@@ -24,6 +24,12 @@ general internet or DNS access. If a task genuinely requires network access,
 do not try to work around the restriction; instead ask the human to rerun the
 sandbox with `tkt sandbox-run --network`.
 
+The localhost port `8081` is bridged back to the host for the visual-companion
+server: anything you serve there is viewable in the human's browser at
+`http://localhost:8081/...` verbatim. If you offer a browser-based visual
+companion, bind it to `127.0.0.1:8081` and give the human the returned URL
+(do not try to auto-open a browser — there is no display in the sandbox).
+
 All environment variables needed to build and import the packages in your
 working directory should all be set; do not try to use EUPS or load `.envrc`
 files yourself.
@@ -34,15 +40,14 @@ Repositories relevant for the ticket appear as subdirectories of `.agent/`
 (excluding `ups/`). Each corresponds to a git worktree of a main repository in
 the parent ticket directory.
 
-## Important: Ignore `allowedEditRoots` from OpenSpec
+## Superpowers docs
 
-When you run `openspec status` or `openspec instructions apply`, the CLI
-reports `allowedEditRoots` in `actionContext` pointing to the workspace root.
-**This is misleading in a sandboxed environment.** The workspace root is
-mounted read-only.
-
-- Work on OpenSpec documents via its CLI tools, from the main workspace.
-- Make _ALL_ other changes in `.agent/**`.
+Design specs and implementation plans for superpowers live under the docs root
+set by `SUPERPOWERS_DIR` (a per-ticket namespace in the shared repo
+`~/LSST/superpowers-docs`); if unset, use the in-repo `docs/superpowers/`. The
+shared repo is mounted read-write. Do superpowers doc work there or in-repo as
+appropriate; make _ALL_ code changes in `.agent/**`. Transient superpowers
+scratch (`.superpowers/`) lives under `.agent/<repo-name>/` and is git-ignored.
 
 ## Development Workflow
 

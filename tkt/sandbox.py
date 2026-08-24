@@ -24,7 +24,7 @@
 
 from __future__ import annotations
 
-__all__ = ("Sandbox",)
+__all__ = ("Sandbox", "cleanup_stale_bridges")
 
 import ctypes
 import logging
@@ -59,6 +59,13 @@ _AGENTS_MD_TEMPLATE = os.path.join(os.path.dirname(__file__), "AGENTS.md.in")
 # sandbox).  Overridable through the ``port`` configuration entry.
 _DEFAULT_PORT = 8080
 
+# Default host port bridged into restricted sandboxes for the visual-companion
+# server.  The same port number is used on the host and inside the sandbox, so
+# the URL the companion reports (http://localhost:<port>/...) is reachable
+# from the host browser verbatim.  Overridable through the ``vc_port``
+# configuration entry.
+_DEFAULT_VC_PORT = 8081
+
 
 def _set_pdeathsig() -> None:
     """Arrange for the current process to be SIGTERM'd when its parent dies.
@@ -70,6 +77,84 @@ def _set_pdeathsig() -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     PR_SET_PDEATHSIG = 1
     libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+
+
+def _bridge_net_dir(args: Sequence[str]) -> str | None:
+    """Return the ``net-*`` dir name referenced by a bridge socat's argv.
+
+    The host-side and sandbox-side bridge socats reference a shared socket
+    under ``.../state/tkt/net-<id>/``; extract ``<id>``.  Returns ``None`` if
+    ``args`` is not a bridge socat command line.
+    """
+    marker = "state/tkt/net-"
+    for arg in args:
+        if marker not in arg:
+            continue
+        rest = arg.split(marker, 1)[1]
+        net = rest.split("/", 1)[0]
+        if net:
+            return "net-" + net
+    return None
+
+
+def _iter_bridge_socat_pids() -> Iterable[int]:
+    """Yield PIDs of socat processes referencing a tkt bridge dir."""
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                raw = f.read()
+        except OSError:
+            continue
+        args = raw.split(b"\x00")
+        if not args or b"socat" not in args[0]:
+            continue
+        try:
+            decoded = [a.decode("utf-8") for a in args]
+        except UnicodeDecodeError:
+            continue
+        if _bridge_net_dir(decoded) is not None:
+            yield int(entry)
+
+
+def cleanup_stale_bridges(*, dry_run: bool = False) -> tuple[int, list[str]]:
+    """Kill orphaned bridge socats whose shared ``net-*`` directory is gone.
+
+    Each bridge socat references a ``net-*`` directory that ``_stop_bridge``
+    removes on a clean shutdown, so a live bridge always has its directory
+    present.  A socat is therefore stale when the directory it references no
+    longer exists.  Orphans arise only from a bad shutdown: the owning ``tkt``
+    process died without running ``_stop_bridge`` (e.g. an unclean kill that
+    the parent-death signal did not cover).
+
+    Returns a ``(count, net_dirs)`` tuple with the number of socats killed (or
+    that would be killed under ``dry_run``) and the referenced net dirs.
+    """
+    state_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "tkt")
+    killed = 0
+    dirs: list[str] = []
+    for pid in _iter_bridge_socat_pids():
+        cmdline = f"/proc/{pid}/cmdline"
+        try:
+            with open(cmdline, "rb") as f:
+                raw = f.read()
+        except OSError:
+            continue
+        args = [a.decode("utf-8") for a in raw.split(b"\x00")]
+        net = _bridge_net_dir(args)
+        if net is None:
+            continue
+        if os.path.isdir(os.path.join(state_dir, net)):
+            continue
+        if not dry_run:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                continue
+        killed += 1
+        dirs.append(net)
+    return killed, dirs
 
 
 class Sandbox(Tool):
@@ -105,6 +190,13 @@ class Sandbox(Tool):
         isolated network namespace so tools can reach the LLM via localhost.
         Only used when ``network`` is ``False``.  The bridge connects to the
         same port on the host's loopback (the ssh tunnel's listen port).
+    vc_port
+        Host port (default :data:`_DEFAULT_VC_PORT`) bridged into the sandbox's
+        isolated network namespace for the visual-companion server, in the
+        reverse direction (host browser -> in-sandbox server).  The same port
+        number is used on the host and inside the sandbox so the companion's
+        reported URL is reachable from the host browser verbatim.  Only used
+        when ``network`` is ``False``.
     """
 
     def __init__(
@@ -116,6 +208,7 @@ class Sandbox(Tool):
         env: dict[str, str] | None = None,
         network: bool = False,
         port: int = _DEFAULT_PORT,
+        vc_port: int = _DEFAULT_VC_PORT,
     ):
         self._command = tuple(command)
         self._mounts_ro = tuple(mounts_ro)
@@ -123,6 +216,7 @@ class Sandbox(Tool):
         self._env = dict(env) if env is not None else {}
         self._network = bool(network)
         self._port = int(port)
+        self._vc_port = int(vc_port)
 
     @classmethod
     def from_json_data(cls, data: dict[str, Any]) -> Tool:
@@ -141,6 +235,9 @@ class Sandbox(Tool):
         port = data.pop("port", _DEFAULT_PORT)
         if isinstance(port, bool) or not isinstance(port, int):
             raise ValueError(f"'port' must be an integer, got {port!r}.")
+        vc_port = data.pop("vc_port", _DEFAULT_VC_PORT)
+        if isinstance(vc_port, bool) or not isinstance(vc_port, int):
+            raise ValueError(f"'vc_port' must be an integer, got {vc_port!r}.")
         if data:
             raise ValueError(f"Unexpected entries in sandbox configuration: {data}.")
         return cls(
@@ -150,6 +247,7 @@ class Sandbox(Tool):
             env=env,
             network=network,
             port=port,
+            vc_port=vc_port,
         )
 
     def write(
@@ -285,7 +383,7 @@ class Sandbox(Tool):
             logging.debug("exec: %s", shlex.join(argv))
             os.execvp(argv[0], argv)
         # Restricted mode: bridge the LLM port back to the host.
-        net_dir, host_socat = self._start_bridge()
+        net_dir, procs = self._start_bridge()
         try:
             argv = self._build_bwrap_argv(
                 workspace,
@@ -294,11 +392,12 @@ class Sandbox(Tool):
                 network=False,
                 net_dir=net_dir,
                 port=self._port,
+                vc_port=self._vc_port,
             )
             logging.debug("exec: %s", shlex.join(argv))
             rc = subprocess.Popen(argv).wait()
         finally:
-            self._stop_bridge(net_dir, host_socat)
+            self._stop_bridge(net_dir, procs)
         raise SystemExit(rc)
 
     def run_single_repo(
@@ -341,7 +440,7 @@ class Sandbox(Tool):
             )
             logging.debug("exec: %s", shlex.join(argv))
             os.execvp(argv[0], argv)
-        net_dir, host_socat = self._start_bridge()
+        net_dir, procs = self._start_bridge()
         try:
             argv = self._build_single_repo_argv(
                 repo_dir,
@@ -351,86 +450,122 @@ class Sandbox(Tool):
                 network=False,
                 net_dir=net_dir,
                 port=self._port,
+                vc_port=self._vc_port,
             )
             logging.debug("exec: %s", shlex.join(argv))
             rc = subprocess.Popen(argv).wait()
         finally:
-            self._stop_bridge(net_dir, host_socat)
+            self._stop_bridge(net_dir, procs)
         raise SystemExit(rc)
 
-    def _start_bridge(self) -> tuple[str, subprocess.Popen[Any]]:
-        """Start the host-side bridge for a restricted sandbox.
+    def _start_bridge(self) -> tuple[str, list[subprocess.Popen[Any]]]:
+        """Start the host-side bridges for a restricted sandbox.
 
-        Creates a private directory for the shared unix socket under the
-        user's state directory and launches a host-side ``socat`` that accepts
-        connections on the unix socket (visible inside the sandbox via a
-        read-write bind mount) and forwards them to the host's localhost
-        ``port`` (where an ssh port-forward exposes the LLM).
+        Creates a private directory for the shared unix sockets under the
+        user's state directory and launches host-side ``socat`` forwarders:
 
-        Returns the socket directory and the host ``socat`` subprocess.
+        - ``llm.sock`` accepts connections on the unix socket (visible inside
+          the sandbox via a read-write bind mount) and forwards them to the
+          host's localhost ``port`` (where an ssh port-forward exposes the
+          LLM).  Direction: sandbox -> host.
+        - ``vc.sock`` accepts connections on the host's localhost ``vc_port``
+          and forwards them to the unix socket (read by an in-sandbox socat
+          that hands them to the visual-companion server).  Direction: host ->
+          sandbox.
+
+        Returns the socket directory and the list of host ``socat``
+        subprocesses.
         """
         state_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "tkt")
         os.makedirs(state_dir, exist_ok=True)
         net_dir = tempfile.mkdtemp(prefix="net-", dir=state_dir)
         sock = os.path.join(net_dir, "llm.sock")
         log = os.path.join(net_dir, "host-socat.log")
+        vc_sock = os.path.join(net_dir, "vc.sock")
+        vc_log = os.path.join(net_dir, "host-vc-socat.log")
+        procs: list[subprocess.Popen[Any]] = []
         try:
             with open(log, "w", encoding="utf-8") as f:
-                proc = subprocess.Popen(
-                    ["socat", f"UNIX-LISTEN:{sock},fork", f"TCP4:127.0.0.1:{self._port}"],
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    # Isolate the forwarder in its own process group (so we can
-                    # signal its forked children during teardown) and arrange
-                    # for it to be SIGTERM'd if we are killed abruptly.
-                    start_new_session=True,
-                    preexec_fn=_set_pdeathsig,
+                procs.append(
+                    subprocess.Popen(
+                        ["socat", f"UNIX-LISTEN:{sock},fork", f"TCP4:127.0.0.1:{self._port}"],
+                        stdout=f,
+                        stderr=subprocess.STDOUT,
+                        # Isolate each forwarder in its own process group (so
+                        # we can signal its forked children during teardown)
+                        # and arrange for it to be SIGTERM'd if we are killed
+                        # abruptly.
+                        start_new_session=True,
+                        preexec_fn=_set_pdeathsig,
+                    )
                 )
-            # Wait for the listener to create its socket before the sandbox's
-            # socat tries to connect, so there is no startup race.
+            # The visual-companion forwarder listens on TCP and, per accepted
+            # connection, lazily connects to vc.sock.  vc.sock is created by an
+            # in-sandbox socat (UNIX-LISTEN) after bwrap launches, so there is
+            # no startup race here: the host listener binds immediately and
+            # only needs vc.sock once a browser connection arrives.
+            with open(vc_log, "w", encoding="utf-8") as f:
+                procs.append(
+                    subprocess.Popen(
+                        [
+                            "socat",
+                            f"TCP-LISTEN:{self._vc_port},fork,reuseaddr",
+                            f"UNIX-CONNECT:{vc_sock}",
+                        ],
+                        stdout=f,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                        preexec_fn=_set_pdeathsig,
+                    )
+                )
+            # Wait for the LLM listener to create its socket before the
+            # sandbox's socat tries to connect, so there is no startup race.
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 if os.path.exists(sock):
                     break
-                if proc.poll() is not None:
+                if any(p.poll() is not None for p in procs):
                     break
                 time.sleep(0.05)
-            if proc.poll() is not None:
-                tail = ""
+            if any(p.poll() is not None for p in procs):
+                detail = ""
                 try:
                     with open(log, encoding="utf-8") as f:
                         tail = f.read().strip()
+                    if not tail:
+                        with open(vc_log, encoding="utf-8") as f:
+                            tail = f.read().strip()
+                    detail = f": {tail}" if tail else ""
                 except OSError:
                     pass
-                detail = f": {tail}" if tail else ""
-                raise RuntimeError(
-                    f"host socat for sandbox bridge exited early (rc={proc.returncode}){detail}"
-                )
+                raise RuntimeError(f"host socat for sandbox bridge exited early{detail}")
             if not os.path.exists(sock):
                 raise RuntimeError(f"host socat did not create socket {sock}")
         except BaseException:
             shutil.rmtree(net_dir, ignore_errors=True)
             raise
-        return net_dir, proc
+        return net_dir, procs
 
-    def _stop_bridge(self, net_dir: str, proc: subprocess.Popen[Any]) -> None:
-        """Tear down the host-side bridge and remove its socket directory."""
-        # The socat is its own session/process-group leader (start_new_session
-        # in _start_bridge), so its pgid equals its pid; signal the whole group
-        # to also reach any processes forked by socat's `,fork`.
-        try:
+    def _stop_bridge(self, net_dir: str, procs: Sequence[subprocess.Popen[Any]]) -> None:
+        """Tear down the host-side bridges and remove their socket dir."""
+        for proc in procs:
+            # Each socat is its own session/process-group leader
+            # (start_new_session in _start_bridge), so its pgid equals its pid;
+            # signal the whole group to also reach any processes forked by
+            # socat's `,fork`.
             try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                # The process group may already be gone (e.g. abnormal exit).
-                proc.terminate()
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                proc.kill()
-            proc.wait()
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    # The process group may already be gone (abnormal exit).
+                    proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
+                proc.wait()
         shutil.rmtree(net_dir, ignore_errors=True)
 
     def _build_bwrap_argv(
@@ -442,6 +577,7 @@ class Sandbox(Tool):
         network: bool = True,
         net_dir: str | None = None,
         port: int = _DEFAULT_PORT,
+        vc_port: int = _DEFAULT_VC_PORT,
     ) -> list[str]:
         home = os.path.expanduser("~")
         agent_dir = os.path.join(workspace.directory, AGENT_SUBDIR)
@@ -466,7 +602,13 @@ class Sandbox(Tool):
                 logging.warning(f"External path {external_path} does not exist; skipping mount.")
         inner = self._build_inner_script(shell=shell, command=command)
         return self._build_common_argv(
-            home=home, mounts=mounts, inner=inner, network=network, net_dir=net_dir, port=port
+            home=home,
+            mounts=mounts,
+            inner=inner,
+            network=network,
+            net_dir=net_dir,
+            port=port,
+            vc_port=vc_port,
         )
 
     def _build_single_repo_argv(
@@ -479,6 +621,7 @@ class Sandbox(Tool):
         network: bool = True,
         net_dir: str | None = None,
         port: int = _DEFAULT_PORT,
+        vc_port: int = _DEFAULT_VC_PORT,
     ) -> list[str]:
         home = os.path.expanduser("~")
         # The whole repository is writable by the agent; no separate .git
@@ -486,7 +629,13 @@ class Sandbox(Tool):
         mounts: list[str] = ["--bind", repo_dir, repo_dir]
         inner = self._build_inner_script(shell=shell, conda_env=conda_env, repo_dir=repo_dir, command=command)
         return self._build_common_argv(
-            home=home, mounts=mounts, inner=inner, network=network, net_dir=net_dir, port=port
+            home=home,
+            mounts=mounts,
+            inner=inner,
+            network=network,
+            net_dir=net_dir,
+            port=port,
+            vc_port=vc_port,
         )
 
     def _build_common_argv(
@@ -498,6 +647,7 @@ class Sandbox(Tool):
         network: bool = True,
         net_dir: str | None = None,
         port: int = _DEFAULT_PORT,
+        vc_port: int = _DEFAULT_VC_PORT,
     ) -> list[str]:
         argv: list[str] = [
             "bwrap",
@@ -527,14 +677,19 @@ class Sandbox(Tool):
                 raise ValueError("restricted network requires a valid net_dir socket directory")
             # Share the bridge socket directory read-write with the sandbox.
             argv += ["--bind", net_dir, net_dir]
-            # Start the in-sandbox socat first so the agent's localhost:<port>
-            # reaches the host bridge.  Background it (the inner script ends
-            # with `exec`), and redirect its logs into the shared net_dir.
+            # Start the in-sandbox socats first so the agent's localhost:<port>
+            # reaches the host bridge, and the host's localhost:<vc_port>
+            # reaches the companion server.  Background them (the inner script
+            # ends with `exec`), and redirect logs into the shared net_dir.
             sock_path = shlex.quote(os.path.join(net_dir, "llm.sock"))
             log_path = shlex.quote(os.path.join(net_dir, "sandbox-socat.log"))
+            vc_sock_path = shlex.quote(os.path.join(net_dir, "vc.sock"))
+            vc_log_path = shlex.quote(os.path.join(net_dir, "sandbox-vc-socat.log"))
             inner = (
                 f"socat TCP4-LISTEN:{port},fork,reuseaddr "
-                f"UNIX-CONNECT:{sock_path} >{log_path} 2>&1 &\n" + inner
+                f"UNIX-CONNECT:{sock_path} >{log_path} 2>&1 &\n"
+                f"socat UNIX-LISTEN:{vc_sock_path},fork "
+                f"TCP4:127.0.0.1:{vc_port} >{vc_log_path} 2>&1 &\n" + inner
             )
         # Track destinations already mounted read-write (from the mode-specific
         # mounts and the configured rw mounts) so we can avoid re-mounting them

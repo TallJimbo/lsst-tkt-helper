@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterable
-from typing import TextIO
+from typing import Any, TextIO
 
 import click
 
@@ -41,6 +41,23 @@ def _setup_logging(verbose: int) -> None:
         level={0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}[verbose],
         format="%(message)s",
     )
+
+
+def _classify_tools(
+    workspace_tools: Iterable[str], default_tools: Iterable[str], get_tool: Any
+) -> tuple[list[str], list[str], list[str]]:
+    """Split the workspace's tools into missing, stale, and non-default.
+
+    Returns (missing, stale, nondefault): missing defaults are default tools
+    absent from the workspace; stale tools are no longer configured in the
+    environment at all; nondefault tools are configured but no longer defaults
+    (candidates for removal on migration).
+    """
+    workspace_tools = list(workspace_tools)
+    missing = [t for t in default_tools if t not in workspace_tools]
+    stale = [t for t in workspace_tools if get_tool(t) is None]
+    nondefault = [t for t in workspace_tools if get_tool(t) is not None and t not in default_tools]
+    return missing, stale, nondefault
 
 
 @click.group()
@@ -177,18 +194,25 @@ def update(
     else:
         env = Environment.from_file(environment)
     workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
-    missing = [t for t in env.default_tools if t not in workspace.tools]
-    stale = [t for t in workspace.tools if env.get_tool(t) is None]
+    missing, stale, nondefault = _classify_tools(workspace.tools, env.default_tools, env.get_tool)
     if dry_run:
         for t in missing:
             logging.warning(f"Would ask to add missing default tool {t}.")
         for t in stale:
             logging.warning(f"Would remove unconfigured tool {t}.")
+        for t in nondefault:
+            logging.warning(f"Would prompt to remove non-default tool {t}.")
         workspace.update(packages=packages, environment=env, dry_run=True)
         return
     for t in stale:
         logging.warning(f"Removing tool {t} because it is no longer configured.")
     workspace.remove_tools(stale)
+    for t in nondefault:
+        if click.confirm(f"Remove tool {t}? It is no longer a default (this also cleans up its artifacts)."):
+            tool = env.get_tool(t)
+            if tool is not None:
+                tool.remove(workspace.directory)
+            workspace.remove_tools([t])
     additions: list[str] = []
     if missing:
         if click.confirm("Missing default tools: " + ", ".join(missing) + ". Add them?"):
@@ -497,3 +521,25 @@ def sandbox_reset(
             f"Configured 'sandbox' tool is {type(tool).__name__}, not tkt.sandbox.Sandbox."
         )
     tool.reset(workspace)
+
+
+@cli.command(
+    "sandbox-cleanup",
+    help=(
+        "Kill orphaned bridge socats left behind by sandbox sessions that "
+        "shut down uncleanly. A bridge socat is stale when the shared net-* "
+        "directory it references no longer exists (removed on clean shutdown), "
+        "so live sandboxes are never touched. Use -n to preview."
+    ),
+)
+@click.option("-n", "--dry-run", is_flag=True)
+@click.option("-v", "--verbose", count=True)
+def sandbox_cleanup(*, dry_run: bool = False, verbose: int = 0) -> None:
+    _setup_logging(verbose)
+    from .sandbox import cleanup_stale_bridges
+
+    killed, dirs = cleanup_stale_bridges(dry_run=dry_run)
+    verb = "would kill" if dry_run else "killed"
+    click.echo(f"done: {verb} {killed} stale bridge socat(s)")
+    for net in dirs:
+        logging.info(f"  {net}")
