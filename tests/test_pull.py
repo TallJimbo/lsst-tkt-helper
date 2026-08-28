@@ -302,6 +302,33 @@ def _make_divergent_conflict(workspace) -> None:
     agent.git.commit("-m", "agent extra")
 
 
+def test_diverged_rebase_failed_to_start_restores_branch(workspace, monkeypatch):
+    """A failed-to-start rebase restores H and raises instead of dropping."""
+    human = _human(workspace)
+    (Path(f"{workspace.directory}/pkg/extra.txt")).write_text("extra\n")
+    human.git.add("extra.txt")
+    human.git.commit("-m", "human extra")
+    _make_agent_commit(workspace, "file1\nhuman change\nagent commit\n")
+    human = _human(workspace)
+    pre = human.head.commit
+
+    # Make the interactive rebase fail to start (the sequence editor errors out
+    # before any rebase state is created).
+    monkeypatch.setenv("GIT_SEQUENCE_EDITOR", "false")
+    monkeypatch.setenv("GIT_EDITOR", "false")
+
+    with pytest.raises(PullError, match="could not be started"):
+        Pull.run(workspace)
+
+    human = _human(workspace)
+    # The human branch is restored to its pre-transfer state; commits survive.
+    assert human.head.commit == pre
+    assert "extra.txt" in human.git.ls_files()
+    # No leftover snapshot branch or ledger.
+    assert "tickets/X-sync" not in human.heads
+    assert not os.path.exists(f"{workspace.directory}/.pull-sandbox.json")
+
+
 def test_diverged_conflict_is_left_in_progress_and_recorded(workspace, monkeypatch):
     """Conflicted rebase stays in progress and is recorded for finish/abort."""
     _make_divergent_conflict(workspace)

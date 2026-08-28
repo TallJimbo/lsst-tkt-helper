@@ -285,7 +285,10 @@ class Pull:
                     ledger=ledger,
                 )
         except BaseException:
-            _save_ledger(workspace, ledger)
+            if ledger:
+                _save_ledger(workspace, ledger)
+            else:
+                _clear_ledger(workspace)
             raise
         else:
             if ledger:
@@ -404,14 +407,27 @@ class Pull:
         st.human_repo.git.reset("--hard", st.A)
         try:
             st.human_repo.git.rebase("-i", snapshot)
+            rebase_failed = False
         except git.exc.GitCommandError:
-            # git exits nonzero on a conflict or a paused rebase; it leaves the
-            # operation in progress, which we detect and record below.
-            pass
+            # git exits nonzero both on a conflict (leaving a paused rebase,
+            # which we detect below) and on a rebase that fails to start (e.g.
+            # the sequence editor errors out, leaving no state at all). We must
+            # distinguish the two: the latter must not be treated as success,
+            # because the human's commits live only on the snapshot branch.
+            rebase_failed = True
         if _is_rebase_in_progress(st.human_repo):
             logger.info(
                 f"{pkg}: rebase is in progress. Resolve any conflicts and run "
                 "`git rebase --continue`, then `tkt pull-sandbox --finish`."
+            )
+        elif rebase_failed:
+            # The rebase failed to start rather than pausing on a conflict;
+            # restore the human branch so its commits are not dropped, then
+            # report the failure.
+            cls._restore_commit_transfer(st, ledger)
+            raise PullError(
+                f"Package {pkg!r}: the divergent rebase could not be started. "
+                "Your branch was restored to its previous state; nothing was transferred."
             )
         else:
             cls._finalize_commit_transfer(st, ledger)
@@ -427,6 +443,33 @@ class Pull:
         if ledger.human_stash_ref:
             st.human_repo.git.stash("apply", ledger.human_stash_ref)
             st.human_repo.git.stash("drop", ledger.human_stash_ref)
+        ledger.human_stash_ref = None
+        ledger.sync_kind = None
+
+    @classmethod
+    def _restore_commit_transfer(cls, st: _Status, ledger: _State) -> None:
+        """Undo an aborted divergent transfer, restoring the human branch.
+
+        Used when the interactive rebase fails to start (no in-progress state),
+        so the human's commits -- which live only on the snapshot branch -- are
+        not dropped. Unlike :meth:`_finalize_commit_transfer`, this resets the
+        human branch back to the snapshot instead of promoting the rebased tip.
+        """
+        snapshot = st.snapshot_branch
+        assert snapshot is not None
+        st.human_repo.git.reset("--hard", snapshot)
+        if snapshot in st.human_repo.heads:
+            st.human_repo.git.branch("-D", snapshot)
+        ledger.snapshot_branch = None
+        if ledger.human_stash_ref:
+            try:
+                st.human_repo.git.stash("apply", ledger.human_stash_ref)
+                st.human_repo.git.stash("drop", ledger.human_stash_ref)
+            except git.exc.GitCommandError as exc:
+                logging.warning(
+                    f"failed to restore human stash {ledger.human_stash_ref} "
+                    f"({exc}); leaving it in place - it was not destroyed."
+                )
         ledger.human_stash_ref = None
         ledger.sync_kind = None
 
