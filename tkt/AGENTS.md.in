@@ -63,8 +63,12 @@ scratch (`.superpowers/`) lives under `.agent/<repo-name>/` and is git-ignored.
    Only address linting issues that the hooks can't fix, or that involve
    semantic decisions (e.g., ignoring a specific line).
 
-   To run hooks manually: `pre-commit run --files <path>` or `git commit` to
-   trigger them on staged files.
+   The hooks run through `prek` (a drop-in replacement for `pre-commit`) on
+   `git commit`; its environments are pre-installed and available offline, so
+   just commit to trigger them. To run hooks manually, use `prek run --files
+   <path>`. Do **not** invoke `pre-commit` directly — its environment cache is
+   not available in this sandbox, so it would try to download dependencies and
+   fail because the sandbox is network-restricted.
 
 4. **Type checking**: If `mypy.ini` or `tool.mypy` is present in
    `pyproject.toml`, run `mypy python` to type-check the package. Tests are not
