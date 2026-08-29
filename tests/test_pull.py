@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import pty
 from pathlib import Path
 
 import git
@@ -473,3 +474,56 @@ def test_finish_refuses_while_diverged_rebase_in_progress(workspace, monkeypatch
     human = _human(workspace)
     assert "tickets/X-sync" in human.heads
     assert os.path.exists(f"{workspace.directory}/.pull-sandbox.json")
+
+
+def test_diverged_rebase_with_tty_editor_succeeds(workspace, tmp_path, monkeypatch):
+    """A TTY-requiring sequence editor works because the rebase attaches the
+    terminal.
+
+    Regression test for the divergent path failing with "could not be started"
+    when git was invoked through GitPython, which captures git's stdout as a
+    pipe and so cannot launch a TTY-requiring editor (e.g. ``emacsclient -t``).
+    """
+    human = _human(workspace)
+    (Path(f"{workspace.directory}/pkg/extra.txt")).write_text("extra\n")
+    human.git.add("extra.txt")
+    human.git.commit("-m", "human extra")
+    _make_agent_commit(workspace, "file1\nhuman change\nagent commit\n")
+    human = _human(workspace)
+    pre = human.head.commit
+
+    # A sequence editor that refuses to run unless stdout is a terminal. This
+    # mirrors `emacsclient -t`, which fails when git's stdout is a pipe.
+    editor = tmp_path / "tty-editor.sh"
+    editor.write_text("#!/bin/sh\n[ -t 1 ] || { echo 'editor: stdout is not a tty' >&2; exit 1; }\nexit 0\n")
+    os.chmod(editor, 0o755)
+    monkeypatch.setenv("GIT_SEQUENCE_EDITOR", str(editor))
+    monkeypatch.setenv("GIT_EDITOR", str(editor))
+
+    # Run Pull.run in a child whose stdout/stderr are a pty slave, so the
+    # inherited-fd git rebase (and its editor) sees a real terminal.
+    pid, master = pty.fork()
+    if pid == 0:
+        try:
+            Pull.run(workspace)
+        except BaseException:
+            os._exit(1)
+        os._exit(0)
+    # Drain the pty (blocks until the child closes the slave on exit), then
+    # reap.
+    while True:
+        try:
+            data = os.read(master, 1024)
+        except OSError:
+            break
+        if not data:
+            break
+    _, status = os.waitpid(pid, 0)
+    os.close(master)
+
+    assert status == 0, "pull-sandbox under a TTY should have completed the rebase"
+    human = _human(workspace)
+    assert human.head.commit != pre
+    assert "extra.txt" in human.git.ls_files()
+    assert "tickets/X-sync" not in human.heads
+    assert not os.path.exists(f"{workspace.directory}/.pull-sandbox.json")

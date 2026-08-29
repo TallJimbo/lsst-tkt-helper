@@ -28,6 +28,7 @@ __all__ = ("Pull", "PullError")
 
 import logging
 import os
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -405,22 +406,20 @@ class Pull:
             st.human_repo.git.stash("push", "-u", "-m", f"tkt pull-sandbox: {pkg}")
             ledger.human_stash_ref = st.human_repo.git.rev_parse("-q", "stash@{0}").strip()
         st.human_repo.git.reset("--hard", st.A)
-        try:
-            st.human_repo.git.rebase("-i", snapshot)
-            rebase_failed = False
-        except git.exc.GitCommandError:
-            # git exits nonzero both on a conflict (leaving a paused rebase,
-            # which we detect below) and on a rebase that fails to start (e.g.
-            # the sequence editor errors out, leaving no state at all). We must
-            # distinguish the two: the latter must not be treated as success,
-            # because the human's commits live only on the snapshot branch.
-            rebase_failed = True
+        # Run git directly with inherited stdin/stdout/stderr so the
+        # interactive sequence editor attaches to the caller's terminal.
+        # GitPython captures git's stdout as a pipe, which breaks TTY-requiring
+        # editors (e.g. `emacsclient -t`), causing the rebase to "fail to
+        # start" with no state. A nonzero exit is still ambiguous
+        # (paused-on-conflict vs failed-to-start); we disambiguate via rebase
+        # state below, as before.
+        result = subprocess.run(["git", "-C", st.human_dir, "rebase", "-i", snapshot])
         if _is_rebase_in_progress(st.human_repo):
             logger.info(
                 f"{pkg}: rebase is in progress. Resolve any conflicts and run "
                 "`git rebase --continue`, then `tkt pull-sandbox --finish`."
             )
-        elif rebase_failed:
+        elif result.returncode != 0:
             # The rebase failed to start rather than pausing on a conflict;
             # restore the human branch so its commits are not dropped, then
             # report the failure.
