@@ -43,6 +43,8 @@ mypy tkt/
 | `tkt/precommit.py`    | `PreCommit` tool: installs pre-commit or prek git hooks when configuration files are present in packages.                                                                                                                                   |
 | `tkt/openspec.py`     | `OpenSpec` tool: runs `openspec init` into the workspace and rewrites the generated `.opencode/skills/` files for OpenCode's harness (`fix_skills`, exposed via `tkt fix-openspec`).                                                        |
 | `tkt/utils.py`        | JSON read/write helpers (uses `json5` for reading to allow trailing commas).                                                                                                                                                                |
+| `agents/opencode/`    | Custom OpenCode workflow agents `sp-design`, `sp-plan`, `sp-build`, `sp-debug`, `sp-review`; `~/.config/opencode/agents/` is a symlink to it.                                                                                               |
+| `superpowers/`        | Git submodule (TallJimbo's fork of `obra/superpowers`) providing the `skills/` the `sp-*` agents use; pinned by this repo.                                                                                                                  |
 
 ## Configuration
 
@@ -50,6 +52,14 @@ mypy tkt/
 - **`pyproject.toml`**: Ruff and mypy configuration.
 - **`pyrightconfig.json`**: Pyright configuration for IDE use (see above).
 - **`ups/tkt.table`**: EUPS table file that prepends `bin/` to `PATH` and the package root to `PYTHONPATH`.
+
+## OpenCode integration
+
+The `sp-*` workflow agents live in this repo at `agents/opencode/` and are exposed
+to OpenCode through a directory symlink, `~/.config/opencode/agents` ->
+`agents/opencode`. The skills they use come from the `superpowers/` submodule;
+`~/.config/opencode/opencode.jsonc` points its `skills.paths` at
+`superpowers/skills`. Neither lives at `~/.config/opencode/superpowers` anymore.
 
 ## Testing
 
