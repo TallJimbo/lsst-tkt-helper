@@ -154,15 +154,31 @@ def test_restricted_argv_isolates_network_and_bridges(workspace, sandbox, tmp_pa
     """Restricted mode isolates net and bridges the port and companion port."""
     net_dir = tmp_path / "net"
     net_dir.mkdir()
-    argv = sandbox._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), port=8080)
+    argv = sandbox._build_bwrap_argv(
+        workspace, shell=False, network=False, net_dir=str(net_dir), ports=(8080,)
+    )
     assert "--unshare-net" in argv
     assert ("--bind", str(net_dir), str(net_dir)) in [tuple(argv[i : i + 3]) for i in range(len(argv) - 2)]
     inner = _inner_of(argv)
     assert "socat TCP4-LISTEN:8080,fork,reuseaddr UNIX-CONNECT:" in inner
-    assert f"{net_dir}/llm.sock" in inner
+    assert f"{net_dir}/llm-8080.sock" in inner
     # Reverse bridge: host -> sandbox for the visual companion.
     assert f"socat UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:8081" in inner
     assert f"{net_dir}/vc.sock" in inner
+
+
+def test_multiple_ports_emit_one_socat_each(workspace, sandbox, tmp_path):
+    """A list of ports produces one in-sandbox socat per port."""
+    net_dir = tmp_path / "net"
+    net_dir.mkdir()
+    argv = sandbox._build_bwrap_argv(
+        workspace, shell=False, network=False, net_dir=str(net_dir), ports=(8080, 8000)
+    )
+    inner = _inner_of(argv)
+    assert "socat TCP4-LISTEN:8080,fork,reuseaddr UNIX-CONNECT:" in inner
+    assert "socat TCP4-LISTEN:8000,fork,reuseaddr UNIX-CONNECT:" in inner
+    assert f"{net_dir}/llm-8080.sock" in inner
+    assert f"{net_dir}/llm-8000.sock" in inner
 
 
 def test_full_network_argv_shares_host_network(workspace, sandbox):
@@ -179,7 +195,7 @@ def test_single_repo_network_modes(tmp_path, sandbox):
     net_dir = tmp_path / "net"
     net_dir.mkdir()
     restricted = sandbox._build_single_repo_argv(
-        str(tmp_path), shell=False, network=False, net_dir=str(net_dir), port=8080
+        str(tmp_path), shell=False, network=False, net_dir=str(net_dir), ports=(8080,)
     )
     assert "--unshare-net" in restricted
     assert ("--bind", str(net_dir), str(net_dir)) in [
@@ -200,15 +216,15 @@ def test_bridge_port_default_and_override(workspace, tmp_path):
 
     default = Sandbox(command=[])
     inner = _inner_of(
-        default._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), port=8080)
+        default._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), ports=(8080,))
     )
     assert "TCP4-LISTEN:8080" in inner
     assert f"UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:8081" in inner
 
     custom = Sandbox.from_json_data({"command": [], "port": 9999})
-    assert custom._port == 9999
+    assert custom._ports == (9999,)
     inner = _inner_of(
-        custom._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), port=9999)
+        custom._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), ports=(9999,))
     )
     assert "TCP4-LISTEN:9999" in inner
 
@@ -248,18 +264,31 @@ def test_from_json_data_accepts_network_flag():
         Sandbox.from_json_data({"command": [], "vc_port": True})
 
 
+def test_from_json_data_accepts_list_or_int_port():
+    """from_json_data parses port as a single int or a list of ints."""
+    single = Sandbox.from_json_data({"command": [], "port": 9999})
+    assert single._ports == (9999,)
+    multi = Sandbox.from_json_data({"command": [], "port": [8080, 8000]})
+    assert multi._ports == (8080, 8000)
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data({"command": [], "port": [8080, "8080"]})
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data({"command": [], "port": []})
+
+
 @pytest.mark.skipif(shutil.which("socat") is None, reason="socat not installed")
 def test_bridge_lifecycle(tmp_path, monkeypatch):
-    """The host-side bridges start socats and tear them down cleanly."""
+    """The host-side bridges start one socat per port and tear down cleanly."""
     monkeypatch.setenv("HOME", str(tmp_path))  # state dir lands under tmp_path
-    sandbox = Sandbox(command=[], port=18089, vc_port=18090)
+    sandbox = Sandbox(command=[], port=[18089, 18088], vc_port=18090)
 
     net_dir, procs = sandbox._start_bridge()
     try:
         assert os.path.isdir(net_dir)
-        assert os.path.exists(os.path.join(net_dir, "llm.sock"))
-        assert len(procs) == 2
-        assert all(proc.poll() is None for proc in procs)  # both socats alive
+        assert os.path.exists(os.path.join(net_dir, "llm-18089.sock"))
+        assert os.path.exists(os.path.join(net_dir, "llm-18088.sock"))
+        assert len(procs) == 3  # one socat per LLM port + one for vc
+        assert all(proc.poll() is None for proc in procs)  # all socats alive
     finally:
         sandbox._stop_bridge(net_dir, procs)
 

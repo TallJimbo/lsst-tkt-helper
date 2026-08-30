@@ -56,8 +56,12 @@ _AGENTS_MD_TEMPLATE = os.path.join(os.path.dirname(__file__), "AGENTS.md.in")
 
 # Default host port bridged into restricted sandboxes; the LLM endpoint that
 # the agent reaches via localhost (backed by an ssh port-forward outside the
-# sandbox).  Overridable through the ``port`` configuration entry.
+# sandbox).  Overridable through the ``port`` configuration entry, which may
+# be a single integer or a list of integers.
 _DEFAULT_PORT = 8080
+
+# Sequence of default ports bridged into restricted sandboxes (see above).
+_DEFAULT_PORTS = (_DEFAULT_PORT,)
 
 # Default host port bridged into restricted sandboxes for the visual-companion
 # server.  The same port number is used on the host and inside the sandbox, so
@@ -65,6 +69,26 @@ _DEFAULT_PORT = 8080
 # from the host browser verbatim.  Overridable through the ``vc_port``
 # configuration entry.
 _DEFAULT_VC_PORT = 8081
+
+
+def _normalize_ports(port: int | Sequence[int]) -> tuple[int, ...]:
+    """Return ``port`` as a tuple of ints, accepting an int or a sequence.
+
+    Raises ``ValueError`` if ``port`` is a non-integer scalar or a sequence
+    containing a non-integer.
+    """
+    if isinstance(port, bool):
+        raise ValueError(f"'port' must be an integer or list of integers, got {port!r}.")
+    if isinstance(port, int):
+        return (port,)
+    result = []
+    for p in port:
+        if isinstance(p, bool) or not isinstance(p, int):
+            raise ValueError(f"'port' must contain only integers, got {port!r}.")
+        result.append(int(p))
+    if not result:
+        raise ValueError("'port' must include at least one port.")
+    return tuple(result)
 
 
 def _set_pdeathsig() -> None:
@@ -186,10 +210,11 @@ class Sandbox(Tool):
         and bridge a single localhost port (see ``port``) back to the host so
         the LLM endpoint remains reachable while everything else is blocked.
     port
-        Host port (default :data:`_DEFAULT_PORT`) bridged into the sandbox's
+        Host port, or sequence of host ports, bridged into the sandbox's
         isolated network namespace so tools can reach the LLM via localhost.
-        Only used when ``network`` is ``False``.  The bridge connects to the
-        same port on the host's loopback (the ssh tunnel's listen port).
+        Default :data:`_DEFAULT_PORT`. Each port maps to the same port on the
+        host's loopback (the ssh tunnel's listen port).  Only used when
+        ``network`` is ``False``.
     vc_port
         Host port (default :data:`_DEFAULT_VC_PORT`) bridged into the sandbox's
         isolated network namespace for the visual-companion server, in the
@@ -207,7 +232,7 @@ class Sandbox(Tool):
         mounts_rw: Sequence[str] = (),
         env: dict[str, str] | None = None,
         network: bool = False,
-        port: int = _DEFAULT_PORT,
+        port: int | Sequence[int] = _DEFAULT_PORT,
         vc_port: int = _DEFAULT_VC_PORT,
     ):
         self._command = tuple(command)
@@ -215,7 +240,7 @@ class Sandbox(Tool):
         self._mounts_rw = tuple(mounts_rw)
         self._env = dict(env) if env is not None else {}
         self._network = bool(network)
-        self._port = int(port)
+        self._ports = _normalize_ports(port)
         self._vc_port = int(vc_port)
 
     @classmethod
@@ -233,8 +258,6 @@ class Sandbox(Tool):
         if not isinstance(network, bool):
             raise ValueError(f"'network' must be a boolean, got {network!r}.")
         port = data.pop("port", _DEFAULT_PORT)
-        if isinstance(port, bool) or not isinstance(port, int):
-            raise ValueError(f"'port' must be an integer, got {port!r}.")
         vc_port = data.pop("vc_port", _DEFAULT_VC_PORT)
         if isinstance(vc_port, bool) or not isinstance(vc_port, int):
             raise ValueError(f"'vc_port' must be an integer, got {vc_port!r}.")
@@ -391,7 +414,7 @@ class Sandbox(Tool):
                 command=command,
                 network=False,
                 net_dir=net_dir,
-                port=self._port,
+                ports=self._ports,
                 vc_port=self._vc_port,
             )
             logging.debug("exec: %s", shlex.join(argv))
@@ -449,7 +472,7 @@ class Sandbox(Tool):
                 command=command,
                 network=False,
                 net_dir=net_dir,
-                port=self._port,
+                ports=self._ports,
                 vc_port=self._vc_port,
             )
             logging.debug("exec: %s", shlex.join(argv))
@@ -464,11 +487,11 @@ class Sandbox(Tool):
         Creates a private directory for the shared unix sockets under the
         user's state directory and launches host-side ``socat`` forwarders:
 
-        - ``llm.sock`` accepts connections on the unix socket (visible inside
-          the sandbox via a read-write bind mount) and forwards them to the
-          host's localhost ``port`` (where an ssh port-forward exposes the
-          LLM).  Direction: sandbox -> host.
-        - ``vc.sock`` accepts connections on the host's localhost ``vc_port``
+        - One ``llm-<port>.sock`` per bridged ``port`` accepts connections on
+          the unix socket (visible inside the sandbox via a read-write bind
+          mount) and forwards them to the host's localhost ``<port>`` (where
+          an ssh port-forward exposes the LLM).  Direction: sandbox -> host.
+          ``vc.sock`` accepts connections on the host's localhost ``vc_port``
           and forwards them to the unix socket (read by an in-sandbox socat
           that hands them to the visual-companion server).  Direction: host ->
           sandbox.
@@ -479,26 +502,29 @@ class Sandbox(Tool):
         state_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "tkt")
         os.makedirs(state_dir, exist_ok=True)
         net_dir = tempfile.mkdtemp(prefix="net-", dir=state_dir)
-        sock = os.path.join(net_dir, "llm.sock")
-        log = os.path.join(net_dir, "host-socat.log")
         vc_sock = os.path.join(net_dir, "vc.sock")
         vc_log = os.path.join(net_dir, "host-vc-socat.log")
         procs: list[subprocess.Popen[Any]] = []
+        sock_paths: list[str] = []
         try:
-            with open(log, "w", encoding="utf-8") as f:
-                procs.append(
-                    subprocess.Popen(
-                        ["socat", f"UNIX-LISTEN:{sock},fork", f"TCP4:127.0.0.1:{self._port}"],
-                        stdout=f,
-                        stderr=subprocess.STDOUT,
-                        # Isolate each forwarder in its own process group (so
-                        # we can signal its forked children during teardown)
-                        # and arrange for it to be SIGTERM'd if we are killed
-                        # abruptly.
-                        start_new_session=True,
-                        preexec_fn=_set_pdeathsig,
+            for p in self._ports:
+                sock = os.path.join(net_dir, f"llm-{p}.sock")
+                log = os.path.join(net_dir, f"host-llm-{p}.log")
+                sock_paths.append(sock)
+                with open(log, "w", encoding="utf-8") as f:
+                    procs.append(
+                        subprocess.Popen(
+                            ["socat", f"UNIX-LISTEN:{sock},fork", f"TCP4:127.0.0.1:{p}"],
+                            stdout=f,
+                            stderr=subprocess.STDOUT,
+                            # Isolate each forwarder in its own process group
+                            # (so we can signal its forked children during
+                            # teardown) and arrange for it to be SIGTERM'd if
+                            # we are killed abruptly.
+                            start_new_session=True,
+                            preexec_fn=_set_pdeathsig,
+                        )
                     )
-                )
             # The visual-companion forwarder listens on TCP and, per accepted
             # connection, lazily connects to vc.sock.  vc.sock is created by an
             # in-sandbox socat (UNIX-LISTEN) after bwrap launches, so there is
@@ -518,29 +544,32 @@ class Sandbox(Tool):
                         preexec_fn=_set_pdeathsig,
                     )
                 )
-            # Wait for the LLM listener to create its socket before the
-            # sandbox's socat tries to connect, so there is no startup race.
+            # Wait for all LLM listeners to create their sockets before the
+            # sandbox's socats try to connect, so there is no startup race.
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                if os.path.exists(sock):
+                if all(os.path.exists(s) for s in sock_paths):
                     break
                 if any(p.poll() is not None for p in procs):
                     break
                 time.sleep(0.05)
             if any(p.poll() is not None for p in procs):
                 detail = ""
+                logs = [os.path.join(net_dir, f"host-llm-{p}.log") for p in self._ports] + [vc_log]
                 try:
-                    with open(log, encoding="utf-8") as f:
-                        tail = f.read().strip()
-                    if not tail:
-                        with open(vc_log, encoding="utf-8") as f:
-                            tail = f.read().strip()
-                    detail = f": {tail}" if tail else ""
+                    for lp in logs:
+                        if os.path.exists(lp):
+                            with open(lp, encoding="utf-8") as f:
+                                tail = f.read().strip()
+                            if tail:
+                                detail = f": {tail}"
+                                break
                 except OSError:
                     pass
                 raise RuntimeError(f"host socat for sandbox bridge exited early{detail}")
-            if not os.path.exists(sock):
-                raise RuntimeError(f"host socat did not create socket {sock}")
+            if not all(os.path.exists(s) for s in sock_paths):
+                missing = ", ".join(s for s in sock_paths if not os.path.exists(s))
+                raise RuntimeError(f"host socat did not create socket(s) {missing}")
         except BaseException:
             shutil.rmtree(net_dir, ignore_errors=True)
             raise
@@ -576,7 +605,7 @@ class Sandbox(Tool):
         command: str | None = None,
         network: bool = True,
         net_dir: str | None = None,
-        port: int = _DEFAULT_PORT,
+        ports: Sequence[int] = _DEFAULT_PORTS,
         vc_port: int = _DEFAULT_VC_PORT,
     ) -> list[str]:
         home = os.path.expanduser("~")
@@ -607,7 +636,7 @@ class Sandbox(Tool):
             inner=inner,
             network=network,
             net_dir=net_dir,
-            port=port,
+            ports=ports,
             vc_port=vc_port,
         )
 
@@ -620,7 +649,7 @@ class Sandbox(Tool):
         command: str | None = None,
         network: bool = True,
         net_dir: str | None = None,
-        port: int = _DEFAULT_PORT,
+        ports: Sequence[int] = _DEFAULT_PORTS,
         vc_port: int = _DEFAULT_VC_PORT,
     ) -> list[str]:
         home = os.path.expanduser("~")
@@ -634,7 +663,7 @@ class Sandbox(Tool):
             inner=inner,
             network=network,
             net_dir=net_dir,
-            port=port,
+            ports=ports,
             vc_port=vc_port,
         )
 
@@ -646,7 +675,7 @@ class Sandbox(Tool):
         inner: str,
         network: bool = True,
         net_dir: str | None = None,
-        port: int = _DEFAULT_PORT,
+        ports: Sequence[int] = _DEFAULT_PORTS,
         vc_port: int = _DEFAULT_VC_PORT,
     ) -> list[str]:
         argv: list[str] = [
@@ -677,17 +706,21 @@ class Sandbox(Tool):
                 raise ValueError("restricted network requires a valid net_dir socket directory")
             # Share the bridge socket directory read-write with the sandbox.
             argv += ["--bind", net_dir, net_dir]
-            # Start the in-sandbox socats first so the agent's localhost:<port>
-            # reaches the host bridge, and the host's localhost:<vc_port>
-            # reaches the companion server.  Background them (the inner script
-            # ends with `exec`), and redirect logs into the shared net_dir.
-            sock_path = shlex.quote(os.path.join(net_dir, "llm.sock"))
-            log_path = shlex.quote(os.path.join(net_dir, "sandbox-socat.log"))
+            # Start one in-sandbox socat per bridged port so the agent's
+            # localhost:<port> reaches the host bridge, plus one for the host's
+            # localhost:<vc_port> companion server.  Background them (the inner
+            # script ends with `exec`), and redirect logs into the shared
+            # net_dir.
+            for p in ports:
+                sock_path = shlex.quote(os.path.join(net_dir, f"llm-{p}.sock"))
+                log_path = shlex.quote(os.path.join(net_dir, f"sandbox-llm-{p}.log"))
+                inner = (
+                    f"socat TCP4-LISTEN:{p},fork,reuseaddr "
+                    f"UNIX-CONNECT:{sock_path} >{log_path} 2>&1 &\n" + inner
+                )
             vc_sock_path = shlex.quote(os.path.join(net_dir, "vc.sock"))
             vc_log_path = shlex.quote(os.path.join(net_dir, "sandbox-vc-socat.log"))
             inner = (
-                f"socat TCP4-LISTEN:{port},fork,reuseaddr "
-                f"UNIX-CONNECT:{sock_path} >{log_path} 2>&1 &\n"
                 f"socat UNIX-LISTEN:{vc_sock_path},fork "
                 f"TCP4:127.0.0.1:{vc_port} >{vc_log_path} 2>&1 &\n" + inner
             )
