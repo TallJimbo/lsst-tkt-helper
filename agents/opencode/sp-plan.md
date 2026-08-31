@@ -17,7 +17,7 @@ permission:
   websearch: ask
   edit:
     "*": deny
-    "~/LSST/superpowers-docs/**/*.md": allow
+    "**/superpowers-docs/**/*.md": allow
     "docs/superpowers/**/*.md": allow
     ".agent/docs/superpowers/**/*.md": allow
 ---
