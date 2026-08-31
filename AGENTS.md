@@ -25,7 +25,14 @@ mypy tkt/
 
 - **ruff**: line-length 110, doc-length 79, numpy docstring convention. See `pyproject.toml` for the full configuration.
 - **mypy**: type checking. See `pyproject.toml` for configuration.
-- **pyright**: `pyrightconfig.json` is for human IDE use only and is **not** for linting.
+  `pyproject.toml` for the full configuration.
+- **pyright**: `pyrightconfig.json` is for human IDE use only and is **not**
+  for linting.
+
+A common gotcha: `ruff format` will move orphaned closing triple-quotes on
+single-line docstrings back to the first line, breaking its own
+doc-line-length check. Either shorten the single line so it fits, or put the
+last word on the second line.
 
 ## File layout
 
