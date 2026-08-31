@@ -346,3 +346,30 @@ def test_cleanup_stale_bridges_dry_run():
         stale.terminate()
         stale.wait()
         Sandbox(command=[])._stop_bridge(net_dir, procs)
+
+
+def test_warm_holder_argv_workspace(workspace):
+    """Warm-holder argv: ``.agent`` writable, no LLM bridge."""
+    tool = Sandbox(command=["opencode", "acp"])
+    argv = tool.warm_holder_argv(
+        workspace=workspace,
+        inner='while read line; do echo "$line"; done',
+    )
+    # agent dir is writable
+    assert "--bind" in argv
+    assert os.path.join(workspace.directory, ".agent") in argv
+    # restricted network, no socat bridge
+    assert "--unshare-net" in argv
+    assert "socat" not in " ".join(_inner_of(argv))
+    assert _inner_of(argv) == 'while read line; do echo "$line"; done'
+
+
+def test_warm_holder_argv_single_repo(tmp_path):
+    """A warm-holder argv for a single repo bind-mounts the repo read-write."""
+    tool = Sandbox(command=["opencode", "acp"])
+    argv = tool.warm_holder_argv(
+        repo_dir=str(tmp_path),
+        inner="echo hi",
+    )
+    assert "--bind" in argv
+    assert str(tmp_path) in argv

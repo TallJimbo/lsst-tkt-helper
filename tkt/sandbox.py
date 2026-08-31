@@ -597,24 +597,16 @@ class Sandbox(Tool):
                 proc.wait()
         shutil.rmtree(net_dir, ignore_errors=True)
 
-    def _build_bwrap_argv(
-        self,
-        workspace: Workspace,
-        *,
-        shell: bool,
-        command: str | None = None,
-        network: bool = True,
-        net_dir: str | None = None,
-        ports: Sequence[int] = _DEFAULT_PORTS,
-        vc_port: int = _DEFAULT_VC_PORT,
-    ) -> list[str]:
-        home = os.path.expanduser("~")
-        agent_dir = os.path.join(workspace.directory, AGENT_SUBDIR)
-        # Workspace-specific mounts. The agent's directory and the .git
-        # subdirectories are the only writable locations in the workspace; main
-        # workspace and each external are read-only.
+    def _workspace_mounts(self, workspace: Workspace) -> list[str]:
+        """Build the mount list for a tkt workspace.
+
+        The agent directory is the only writable location in the workspace;
+        main workspace, per-package ``.git`` dirs are writable, and externals
+        are read-only.
+        """
         mounts: list[str] = []
         mounts += ["--ro-bind", workspace.directory, workspace.directory]
+        agent_dir = os.path.join(workspace.directory, AGENT_SUBDIR)
         mounts += ["--bind", agent_dir, agent_dir]
         for package in workspace.packages:
             package_dir = os.path.join(workspace.directory, package)
@@ -627,6 +619,29 @@ class Sandbox(Tool):
                 mounts += ["--ro-bind", external_path, external_path]
             else:
                 logging.warning(f"External path {external_path} does not exist; skipping mount.")
+        return mounts
+
+    def _single_repo_mounts(self, repo_dir: str) -> list[str]:
+        """Build the mount list for a single repository.
+
+        The whole repository is writable by the agent; no per-package worktrees
+        are involved.
+        """
+        return ["--bind", repo_dir, repo_dir]
+
+    def _build_bwrap_argv(
+        self,
+        workspace: Workspace,
+        *,
+        shell: bool,
+        command: str | None = None,
+        network: bool = True,
+        net_dir: str | None = None,
+        ports: Sequence[int] = _DEFAULT_PORTS,
+        vc_port: int = _DEFAULT_VC_PORT,
+    ) -> list[str]:
+        home = os.path.expanduser("~")
+        mounts = self._workspace_mounts(workspace)
         inner = self._build_inner_script(shell=shell, command=command)
         return self._build_common_argv(
             home=home,
@@ -651,9 +666,7 @@ class Sandbox(Tool):
         vc_port: int = _DEFAULT_VC_PORT,
     ) -> list[str]:
         home = os.path.expanduser("~")
-        # The whole repository is writable by the agent; no separate .git
-        # handling is needed since there are no per-package worktrees.
-        mounts: list[str] = ["--bind", repo_dir, repo_dir]
+        mounts = self._single_repo_mounts(repo_dir)
         inner = self._build_inner_script(shell=shell, conda_env=conda_env, repo_dir=repo_dir, command=command)
         return self._build_common_argv(
             home=home,
@@ -663,6 +676,36 @@ class Sandbox(Tool):
             net_dir=net_dir,
             ports=ports,
             vc_port=vc_port,
+        )
+
+    def warm_holder_argv(
+        self,
+        *,
+        workspace: Workspace | None = None,
+        repo_dir: str | None = None,
+        inner: str,
+        network: bool = False,
+    ) -> list[str]:
+        """Build a bwrap argv for a long-lived warm holder running ``inner``.
+
+        Exactly one of ``workspace`` or ``repo_dir`` must be given. The warm
+        holder uses the same mount model as the corresponding sandbox mode but
+        runs the provided driver script ``inner`` instead of a fixed command,
+        and is network-restricted with no LLM bridge.
+        """
+        home = os.path.expanduser("~")
+        if workspace is not None and repo_dir is None:
+            mounts = self._workspace_mounts(workspace)
+        elif repo_dir is not None and workspace is None:
+            mounts = self._single_repo_mounts(repo_dir)
+        else:
+            raise ValueError("Exactly one of workspace or repo_dir must be provided.")
+        return self._build_common_argv(
+            home=home,
+            mounts=mounts,
+            inner=inner,
+            network=network,
+            bridge_llm=False,
         )
 
     def _build_common_argv(
@@ -675,6 +718,7 @@ class Sandbox(Tool):
         net_dir: str | None = None,
         ports: Sequence[int] = _DEFAULT_PORTS,
         vc_port: int = _DEFAULT_VC_PORT,
+        bridge_llm: bool = True,
     ) -> list[str]:
         argv: list[str] = [
             "bwrap",
@@ -699,7 +743,7 @@ class Sandbox(Tool):
         ]
         # Mode-specific mounts go between the base and config mounts.
         argv += mounts
-        if not network:
+        if not network and bridge_llm:
             if net_dir is None or not os.path.isdir(net_dir):
                 raise ValueError("restricted network requires a valid net_dir socket directory")
             # Share the bridge socket directory read-write with the sandbox.

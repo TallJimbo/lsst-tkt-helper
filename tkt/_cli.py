@@ -390,6 +390,52 @@ def sandbox_run(
         sandbox.run_single_repo(repo_dir, shell=shell, conda_env=conda_env, command=cmd, network=network)
 
 
+@cli.command("mcp-server", help="Run the MCP stdio server exposing a sandboxed bash tool.")
+@click.option(
+    "--environment",
+    envvar="TKT_ENVIRONMENT",
+    type=click.File(),
+)
+@click.option(
+    "-d",
+    "--directory",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+)
+@click.option("--conda-env", type=str, default=None)
+@click.option("-v", "--verbose", count=True)
+def mcp_server(
+    *,
+    environment: TextIO | None,
+    directory: str | None,
+    conda_env: str | None,
+    verbose: int = 0,
+) -> None:
+    _setup_logging(verbose)
+    from .mcp_server import run_server
+    from .sandbox import Sandbox
+
+    if environment is None:
+        raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
+    cwd = os.path.abspath(".")
+    if os.path.isdir(os.path.join(cwd, ".agent")):
+        # Workspace mode.
+        env = Environment.from_file(environment)
+        workspace = Workspace.from_existing(ticket=None, directory=directory, environment=env)
+        tool = env.get_tool("sandbox")
+        if tool is None or not isinstance(tool, Sandbox):
+            raise click.UsageError("No configured 'sandbox' tool (tkt.sandbox.Sandbox).")
+        run_server(tool, cwd=workspace.directory, workspace=workspace, conda_env=conda_env)
+    else:
+        # Single-repo mode.
+        cls, data = Environment.load_config(environment)
+        tools = cls.load_tools(data)
+        sandbox = tools.get("sandbox")
+        if sandbox is None or not isinstance(sandbox, Sandbox):
+            raise click.UsageError("No configured 'sandbox' tool (tkt.sandbox.Sandbox).")
+        repo_dir = directory if directory is not None else cwd
+        run_server(sandbox, cwd=repo_dir, repo_dir=repo_dir, conda_env=conda_env)
+
+
 @cli.command(
     "pull-sandbox",
     help=(
