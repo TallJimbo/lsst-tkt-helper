@@ -61,16 +61,14 @@
         ],
         "rw": [
           "~/.config/opencode",
-          "~/.config/openspec",
           "~/.local/share/opencode",
-          "~/.local/share/openspec",
           "~/.cache/opencode",
           "~/.cache/prek",
           "~/.eups",
-          "~/LSST/openspec",
           "~/LSST/superpowers-docs"
         ]
       },
+      "port": [8080, 8090],
       "env": {
         "GIT_EDITOR": "true",
         "GIT_SEQUENCE_EDITOR": "true"

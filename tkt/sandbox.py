@@ -616,8 +616,6 @@ class Sandbox(Tool):
         mounts: list[str] = []
         mounts += ["--ro-bind", workspace.directory, workspace.directory]
         mounts += ["--bind", agent_dir, agent_dir]
-        opencode_hidden_dir = os.path.join(workspace.directory, ".opencode")
-        mounts += ["--bind", opencode_hidden_dir, opencode_hidden_dir]
         for package in workspace.packages:
             package_dir = os.path.join(workspace.directory, package)
             git_dir = os.path.join(package_dir, ".git")
