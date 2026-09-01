@@ -92,6 +92,40 @@ def fix_openspec(directory: str | None, *, dry_run: bool = False, verbose: int =
     click.echo(f"done: {result.files_changed} file(s) {verb} updated, {len(result.warnings)} warning(s)")
 
 
+@cli.command(
+    "install-zed-agent",
+    help=(
+        "Symlink the Zed harness skills into ~/.agents/skills and rules.md into "
+        "~/.config/zed/AGENTS.md. Warns about (and, with --yes, removes) stale "
+        "entries under ~/.agents/skills."
+    ),
+)
+@click.option("-n", "--dry-run", is_flag=True)
+@click.option("--yes", "yes", is_flag=True, help="Remove stale entries without prompting.")
+@click.option("-v", "--verbose", count=True)
+def install_zed_agent(*, dry_run: bool = False, yes: bool = False, verbose: int = 0) -> None:
+    _setup_logging(verbose)
+    from .install import install_zed_agent as _install_zed
+
+    confirm = (lambda msg: True) if yes else click.confirm
+    _install_zed(dry_run=dry_run, confirm=confirm)
+
+
+@cli.command(
+    "install-opencode-agent",
+    help=(
+        "Symlink the OpenCode harness agents dir into ~/.config/opencode/agents, replacing any stale symlink."
+    ),
+)
+@click.option("-n", "--dry-run", is_flag=True)
+@click.option("-v", "--verbose", count=True)
+def install_opencode_agent(*, dry_run: bool = False, verbose: int = 0) -> None:
+    _setup_logging(verbose)
+    from .install import install_opencode_agent as _install_opencode
+
+    _install_opencode(dry_run=dry_run)
+
+
 @cli.command()
 @click.argument("ticket")
 @click.argument("packages", nargs=-1)

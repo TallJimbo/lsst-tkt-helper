@@ -231,7 +231,11 @@ class WarmSandbox:
             if rc is not None:
                 raise RuntimeError(f"Warm holder exited unexpectedly (exit code {rc}).")
             raise RuntimeError("Warm holder exited unexpectedly.")
-        frame = parse_result_line(line.strip().decode())
+        # Strip only the trailing line terminator, never leading whitespace:
+        # when the command produced no stdout, the driver's first result field
+        # is empty and the line begins with a space. strip() would remove that
+        # leading space, collapsing the 5 fields into 4 and breaking the split.
+        frame = parse_result_line(line.decode().rstrip("\r\n"))
         self._cwd = frame["cwd"]
         return BashResult(
             stdout=frame["stdout"],

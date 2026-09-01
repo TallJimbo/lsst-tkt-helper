@@ -99,6 +99,43 @@ def _fake_proc():
     return proc
 
 
+def _fake_proc_empty_stdout():
+    """Return a fake holder whose first result has an empty stdout field.
+
+    Mirrors a command that produced no stdout (only stderr), the case that
+    made the driver emit a leading space before the stderr field.
+    """
+    proc = mock.Mock()
+    cwd_field = encode_field("/fake/cwd")
+    err_field = encode_field("ls: cannot access x: No such file or directory\n")
+    rc_field = encode_field("2")
+    to_field = encode_field("0")
+    proc.stdout.readline.return_value = (f" {err_field} {rc_field} {cwd_field} {to_field}\n").encode()
+    proc.stdin = mock.Mock()
+    return proc
+
+
+def test_warm_sandbox_run_empty_stdout_field(tmp_path):
+    """WarmSandbox.run survives a result line whose stdout field is empty.
+
+    The old strip() removed the leading space of such a line, collapsing the
+    5 result fields into 4 and raising ValueError (Malformed result line).
+    Only the trailing newline should be removed.
+    """
+    from tkt.sandbox import Sandbox
+
+    sandbox = Sandbox(command=["opencode", "acp"])
+    sandbox.warm_holder_argv = mock.Mock(return_value=["bwrap", "args"])
+    with mock.patch("tkt.mcp_server.subprocess.Popen", return_value=_fake_proc_empty_stdout()):
+        ws = WarmSandbox(sandbox, repo_dir=str(tmp_path), cwd="/start")
+        result = ws.run("ls /nonexistent", timeout_ms=500)
+        assert result.stdout == ""
+        assert "No such file" in result.stderr
+        assert result.exit_code == 2
+        assert result.timed_out is False
+        assert ws.cwd == "/fake/cwd"
+
+
 def test_warm_sandbox_run_frames_command_and_tracks_cwd(tmp_path):
     """WarmSandbox.run frames cwd+command+timeout and updates cwd/timed_out."""
     from tkt.sandbox import Sandbox

@@ -57,10 +57,11 @@
           "~/.profile",
           "~/.bash_profile",
           "~/.inputrc",
-          "~/.nvm/versions/node/v24.18.0"
+          "~/.nvm/versions/node/v24.18.0",
+          "~/.config/opencode",
+          "~/.agents/skills"
         ],
         "rw": [
-          "~/.config/opencode",
           "~/.local/share/opencode",
           "~/.cache/opencode",
           "~/.cache/prek",
