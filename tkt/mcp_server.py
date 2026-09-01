@@ -26,8 +26,10 @@ from __future__ import annotations
 
 __all__ = (
     "BashResult",
+    "ReadResult",
     "WarmSandbox",
     "build_driver_script",
+    "build_read_command",
     "decode_field",
     "encode_field",
     "parse_result_line",
@@ -36,6 +38,8 @@ __all__ = (
 
 import base64
 import os
+import re
+import shlex
 import subprocess
 from typing import Any
 
@@ -57,6 +61,18 @@ class BashResult(BaseModel):
     stderr: str
     exit_code: int
     timed_out: bool = False
+
+
+class ReadResult(BaseModel):
+    """The outcome of one sandboxed ``read`` call.
+
+    ``content`` is the line-numbered slice of a text file. When lines remain
+    past the slice, ``content`` ends with a ``... (N more lines)`` note and
+    ``truncated`` is True.
+    """
+
+    content: str
+    truncated: bool
 
 
 def encode_field(text: str) -> str:
@@ -87,6 +103,74 @@ def parse_result_line(line: str) -> dict[str, Any]:
         "cwd": cwd,
         "timed_out": bool(int(timed_out)),
     }
+
+
+_READ_TOTAL_RE = re.compile(r"READ_TOTAL (\d+)")
+
+
+def build_read_command(path: str, offset: int, limit: int) -> str:
+    """Build the sandbox command that reads a slice of ``path``.
+
+    Reads lines ``[offset+1, offset+limit]`` (1-based, via ``sed``) and emits
+    the raw slice base64-encoded on stdout, so the byte stream round-trips
+    losslessly through the UTF-8 decode in :func:`parse_result_line` (a binary
+    file degrades to a host-side "binary" message instead of crashing the
+    framing). The total line count is reported on stderr as a
+    ``READ_TOTAL <n>`` marker so the host can compute the truncation note.
+    ``path`` is embedded via ``shlex.quote``.
+    """
+    quoted = shlex.quote(path)
+    start = offset + 1
+    end = offset + limit
+    return (
+        f"f={quoted}\n"
+        'if [ ! -f "$f" ]; then '
+        'printf "read: no such file or not a regular file: %s\\n" '
+        '"$f" >&2; exit 1; fi\n'
+        'printf "READ_TOTAL %s\\n" "$(wc -l < "$f")" >&2\n'
+        f'sed -n "{start},{end}p" "$f" | base64 -w0\n'
+        'printf "\\n"\n'
+    )
+
+
+def _parse_read_total(stderr: str) -> int | None:
+    """Return the ``READ_TOTAL`` count parsed from ``stderr``, or None."""
+    m = _READ_TOTAL_RE.search(stderr)
+    return int(m.group(1)) if m else None
+
+
+def read_tool(warm: WarmSandbox, *, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+    """Run one sandboxed ``read`` against ``warm`` and return a
+    :class:`ReadResult`.
+    """
+    offset = max(0, offset)
+    limit = max(1, limit)
+    result = warm.run(build_read_command(file_path, offset, limit))
+    if result.exit_code != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        return ReadResult(content=f"read: {err}", truncated=False)
+    total = _parse_read_total(result.stderr)
+    raw = base64.b64decode(result.stdout.strip())
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ReadResult(
+            content="read: file appears to be binary (did not decode as UTF-8)",
+            truncated=False,
+        )
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    lines = lines[:limit]
+    numbered = "\n".join(f"{offset + i + 1}\t{line}" for i, line in enumerate(lines))
+    returned = offset + len(lines)
+    if total is None:
+        total = returned
+    more = total - returned
+    truncated = more > 0
+    if truncated and offset == 0:
+        numbered += f"\n... ({more} more lines)"
+    return ReadResult(content=numbered, truncated=truncated)
 
 
 def build_driver_script(setup_lines: list[str]) -> str:
@@ -288,5 +372,32 @@ def run_server(
             description: Optional human-readable rationale for this call.
         """
         return warm.run(command, timeout_ms=timeout_ms)
+
+    @mcp.tool()
+    def read(
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+        description: str | None = None,  # present for human approvals of tool actions
+    ) -> ReadResult:
+        """Read a file (or a slice of it) inside the tkt sandbox.
+
+        The sandbox blocks ``$HOME`` (so credentials are never exposed) but
+        mounts the workspace
+        and the read-only ``~/.agents/skills`` directory, so skill reference
+        files are readable. ``offset`` (default 0) is the number of lines to
+        skip; ``limit`` (default 2000) is the max lines to read. When more
+        lines remain past the slice, ``content`` ends with a ``... (N more
+        lines)`` note and ``truncated`` is True. ``description`` is a per-call
+        rationale for the human; it does not change behavior.
+
+        Args:
+            file_path: The file to read (absolute, or relative to the sandbox
+                cwd).
+            offset: Number of lines to skip from the start.
+            limit: Maximum number of lines to read.
+            description: Optional human-readable rationale for this call.
+        """
+        return read_tool(warm, file_path=file_path, offset=offset, limit=limit)
 
     mcp.run()

@@ -40,11 +40,11 @@ surface while keeping Zed's UI-integrated native tools for editing.
 - **MCP server:** `tkt mcp-server` exposes a sandboxed `bash` tool (warm holder,
   fresh child per call, tracked cwd, timeout enforcement). Registered as a Zed
   context server. Design and hardening are done.
-- **Agent profile:** a custom Zed profile already maps `terminal` -> `tkt:bash`
+- **Agent profile:** a custom Zed profile already maps `terminal` -> `bash`
   (disables built-in `terminal`, enables the MCP `bash`). Lives on the human's
   machine (not visible from this repo).
 - **Skills:** the `superpowers` skills are _mostly_ adapted to Zed already. The
-  only gaps are `terminal` -> `tkt:bash` in `zed-tools.md` and the absence of
+  only gaps are `terminal` -> `bash` in `zed-tools.md` and the absence of
   `ask_user`.
 
 ## 4. Target tool suite
@@ -103,8 +103,8 @@ and profile updates.
 ### R0 — Catchup (maintenance)
 
 - [x] Update `superpowers/skills/using-superpowers/references/zed-tools.md`: `terminal` ->
-      `tkt:bash`; add `ask_user` (and the question-asking skills). Small; the profile
-      already maps `terminal` -> `tkt:bash`.
+      `bash`; add `ask_user` (and the question-asking skills). Small; the profile
+      already maps `terminal` -> `bash`.
 
 ### R1 — Prompts -> skills (DONE, 2026-09-01)
 
@@ -138,7 +138,8 @@ Each batch is one design -> plan -> build cycle that updates **all of**: the MCP
 tool(s), the skills references, the agent profile, and the Zed system-prompt override —
 together. Expected order:
 
-1. `Read` (resolve the `~/.agents/skills`/`$HOME` tension first).
+1. `Read` (resolve the `~/.agents/skills`/`$HOME` tension first). **DONE, 2026-09-01** —
+   sandboxed `read` MCP tool, `Read a file -> `read`mapping in`zed-tools.md`and`zed-explorer`, native `read_file` disabled machine-side.
 2. `Grep`, `Glob`, `LS`.
 3. `TodoWrite`.
 

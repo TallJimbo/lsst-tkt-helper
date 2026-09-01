@@ -23,3 +23,7 @@ The harness configuration you're running under is still under development. If
 you notice any inconsistencies or unexpected permission blocks (e.g. files you
 can access via the `bash` tool but not more precise tools), surface those
 issues to the user.
+
+## Tool changes
+
+System prompts may reference a `read_file` tool; use the sandboxed `read` tool instead.

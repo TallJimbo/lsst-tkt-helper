@@ -24,12 +24,14 @@
 
 from __future__ import annotations
 
+import base64
 from unittest import mock
 
 from tkt.mcp_server import (
     BashResult,
     WarmSandbox,
     build_driver_script,
+    build_read_command,
     decode_field,
     encode_field,
     parse_result_line,
@@ -200,3 +202,101 @@ def test_build_driver_script_hardening():
     # 124/137 -> timed_out mapping
     assert 'timeout --kill-after=5 "${secs}s"' in script
     assert 'if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then to=1; else to=0; fi' in script
+
+
+def test_build_read_command_quotes_path_and_slices():
+    """build_read_command quotes the path and selects the slice."""
+    cmd = build_read_command("/a b/c.txt", offset=0, limit=2000)
+    assert "'/a b/c.txt'" in cmd  # shlex.quote wraps in single quotes
+    assert 'sed -n "1,2000p"' in cmd
+    assert '"$f"' in cmd
+    assert "wc -l" in cmd
+    assert "base64 -w0" in cmd
+
+
+def test_build_read_command_respects_offset():
+    """Offset shifts the 1-based sed range and does not renumber."""
+    cmd = build_read_command("/tmp/x.txt", offset=5, limit=3)
+    assert 'sed -n "6,8p"' in cmd
+
+
+def test_read_tool_numbers_lines_and_no_truncation():
+    """A full slice is numbered with absolute line numbers, not truncated."""
+    from tkt.mcp_server import read_tool
+
+    sl = b"a\nbb\nccc\n"
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(
+        stdout=base64.b64encode(sl).decode(), stderr="READ_TOTAL 3\n", exit_code=0
+    )
+    res = read_tool(warm, file_path="/tmp/x.txt")
+    assert res.content == "1\ta\n2\tbb\n3\tccc"
+    assert res.truncated is False
+
+
+def test_read_tool_truncation_note():
+    """A partial slice appends a '... (N more lines)' note; truncated=True."""
+    from tkt.mcp_server import read_tool
+
+    sl = b"l1\nl2\nl3\nl4\nl5\n"
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(
+        stdout=base64.b64encode(sl).decode(), stderr="READ_TOTAL 5\n", exit_code=0
+    )
+    res = read_tool(warm, file_path="/tmp/x.txt", offset=0, limit=2)
+    assert res.content == "1\tl1\n2\tl2\n... (3 more lines)"
+    assert res.truncated is True
+
+
+def test_read_tool_offset_numbers_from_absolute():
+    """Offset skips leading lines but numbers from the true line number."""
+    from tkt.mcp_server import read_tool
+
+    sl = b"l3\nl4\n"
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(
+        stdout=base64.b64encode(sl).decode(), stderr="READ_TOTAL 5\n", exit_code=0
+    )
+    res = read_tool(warm, file_path="/tmp/x.txt", offset=2, limit=2)
+    assert res.content == "3\tl3\n4\tl4"
+    assert res.truncated is True  # 2 returned + 2 offset = 4 < 5
+
+
+def test_read_tool_missing_file_error():
+    """A nonzero exit propagates a read: ... error in content."""
+    from tkt.mcp_server import read_tool
+
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(
+        stdout="", stderr="read: no such file or not a regular file: /nope\n", exit_code=1
+    )
+    res = read_tool(warm, file_path="/nope")
+    assert res.content.startswith("read: ")
+    assert "no such file" in res.content
+    assert res.truncated is False
+
+
+def test_read_tool_binary_file():
+    """A non-UTF-8 slice yields a binary-file message instead of a crash."""
+    from tkt.mcp_server import read_tool
+
+    raw = b"\xff\xfe\x00binary"
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(
+        stdout=base64.b64encode(raw).decode(), stderr="READ_TOTAL 1\n", exit_code=0
+    )
+    res = read_tool(warm, file_path="/tmp/blob")
+    assert "binary" in res.content
+    assert res.truncated is False
+
+
+def test_read_tool_clamps_offset_and_limit():
+    """Offset clamps to >=0, limit to >=1."""
+    from tkt.mcp_server import read_tool
+
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(
+        stdout=base64.b64encode(b"x\n").decode(), stderr="READ_TOTAL 1\n", exit_code=0
+    )
+    res = read_tool(warm, file_path="/tmp/x.txt", offset=-5, limit=0)
+    assert res.content == "1\tx"
