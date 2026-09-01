@@ -16,3 +16,10 @@ Load the skill matching the task you were asked to do:
 - review a task's diff → `zed-reviewer` (scope: task)
 - re-review a fix round → `zed-reviewer` (scope: re-review)
 - final whole-branch review → `zed-reviewer` (scope: final)
+
+## Harness bug reporting
+
+The harness configuration you're running under is still under development. If
+you notice any inconsistencies or unexpected permission blocks (e.g. files you
+can access via the `bash` tool but not more precise tools), surface those
+issues to the user.
