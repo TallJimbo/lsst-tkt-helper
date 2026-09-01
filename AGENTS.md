@@ -4,8 +4,6 @@
 
 Prefer simple solutions to thorough handling of edge cases; the users of this tool are also developers, and they can handle exception tracebacks and other failure modes.
 
-Because this project is where general development tooling happens, agents working here will often be asked to edit files in `~/.config/opencode` as well as on the files directly in the project root.
-
 ## Development setup
 
 - **Python**: 3.13
@@ -52,6 +50,7 @@ last word on the second line.
 | `tkt/utils.py`        | JSON read/write helpers (uses `json5` for reading to allow trailing commas).                                                                                                                                                                |
 | `agents/opencode/`    | Custom OpenCode workflow agents `sp-design`, `sp-plan`, `sp-build`, `sp-debug`, `sp-review`; `~/.config/opencode/agents/` is a symlink to it.                                                                                               |
 | `superpowers/`        | Git submodule (TallJimbo's fork of `obra/superpowers`) providing the `skills/` the `sp-*` agents use; pinned by this repo.                                                                                                                  |
+| `investigation/`      | Uncomitted notes, logs, and general investigation scratch space. Includes the git source repos for both Zed and OpenCode.                                                                                                                   |
 
 ## Configuration
 
