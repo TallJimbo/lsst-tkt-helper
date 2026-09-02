@@ -3,6 +3,11 @@ line-length = 110
 target-version = "py313"
 exclude = [
     "__init__.py",
+
+    # Scratch space and the pinned superpowers submodule are not part of this
+    # package; keep ruff out of them.
+    "investigations",
+    "superpowers",
 ]
 
 [tool.ruff.lint]
@@ -75,3 +80,19 @@ warn_redundant_casts = true
 [[tool.mypy.overrides]]
 module = ["git"]
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+# Keep pytest from descending into scratch space or the pinned submodule.
+norecursedirs = [
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "node_modules",
+    "venv",
+    "{arch}",
+    "investigations",
+    "superpowers",
+]
