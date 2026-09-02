@@ -49,20 +49,20 @@ surface while keeping Zed's UI-integrated native tools for editing.
 
 ## 4. Target tool suite
 
-| Tool                             | Backed by                               | Claude Code analog | Notes                                                |
-| -------------------------------- | --------------------------------------- | ------------------ | ---------------------------------------------------- |
-| `Bash`                           | tkt MCP (sandboxed)                     | `Bash`             | **done**                                             |
-| `Read`                           | tkt MCP (sandboxed, `$HOME`-blocked)    | `Read`             | see R2 tension below                                 |
-| `Grep`                           | tkt MCP (sandboxed)                     | `Grep`             |                                                      |
-| `Glob`                           | tkt MCP (sandboxed)                     | `Glob`             |                                                      |
-| `LS`                             | tkt MCP (sandboxed)                     | `LS`               |                                                      |
-| `Write` / `Edit`                 | **Zed native** `write_file`/`edit_file` | `Write`/`Edit`     | kept native for UI diffs; regex-scope to `.agent/**` |
-| `TodoWrite`                      | tkt MCP                                 | `TodoWrite`        | added per decision                                   |
-| `Task`                           | **Zed native** `spawn_agent`            | `Task`             |                                                      |
-| `Skill`                          | **Zed native** `skill`                  | `Skill`            |                                                      |
-| `WebFetch`                       | deferred                                | `WebFetch`         | use native `fetch` meanwhile (R4)                    |
-| `AskUserQuestion`                | **Zed native** `ask_user`               | `AskUserQuestion`  | encourage use; went unused in prior Zed support      |
-| (`delete`/`copy`/`move`/`mkdir`) | Zed native                              | —                  | write-ish ops; native + regex                        |
+| Tool                             | Backed by                               | Claude Code analog | Notes                                                     |
+| -------------------------------- | --------------------------------------- | ------------------ | --------------------------------------------------------- |
+| `Bash`                           | tkt MCP (sandboxed)                     | `Bash`             | **done**                                                  |
+| `Read`                           | tkt MCP (sandboxed, `$HOME`-blocked)    | `Read`             | see R2 tension below                                      |
+| `Grep`                           | tkt MCP (sandboxed)                     | `Grep`             |                                                           |
+| `Glob`                           | tkt MCP (sandboxed)                     | `Glob`             |                                                           |
+| `LS`                             | tkt MCP (sandboxed)                     | `LS`               |                                                           |
+| `Write` / `Edit`                 | **Zed native** `write_file`/`edit_file` | `Write`/`Edit`     | kept native for UI diffs; regex-scope to `.agent/**`      |
+| `TodoWrite`                      | tkt MCP                                 | `TodoWrite`        | added per decision                                        |
+| `Task`                           | **Zed native** `spawn_agent`            | `Task`             |                                                           |
+| `Skill`                          | **Zed native** `skill`                  | `Skill`            |                                                           |
+| `WebFetch`                       | deferred                                | `WebFetch`         | use native `fetch` meanwhile (R4)                         |
+| `AskUserQuestion`                | **Zed native** `ask_user`               | `AskUserQuestion`  | encourage for primary; discourage/block in subagents (E1) |
+| (`delete`/`copy`/`move`/`mkdir`) | Zed native                              | —                  | write-ish ops; native + regex                             |
 
 Target total is roughly 6–8 primary tools versus ~59 offered today.
 
@@ -166,8 +166,10 @@ if anything does come up.
    `write_file`/`edit_file`); only _our_ MCP tools get Claude-style names.
 4. **Add `TodoWrite`** as an MCP tool.
 5. **`WebFetch` deferred** to the end (R4); use native `fetch` meanwhile.
-6. **`ask_user` should be used**; add it to `zed-tools.md` and question-asking skills
-   (it was overlooked in the prior Zed support work).
+6. **`ask_user` should be used** for the primary agent; add it to `zed-tools.md` and
+   question-asking skills (it was overlooked in the prior Zed support work). — **Refined
+   by E1**: keep encouraging it for the primary agent, but discourage/block it for
+   _subagents_, which can call it too and where it works poorly. See §9.
 7. **OpenCode support is retained**, coexisting with the Zed setup during testing.
 8. **Prompts-first order:** move prompts to skills (R1) before expanding tools (R2).
 9. **System-prompt override maintained per-batch** in R2, alongside skills + profile.
@@ -181,3 +183,43 @@ if anything does come up.
 - Skill renaming to `design`/`plan`/`build` — dropped as optional; not done in R1.
 - Task 14 (manual): remove the superseded `agents/opencode` directory now that
   `~/.config/opencode/agents` points at `harnesses/opencode/agents`.
+
+## 9. Emergent work (added 2026-09-01)
+
+Emergent items surfaced since the roadmap was approved. **None are scheduled for
+action yet** — they are tracked here so they aren't lost. Each should be triaged into
+its own design -> plan -> build cycle (or an investigation) before being acted on.
+
+### E1 — Keep `ask_user` for the primary agent; discourage/block it in subagents
+
+`ask_user` is wanted and encouraged for the **primary agent**. The problem is that
+**subagents** (dispatched via `spawn_agent`) can also call it, and it does not work well
+in that context (interrupts their flow / renders poorly). Prefer to block it for
+subagents if possible; otherwise discourage it at the prompt/skill level. This _refines_
+— but does not reverse — design decision #6: primary agents keep encouragement, subagents
+should not use it.
+
+- Confirm whether `ask_user` can be blocked for subagents (e.g. via tool permissions /
+  profile) while remaining available to the primary agent.
+- If it can't be blocked, discourage its use in subagent prompts/skills (e.g. something
+  like a `spawn_agent`-scoped rule).
+- Update `zed-tools.md`, the question-asking skills, and the tool-suite table (see §4)
+  to reflect the primary-vs-subagent split.
+
+### E2 — Compaction: OpenCode vs Zed
+
+OpenCode compacts (summarizes) conversation history differently from Zed. Compare the
+two approaches and, if possible, improve Zed's compaction based on what we learn from
+OpenCode. Research/design first — no code changes yet.
+
+### E3 — Long-running model-degradation tracing proxy
+
+Observed model degradation with the Zed agent that isn't seen with OpenCode: incorrect
+use (or non-use) of thinking tags and repeated tool-use mistakes. A prior investigation
+into this was inconclusive but produced a debugging proxy server for tracing the API
+calls. Turn that proxy into something that can run continuously with log rotation or
+compression, so it gathers a large dataset for a future investigation.
+
+- Productize the existing proxy: run as a long-lived process, rotate/compress logs.
+- Collect enough data across normal Zed-agent use to make a future degradation
+  investigation tractable.
