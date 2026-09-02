@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any, TextIO
 
 import click
@@ -422,6 +423,158 @@ def sandbox_run(
             )
         repo_dir = directory if directory is not None else cwd
         sandbox.run_single_repo(repo_dir, shell=shell, conda_env=conda_env, command=cmd, network=network)
+
+
+@cli.command(
+    "trace-proxy",
+    help=(
+        "Run the long-lived model-traffic capture proxy. Appends one JSON "
+        "object per exchange to the continuous capture file. With --ssh-host, "
+        "runs an interactive ssh session in the foreground (whose config tunnel "
+        "is the upstream) with the proxy managed as a background child."
+    ),
+)
+@click.option("--listen", type=int, default=8090, help="Local listen port (default 8090).")
+@click.option("--upstream", required=True, help="Upstream scheme://host:port with no path.")
+@click.option("--traces-dir", type=click.Path())
+@click.option("--ssh-host", default=None, help="Run an interactive ssh session to this host.")
+@click.option("-v", "--verbose", count=True)
+def trace_proxy(
+    *, listen: int, upstream: str, traces_dir: str | None, ssh_host: str | None, verbose: int
+) -> None:
+    _setup_logging(verbose)
+    from .proxy import resolve_traces_dir, run_proxy, run_with_ssh
+
+    root = resolve_traces_dir()
+    if traces_dir:
+        root = Path(traces_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    log_path = root / "capture.jsonl"
+    if ssh_host:
+        run_with_ssh(upstream, ["ssh", ssh_host], listen=listen, log_path=str(log_path))
+    else:
+        run_proxy(listen, upstream, str(log_path))
+
+
+@cli.group(
+    "trace-log",
+    help="Retroactively segment, label, list, show, pin, and prune captured model traffic.",
+)
+@click.option("--traces-dir", type=click.Path())
+@click.option("-v", "--verbose", count=True)
+@click.pass_context
+def trace_log(ctx: click.Context, *, traces_dir: str | None, verbose: int) -> None:
+    _setup_logging(verbose)
+    from .proxy import resolve_traces_dir
+
+    root = resolve_traces_dir()
+    if traces_dir:
+        root = Path(traces_dir)
+    ctx.ensure_object(dict)
+    ctx.obj["root"] = root
+
+
+@trace_log.command("segment")
+@click.option("--horizon-days", type=int, default=30)
+@click.option("--keep", type=int, default=20)
+@click.pass_context
+def trace_log_segment(ctx: click.Context, *, horizon_days: int, keep: int) -> None:
+    from .tracelog import iter_records, prune, segment, write_session_files
+
+    root = ctx.obj["root"]
+    captures = list(iter_records(root / "capture.jsonl"))
+    sessions = segment(captures)
+    write_session_files(root, sessions, captures)
+    removed = prune(root, horizon_days=horizon_days, keep=keep)
+    click.echo(f"segmented {len(sessions)} session(s); pruned {len(removed)}")
+
+
+@trace_log.command("list")
+@click.pass_context
+def trace_log_list(ctx: click.Context) -> None:
+    """List captured sessions in a readable table."""
+    import datetime
+    import gzip
+
+    from .tracelog import list_sessions
+
+    root = ctx.obj["root"]
+    sessions = list_sessions(root)
+    if not sessions:
+        click.echo("no sessions")
+        return
+
+    def exchange_count(session_file: Path) -> int:
+        with gzip.open(session_file, "rt", encoding="utf-8") as fh:
+            return sum(1 for _ in fh)
+
+    rows = []
+    for s in sessions:
+        start = s.get("start")
+        end = s.get("end")
+        start_s = (
+            datetime.datetime.fromtimestamp(start).strftime("%Y-%m-%d %H:%M:%S") if start is not None else ""
+        )
+        duration = f"{end - start:.0f}s" if start is not None and end is not None else ""
+        rows.append(
+            (
+                str(s.get("id") or ""),
+                str(s.get("label") or "")[:40],
+                start_s,
+                str(exchange_count(s["_session_file"])),
+                duration,
+                str(s.get("client_ua") or ""),
+                "yes" if s.get("pinned") else "",
+            )
+        )
+
+    headers = ("SESSION", "LABEL", "START", "EXCH", "DURATION", "CLIENT", "PINNED")
+    table = [headers, *rows]
+    widths = [max(len(r[i]) for r in table) for i in range(len(headers))]
+    for row in table:
+        click.echo("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
+
+
+@trace_log.command("show")
+@click.argument("session_id")
+@click.option("--raw", is_flag=True)
+@click.pass_context
+def trace_log_show(ctx: click.Context, *, session_id: str, raw: bool) -> None:
+    from .tracelog import show_session
+
+    root = ctx.obj["root"]
+    try:
+        show_session(root, session_id, raw=raw)
+    except KeyError:
+        raise click.ClickException(f"no session with id {session_id!r}")
+
+
+@trace_log.command("pin")
+@click.argument("session_id")
+@click.pass_context
+def trace_log_pin(ctx: click.Context, *, session_id: str) -> None:
+    from .tracelog import pin_session
+
+    root = ctx.obj["root"]
+    try:
+        pin_session(root, session_id, pinned=True)
+    except KeyError:
+        raise click.ClickException(f"no session with id {session_id!r}")
+    click.echo(f"pinned {session_id}")
+
+
+@trace_log.command("unpin")
+@click.argument("session_id")
+@click.pass_context
+def trace_log_unpin(ctx: click.Context, *, session_id: str) -> None:
+    from .tracelog import pin_session
+
+    root = ctx.obj["root"]
+    try:
+        pin_session(root, session_id, pinned=False)
+    except KeyError:
+        raise click.ClickException(f"no session with id {session_id!r}")
+    click.echo(f"unpinned {session_id}")
 
 
 @cli.command("mcp-server", help="Run the MCP stdio server exposing a sandboxed bash tool.")

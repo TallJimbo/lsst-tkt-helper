@@ -24,6 +24,9 @@
 
 from __future__ import annotations
 
+from click.testing import CliRunner
+
+from tkt._cli import cli
 from tkt._environment import Tool
 from tkt.openspec import OpenSpec
 
@@ -86,3 +89,17 @@ def test_openspec_remove_empties_skills_dir(tmp_path):
 def test_openspec_remove_missing_ok(tmp_path):
     """Ensure remove is a no-op when no artifacts are present."""
     OpenSpec(store="lsst").remove(str(tmp_path))  # no error if nothing present
+
+
+def test_trace_proxy_command_exists() -> None:
+    """Ensure the ``trace-proxy`` command is registered on the CLI."""
+    result = CliRunner().invoke(cli, ["trace-proxy", "--help"])
+    assert result.exit_code == 0
+    assert "trace-proxy" in result.output
+
+
+def test_trace_log_command_exists() -> None:
+    """Ensure the ``trace-log`` command group is registered on the CLI."""
+    result = CliRunner().invoke(cli, ["trace-log", "--help"])
+    assert result.exit_code == 0
+    assert "trace-log" in result.output

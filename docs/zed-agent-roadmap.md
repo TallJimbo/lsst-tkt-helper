@@ -212,14 +212,30 @@ OpenCode compacts (summarizes) conversation history differently from Zed. Compar
 two approaches and, if possible, improve Zed's compaction based on what we learn from
 OpenCode. Research/design first — no code changes yet.
 
-### E3 — Long-running model-degradation tracing proxy
+### E3 — Long-running model-degradation tracing proxy (DONE, 2026-09-02)
 
 Observed model degradation with the Zed agent that isn't seen with OpenCode: incorrect
 use (or non-use) of thinking tags and repeated tool-use mistakes. A prior investigation
 into this was inconclusive but produced a debugging proxy server for tracing the API
-calls. Turn that proxy into something that can run continuously with log rotation or
-compression, so it gathers a large dataset for a future investigation.
+calls. The throwaway proxy is now productized into two continuously-running commands so
+it can gather a large, session-linked dataset for a future investigation.
 
-- Productize the existing proxy: run as a long-lived process, rotate/compress logs.
-- Collect enough data across normal Zed-agent use to make a future degradation
-  investigation tractable.
+- **`tkt trace-proxy`** — long-lived capture. Relays model HTTP traffic through a
+  sandboxed-forwarding proxy (optionally co-invoked over SSH to the model host) into the
+  data root, masking the `Authorization` header (case-insensitive) to `<redacted>`.
+- **`tkt trace-log`** — retroactive session segmentation and labeling: `segment` splits
+  the flat capture into conversation sessions (by OpenCode `x-session-id` header, or by
+  content-connected components for Zed, which sends no session header and may interleave a
+  primary conversation with empty-context `spawn_agent` subagents that are split into
+  their own sessions); plus `list`, `show`, `pin`/`unpin`, and `prune`.
+- **Data layout** — `~/.tkt/traces/` (override with `TKT_TRACES_DIR`): `capture.jsonl`
+  for the live stream, `sessions/<date>_<id>.jsonl.gz` per session, and paired
+  `*.meta.json` (label, id, start, end, client user-agent, pinned).
+- **Labeling** — sessions are labeled from the generated title (title-gen request at
+  session start), falling back to the session id / start time. **Pin/prune** — pinned
+  sessions are never pruned; `prune` removes old/extra unpinned sessions (default 30-day
+  horizon, keep 20).
+
+This supersedes the throwaway `investigations/bad-thinking/zed-agent-request-proxy/`
+prototype (left in place). Run it during normal Zed-agent use to accumulate data for the
+future degradation investigation.
