@@ -34,6 +34,7 @@ __all__ = (
     "encode_field",
     "parse_result_line",
     "run_server",
+    "truncate_output",
 )
 
 import base64
@@ -48,19 +49,29 @@ from pydantic import BaseModel
 
 from .sandbox import Sandbox
 
+# Model-facing cap for a single `bash` stream (stdout or stderr), in
+# characters.
+_MAX_OUTPUT_CHARS = 5_000
+
+# Driver-side hard cap (bytes) per stream; SIGPIPE-kills a runaway producer.
+_DRIVER_OUT_CAP = 50_000
+
 
 class BashResult(BaseModel):
     """The outcome of one sandboxed ``bash`` call.
 
-    ``stdout`` and ``stderr`` are the child's captured output; ``exit_code``
-    is its exit status; ``timed_out`` is True when the call was killed for
-    exceeding its ``timeout_ms``.
+    ``stdout`` and ``stderr`` are the child's captured output (truncated to
+    ``_MAX_OUTPUT_CHARS`` for the model); ``exit_code`` is its exit status;
+    ``timed_out`` is True when the call was killed for exceeding its
+    ``timeout_ms``; ``truncated`` is True when either stream was cut to
+    ``_MAX_OUTPUT_CHARS``.
     """
 
     stdout: str
     stderr: str
     exit_code: int
     timed_out: bool = False
+    truncated: bool = False
 
 
 class ReadResult(BaseModel):
@@ -83,6 +94,39 @@ def encode_field(text: str) -> str:
 def decode_field(field: str) -> str:
     """Inverse of :func:`encode_field`."""
     return base64.b64decode(field.encode("ascii")).decode("utf-8")
+
+
+def truncate_output(text: str, max_chars: int) -> tuple[str, bool]:
+    """Keep head+tail of ``text`` within ``max_chars`` chars.
+
+    Returns ``(text, truncated)``. When ``len(text) <= max_chars`` the input is
+    returned unchanged with ``truncated=False``. When it must be cut, roughly
+    half the budget is kept as head and half as tail, joined by a marker
+    reporting exactly how many characters were dropped. 0 or negative
+    ``max_chars`` keeps marker-only output.
+    """
+    if len(text) <= max_chars:
+        return text, False
+    n_head = max_chars // 2
+    n_tail = max_chars - n_head
+    head = text[:n_head]
+    tail = text[-n_tail:] if n_tail else ""
+    dropped = len(text) - len(head) - len(tail)
+    marker = f"\n... [{dropped} chars truncated] ...\n"
+    return head + marker + tail, True
+
+
+def _cap_result(result: BashResult, max_chars: int) -> BashResult:
+    """Apply ``truncate_output`` to both streams, setting ``truncated``."""
+    stdout, s_trunc = truncate_output(result.stdout, max_chars)
+    stderr, e_trunc = truncate_output(result.stderr, max_chars)
+    return BashResult(
+        stdout=stdout,
+        stderr=stderr,
+        exit_code=result.exit_code,
+        timed_out=result.timed_out,
+        truncated=s_trunc or e_trunc,
+    )
 
 
 def parse_result_line(line: str) -> dict[str, Any]:
@@ -176,15 +220,20 @@ def read_tool(warm: WarmSandbox, *, file_path: str, offset: int = 0, limit: int 
 def build_driver_script(setup_lines: list[str]) -> str:
     """Build the warm-holder driver bash script.
 
-    ``setup_lines`` run once at startup (conda activation + EUPS setup), with
-    their stdout redirected to stderr so startup diagnostics never leak into
-    the framed stdout channel. The EUPS/conda shell functions are exported so
-    fresh children can call ``setup``/``conda``. Then a loop reads three base64
-    lines per request (cwd, command, timeout_ms), runs the command in a fresh
+    ``setup_lines`` run once at startup (conda activation + EUPS setup). Their
+    stdout is redirected to stderr so startup diagnostics never leak into the
+    framed stdout channel. The EUPS/conda shell functions are exported so fresh
+    children can call ``setup``/``conda``. Then a loop reads three base64 lines
+    per request (cwd, command, timeout_ms), runs the command in a fresh
     ``bash -c`` child (under ``timeout --kill-after=5`` when a positive timeout
     is given: default TERM at the deadline, escalating to KILL), and emits one
     result line of 5 space-separated base64 fields (stdout, stderr, exit_code,
-    cwd, timed_out). ``timed_out`` maps from ``rc==124 || rc==137``. The
+    cwd, timed_out). ``timed_out`` maps from ``rc==124 || rc==137``. Both
+    streams are hard-capped at ``_DRIVER_OUT_CAP`` bytes via ``head -c``: a
+    producer that exceeds the cap is SIGPIPE-killed (``rc==141``), a marker is
+    appended to stderr, and only the capped bytes ever reach the frame.
+    ``rc=${PIPESTATUS[0]}`` preserves the command's own exit code; the bare
+    ``wait`` syncs the stderr process substitution before framing. The
     ``timeout_ms`` value is enforced at whole-second granularity (sub-second
     values round up to 1s).
     """
@@ -194,6 +243,7 @@ def build_driver_script(setup_lines: list[str]) -> str:
         f"{setup}\n"
         '    while IFS= read -r _f; do export -f "$_f"; done < <(compgen -A function)\n'
         "} >&2\n"
+        f'OC="{_DRIVER_OUT_CAP}"\n'
         "while IFS= read -r cwd_b64 && IFS= read -r cmd_b64 && IFS= read -r tmo_b64; do\n"
         "    cwd=$(printf '%s' \"$cwd_b64\" | base64 -d)\n"
         "    cmd=$(printf '%s' \"$cmd_b64\" | base64 -d)\n"
@@ -203,14 +253,20 @@ def build_driver_script(setup_lines: list[str]) -> str:
         "    errf=$(mktemp)\n"
         '    if [ "$tmo" -gt 0 ]; then\n'
         "        secs=$(( (tmo + 999) / 1000 ))\n"
-        '        timeout --kill-after=5 "${secs}s" bash -c -- "$cmd" </dev/null >"$out" 2>"$errf"\n'
+        '        timeout --kill-after=5 "${secs}s" bash -c -- "$cmd" '
+        '</dev/null 2> >(head -c "$OC" >"$errf") | head -c "$OC" >"$out"\n'
         "    else\n"
-        '        bash -c -- "$cmd" </dev/null >"$out" 2>"$errf"\n'
+        '        bash -c -- "$cmd" </dev/null 2> >(head -c "$OC" >"$errf") | head -c "$OC" >"$out"\n'
         "    fi\n"
-        "    rc=$?\n"
+        "    rc=${PIPESTATUS[0]}\n"
+        "    wait\n"
+        '    if [ "$rc" -eq 141 ]; then\n'
+        '        printf "\\n[output hard-capped: command produced more than %s bytes and was killed]\\n" '
+        '"$OC" >>"$errf"\n'
+        "    fi\n"
         "    cur=$(pwd)\n"
         '    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then to=1; else to=0; fi\n'
-        "    printf '%s %s %s %s %s\\n' \\\n"
+        '    printf "%s %s %s %s %s\\n" \\\n'
         '        "$(base64 -w0 < "$out")" \\\n'
         '        "$(base64 -w0 < "$errf")" \\\n'
         '        "$(printf \'%s\' "$rc" | base64 -w0)" \\\n'
@@ -361,7 +417,11 @@ def run_server(
         """Run a shell command inside the tkt sandbox.
 
         ``timeout_ms`` defaults to 60s; a request may override it. A command
-        that exceeds its timeout is killed and reported with ``timed_out``.
+        that exceeds its timeout is killed and reported with ``timed_out``. The
+        command is also hard-capped in the sandbox at ``_DRIVER_OUT_CAP`` bytes
+        per stream (a runaway producer is killed); the model sees stdout/stderr
+        truncated to ``_MAX_OUTPUT_CHARS`` chars each (head+tail, ``truncated``
+        set if cut).
         ``description`` is a per-call rationale for the human (e.g. shown when
         a host requests tool confirmation); it is not used to change behavior.
 
@@ -371,7 +431,7 @@ def run_server(
                 no timeout).
             description: Optional human-readable rationale for this call.
         """
-        return warm.run(command, timeout_ms=timeout_ms)
+        return _cap_result(warm.run(command, timeout_ms=timeout_ms), _MAX_OUTPUT_CHARS)
 
     @mcp.tool()
     def read(

@@ -25,16 +25,19 @@
 from __future__ import annotations
 
 import base64
+import subprocess as sp
 from unittest import mock
 
 from tkt.mcp_server import (
     BashResult,
     WarmSandbox,
+    _cap_result,
     build_driver_script,
     build_read_command,
     decode_field,
     encode_field,
     parse_result_line,
+    truncate_output,
 )
 
 
@@ -83,8 +86,9 @@ def test_build_driver_script_keeps_setup_off_framed_stdout():
     assert pre_loop.count("} >&2") == 1
     assert not any(line.lstrip().startswith(("printf", "echo")) for line in pre_loop.splitlines())
     # The first line of the loop body (which frames results) must come after
-    # the setup redirect is closed.
-    assert pre_loop.rstrip().endswith("} >&2")
+    # the setup redirect is closed. The OC= cap line is a variable assignment,
+    # not an output, so it sits harmlessly between the redirect and the loop.
+    assert pre_loop.rstrip().endswith('OC="50000"')
 
 
 def _fake_proc():
@@ -300,3 +304,89 @@ def test_read_tool_clamps_offset_and_limit():
     )
     res = read_tool(warm, file_path="/tmp/x.txt", offset=-5, limit=0)
     assert res.content == "1\tx"
+
+
+def test_truncate_output_passthrough_when_within_cap():
+    """Text within max_chars is returned unchanged with truncated=False."""
+    text = "a" * 100
+    out, truncated = truncate_output(text, 5000)
+    assert out == text
+    assert truncated is False
+
+
+def test_truncate_output_at_cap_not_truncated():
+    """Text exactly at max_chars is not truncated."""
+    text = "a" * 5000
+    out, truncated = truncate_output(text, 5000)
+    assert out == text
+    assert truncated is False
+
+
+def test_truncate_output_head_and_tail_with_marker():
+    """Oversized text keeps head+tail and the dropped-count marker."""
+    text = "A" * 7000
+    out, truncated = truncate_output(text, 5000)
+    assert truncated is True
+    assert out == "A" * 2500 + "\n... [2000 chars truncated] ...\n" + "A" * 2500
+
+
+def test_cap_result_truncates_and_sets_flag():
+    """_cap_result cuts an oversized stream and sets truncated when cut."""
+    result = BashResult(stdout="A" * 7000, stderr="ok", exit_code=0)
+    capped = _cap_result(result, 5000)
+    assert capped.truncated is True
+    assert len(capped.stdout) < 7000
+    assert "truncated]" in capped.stdout
+    assert capped.stderr == "ok"
+    assert capped.exit_code == 0
+    assert capped.timed_out is False
+
+
+def test_cap_result_no_truncation_preserves_fields():
+    """A within-cap result passes through unchanged, truncated=False."""
+    result = BashResult(stdout="hi", stderr="err", exit_code=3, timed_out=True)
+    capped = _cap_result(result, 5000)
+    assert capped.stdout == "hi"
+    assert capped.stderr == "err"
+    assert capped.exit_code == 3
+    assert capped.timed_out is True
+    assert capped.truncated is False
+
+
+def _run_driver(tmp_path, command, timeout_ms="0"):
+    """Run build_driver_script([]) under host bash; return the parsed frame."""
+    script = tmp_path / "driver.sh"
+    script.write_text(build_driver_script([]), encoding="utf-8")
+    proc = sp.Popen(
+        ["bash", str(script)],
+        stdin=sp.PIPE,
+        stdout=sp.PIPE,
+        stderr=sp.PIPE,
+        text=True,
+    )
+    payload = f"{encode_field(str(tmp_path))}\n{encode_field(command)}\n{encode_field(timeout_ms)}\n"
+    out, err = proc.communicate(payload)
+    assert proc.returncode == 0, err
+    # result line may begin with a space when stdout is empty; only strip the
+    # trailing newline.
+    return parse_result_line(out.rstrip("\n"))
+
+
+def test_driver_hard_caps_oversized_stdout_and_kills_producer(tmp_path):
+    """A multi-MB stdout is capped at _DRIVER_OUT_CAP; producer killed."""
+    frame = _run_driver(tmp_path, "seq 1 1000000")
+    assert len(frame["stdout"]) <= 50_000
+    assert "output hard-capped" in frame["stderr"]
+    assert frame["exit_code"] != 0  # killed by SIGPIPE when head closed the pipe
+
+
+def test_driver_preserves_small_output_and_rc(tmp_path):
+    """Within-cap output passes through unchanged; the command's rc is kept."""
+    frame = _run_driver(tmp_path, "printf 'hi'")
+    assert frame["stdout"] == "hi"
+    assert frame["stderr"] == ""
+    assert frame["exit_code"] == 0
+
+    frame = _run_driver(tmp_path, "exit 7")
+    assert frame["stdout"] == ""
+    assert frame["exit_code"] == 7

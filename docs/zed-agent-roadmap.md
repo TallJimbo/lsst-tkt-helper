@@ -183,6 +183,13 @@ if anything does come up.
 - Skill renaming to `design`/`plan`/`build` — dropped as optional; not done in R1.
 - Task 14 (manual): remove the superseded `agents/opencode` directory now that
   `~/.config/opencode/agents` points at `harnesses/opencode/agents`.
+- **`tests/test_pull.py` `forkpty()` deprecation warning** (maintenance): the suite
+  emits `DeprecationWarning: this process is multi-threaded, use of forkpty() may
+  lead to deadlocks` from `pty.fork()` in
+  `test_diverged_rebase_with_tty_editor_succeeds`. Pre-existing and harmless today
+  (currently a single-threaded run), but worth addressing eventually — e.g. by
+  running that test in a way that avoids `forkpty` on a multi-threaded process, or
+  switching its mechanism.
 
 ## 9. Emergent work (added 2026-09-01)
 
@@ -239,3 +246,24 @@ it can gather a large, session-linked dataset for a future investigation.
 This supersedes the throwaway `investigations/bad-thinking/zed-agent-request-proxy/`
 prototype (left in place). Run it during normal Zed-agent use to accumulate data for the
 future degradation investigation.
+
+### E4 — `read` tool: byte-level output cap (surfaced during bash truncation)
+
+Surfaced while implementing the `bash` MCP tool's output truncation (2026-09-02). The
+`bash` fix caps each stream head+tail at 5000 chars on the host and hard-kills runaway
+output at the source (50,000-byte `head -c` pipe). The built-in `read` tool was
+**deliberately left untouched** by that work, but it shares the same class of bug in
+narrower form.
+
+`read` truncates by **line count**, not bytes
+(`build_read_command` runs `sed -n "{start},{end}p" "$f" | base64 -w0`, and
+`read_tool` caps at `limit` lines, default 2000). For a file with one **extremely long
+line** (a multi-GB single-line file — minified JS, a huge JSONL record, a log with no
+newlines), the line-based truncation does not bound bytes: `sed` buffers the whole line
+in memory (OOM risk) and `base64` ships it up unmodified. This is the same
+OOM/server-hang risk the `bash` truncation fixes.
+
+- Add a byte-level cap to `read` — e.g. a `head -c` bound inside `build_read_command`,
+  and/or capping the base64 line before host-side decode — so a huge single-line file
+  cannot blow the context window or OOM the server.
+- Triage into its own design -> plan -> build cycle before implementation.
