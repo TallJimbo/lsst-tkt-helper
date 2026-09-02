@@ -224,6 +224,26 @@ def test_segment_zed_content_sessions_get_synthetic_ids() -> None:
     assert sessions[0]["id"] == f"zed-{int(100.25)}-0"
 
 
+def test_segment_fallback_label_uses_first_user_message() -> None:
+    """A session with no successful title-gen labels by first user message."""
+    m1 = [_msg("system", "SYS"), _msg("user", "Refactor the parser module")]
+    m2 = m1 + [_msg("assistant", "Ok")]
+    recs = [
+        _rec(request_body=_body(m1), time=0.0),
+        _rec(request_body=_body(m2), time=1.0),
+    ]
+    sessions = segment(recs)
+    assert sessions[0]["label"] == "Refactor the parser module"
+
+
+def test_segment_fallback_label_collapses_whitespace() -> None:
+    """The fallback label collapses newlines and runs of spaces to one line."""
+    m1 = [_msg("system", "SYS"), _msg("user", "Fix the\nparser   bug right now")]
+    recs = [_rec(request_body=_body(m1), time=0.0)]
+    sessions = segment(recs)
+    assert sessions[0]["label"] == "Fix the parser bug right now"
+
+
 def test_segment_content_session_is_pinnable_and_showable(tmp_path) -> None:
     """pin_session/show_session work via a content session's synthetic id."""
     m1 = [_msg("system", "SYS"), _msg("user", "Query the database")]

@@ -438,12 +438,25 @@ def sandbox_run(
 @click.option("--upstream", required=True, help="Upstream scheme://host:port with no path.")
 @click.option("--traces-dir", type=click.Path())
 @click.option("--ssh-host", default=None, help="Run an interactive ssh session to this host.")
+@click.option("--environment", envvar="TKT_ENVIRONMENT", type=click.File())
 @click.option("-v", "--verbose", count=True)
 def trace_proxy(
-    *, listen: int, upstream: str, traces_dir: str | None, ssh_host: str | None, verbose: int
+    *,
+    listen: int,
+    upstream: str,
+    traces_dir: str | None,
+    ssh_host: str | None,
+    environment: TextIO | None,
+    verbose: int,
 ) -> None:
     _setup_logging(verbose)
     from .proxy import resolve_traces_dir, run_proxy, run_with_ssh
+    from .utils import read_json_file
+
+    rewrite_rules: list[Any] = []
+    if environment is not None:
+        data = read_json_file(environment.name)
+        rewrite_rules = list((data.get("proxy") or {}).get("rewrite") or [])
 
     root = resolve_traces_dir()
     if traces_dir:
@@ -451,9 +464,15 @@ def trace_proxy(
     root.mkdir(parents=True, exist_ok=True)
     log_path = root / "capture.jsonl"
     if ssh_host:
-        run_with_ssh(upstream, ["ssh", ssh_host], listen=listen, log_path=str(log_path))
+        run_with_ssh(
+            upstream,
+            ["ssh", ssh_host],
+            listen=listen,
+            log_path=str(log_path),
+            rewrite_rules=rewrite_rules,
+        )
     else:
-        run_proxy(listen, upstream, str(log_path))
+        run_proxy(listen, upstream, str(log_path), rewrite_rules=rewrite_rules)
 
 
 @cli.group(
@@ -501,7 +520,7 @@ def trace_log_list(ctx: click.Context) -> None:
     root = ctx.obj["root"]
     sessions = list_sessions(root)
     if not sessions:
-        click.echo("no sessions")
+        click.echo("no sessions (run 'tkt trace-log segment' to populate from the capture log)")
         return
 
     def exchange_count(session_file: Path) -> int:
@@ -519,7 +538,7 @@ def trace_log_list(ctx: click.Context) -> None:
         rows.append(
             (
                 str(s.get("id") or ""),
-                str(s.get("label") or "")[:40],
+                " ".join((s.get("label") or "").split())[:40],
                 start_s,
                 str(exchange_count(s["_session_file"])),
                 duration,

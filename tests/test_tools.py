@@ -103,3 +103,31 @@ def test_trace_log_command_exists() -> None:
     result = CliRunner().invoke(cli, ["trace-log", "--help"])
     assert result.exit_code == 0
     assert "trace-log" in result.output
+
+
+def test_trace_log_list_empty_hints_to_segment(tmp_path) -> None:
+    """``list`` on an empty dir hints that ``segment`` must run first."""
+    result = CliRunner().invoke(cli, ["trace-log", "--traces-dir", str(tmp_path), "list"])
+    assert result.exit_code == 0
+    assert "segment" in result.output
+
+
+def test_trace_log_list_collapses_newlines_in_label(tmp_path) -> None:
+    """The ``list`` label stays one line (newlines collapsed)."""
+    from tkt.tracelog import write_session_files
+
+    captures = [{"time": 1.0, "path": "/api/v1/chat/completions"}]
+    sessions = [
+        {
+            "id": "zed-1-0",
+            "entries": [0],
+            "label": "title\nbash MCP output guide",
+            "start": 1.0,
+            "end": 1.0,
+            "client_ua": "Zed",
+        }
+    ]
+    write_session_files(tmp_path, sessions, captures)
+    result = CliRunner().invoke(cli, ["trace-log", "--traces-dir", str(tmp_path), "list"])
+    assert result.exit_code == 0
+    assert "title bash MCP output guide" in result.output

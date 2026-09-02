@@ -36,10 +36,13 @@ import pytest
 from tkt.proxy import (
     _SKIP_FORWARD,
     ProxyHandler,
+    _rule_matches,
+    apply_rewrites,
     build_entry,
     mask_headers,
     resolve_traces_dir,
     run_proxy,
+    run_with_ssh,
     wait_for_upstream,
     write_record,
 )
@@ -61,6 +64,24 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, fmt, *args) -> None:  # keep test output clean
+        pass
+
+
+class _EchoPostHandler(BaseHTTPRequestHandler):
+    """Echo the POST body back and record it for assertion."""
+
+    received: list[bytes] = []
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length)
+        type(self).received.append(body)
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args) -> None:
         pass
 
 
@@ -252,3 +273,236 @@ def test_run_proxy_starts_and_serves(tmp_path) -> None:
     records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert records and records[-1]["path"] == "/ok"
     assert records[-1]["status"] == 200
+
+
+def test_apply_rewrites_sets_and_removes_params() -> None:
+    """Set and remove request params per a matching rule."""
+    body = b'{"model":"m","temperature":1.0}'
+    rules = [{"client": "zed", "params": {"temperature": None, "top_p": 0.95}}]
+    out, changed = apply_rewrites(body, user_agent="Zed/1.18.0", rewrite_rules=rules)
+    assert changed is True
+    assert json.loads(out) == {"model": "m", "top_p": 0.95}
+
+
+def test_apply_rewrites_skips_nonmatching_client() -> None:
+    """A non-matching client leaves the body unchanged."""
+    body = b'{"model":"m","temperature":1.0}'
+    rules = [{"client": "zed", "params": {"top_p": 0.95}}]
+    out, changed = apply_rewrites(body, user_agent="OpenCode", rewrite_rules=rules)
+    assert changed is False
+    assert out == body
+
+
+def test_apply_rewrites_respects_model_gate() -> None:
+    """A rule with a model only matches that exact body model."""
+    body = b'{"model":"other","temperature":1.0}'
+    rules = [{"model": "deepseek-ai/DeepSeek-V4-Flash-0731", "params": {"top_p": 0.95}}]
+    out, changed = apply_rewrites(body, user_agent="anything", rewrite_rules=rules)
+    assert changed is False
+
+
+def test_apply_rewrites_leaves_non_chat_json_untouched() -> None:
+    """Non-object or non-chat bodies are left unchanged."""
+    rules = [{"params": {"top_p": 0.95}}]
+    for body in (b"not json", b"[1, 2]", b'{"no_model":true}'):
+        out, changed = apply_rewrites(body, user_agent="x", rewrite_rules=rules)
+        assert changed is False
+        assert out == body
+
+
+def test_apply_rewrites_noop_when_no_rules() -> None:
+    """Empty rules leave the body unchanged."""
+    body = b'{"model":"m","temperature":1.0}'
+    out, changed = apply_rewrites(body, user_agent="x", rewrite_rules=())
+    assert changed is False
+    assert out == body
+
+
+def test_apply_rewrites_skips_malformed_rule_entries() -> None:
+    """Non-dict rule entries are skipped without raising."""
+    body = json.dumps({"model": "deepseek-ai/DeepSeek-V4-Flash-0731", "temperature": 1.0}).encode()
+    rules = ["not-a-dict", {"client": "zed", "params": {"temperature": None, "top_p": 0.95}}]
+    out, changed = apply_rewrites(body, user_agent="zed thing", rewrite_rules=rules)
+    assert changed is True
+    assert json.loads(out) == {"model": "deepseek-ai/DeepSeek-V4-Flash-0731", "top_p": 0.95}
+
+
+def test_rule_matches_client_case_insensitive() -> None:
+    """Client matching is case-insensitive."""
+    rule = {"client": "Zed", "model": "m"}
+    assert _rule_matches(rule, user_agent="zed/1.2", model="m") is True
+    assert _rule_matches(rule, user_agent="opencode", model="m") is False
+
+
+def test_relay_rewrites_chat_completions_and_records_forwarded(tmp_path) -> None:
+    """Matching rewrite rules rewrite the forwarded body and record it."""
+    _EchoPostHandler.received = []
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _EchoPostHandler)
+    upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    upstream_thread.start()
+    upstream_url = f"http://127.0.0.1:{upstream.server_address[1]}"
+
+    log_path = tmp_path / "capture.jsonl"
+    logger = open(log_path, "a", encoding="utf-8")
+    proxy = _ProxyServer(("127.0.0.1", 0), upstream_url, logger)
+    proxy.rewrite_rules = [{"client": "zed", "params": {"temperature": None, "top_p": 0.95}}]
+    proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+    proxy_thread.start()
+    proxy_url = f"http://127.0.0.1:{proxy.server_address[1]}"
+
+    try:
+        req = urllib.request.Request(
+            f"{proxy_url}/api/v1/chat/completions",
+            data=b'{"model":"m","temperature":1.0}',
+            headers={"User-Agent": "Zed/1.2", "Content-Type": "application/json"},
+            method="POST",
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        resp.read()
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+        upstream.shutdown()
+        upstream.server_close()
+        logger.close()
+
+    assert json.loads(_EchoPostHandler.received[-1]) == {"model": "m", "top_p": 0.95}
+    records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    entry = records[-1]
+    assert json.loads(entry["request_body"]) == {"model": "m", "temperature": 1.0}
+    assert json.loads(entry["request_body_forwarded"]) == {"model": "m", "top_p": 0.95}
+
+
+def test_relay_does_not_record_forwarded_for_unchanged_request(tmp_path) -> None:
+    """An unchanged body is not recorded as a forwarded body."""
+    _EchoPostHandler.received = []
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _EchoPostHandler)
+    upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    upstream_thread.start()
+    upstream_url = f"http://127.0.0.1:{upstream.server_address[1]}"
+
+    log_path = tmp_path / "capture.jsonl"
+    logger = open(log_path, "a", encoding="utf-8")
+    proxy = _ProxyServer(("127.0.0.1", 0), upstream_url, logger)
+    proxy.rewrite_rules = [{"client": "zed", "params": {"top_p": 0.95}}]
+    proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+    proxy_thread.start()
+    proxy_url = f"http://127.0.0.1:{proxy.server_address[1]}"
+
+    try:
+        # Non-Zed user-agent: rule does not match, body unchanged.
+        req = urllib.request.Request(
+            f"{proxy_url}/api/v1/chat/completions",
+            data=b'{"model":"m","temperature":1.0}',
+            headers={"User-Agent": "OpenCode", "Content-Type": "application/json"},
+            method="POST",
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        resp.read()
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+        upstream.shutdown()
+        upstream.server_close()
+        logger.close()
+
+    records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert "request_body_forwarded" not in records[-1]
+
+
+def test_run_with_ssh_forwards_rewrite_rules(monkeypatch) -> None:
+    """run_with_ssh forwards rewrite rules to the child as a JSON CLI arg."""
+    popen_calls: list[list[str]] = []
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs) -> None:
+            popen_calls.append(cmd)
+
+        def terminate(self) -> None:
+            pass
+
+        def wait(self) -> None:
+            pass
+
+    monkeypatch.setattr("tkt.proxy.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("tkt.proxy.wait_for_upstream", lambda upstream, timeout=30.0: True)
+
+    run_with_ssh(
+        "http://localhost:8080",
+        ["ssh", "host"],
+        listen=8090,
+        log_path="/tmp/capture.jsonl",
+        rewrite_rules=[{"client": "zed", "params": {"top_p": 0.95}}],
+    )
+
+    proxy_cmd = next(cmd for cmd in popen_calls if "--listen" in cmd)
+    idx = proxy_cmd.index("--rewrite-rules")
+    assert json.loads(proxy_cmd[idx + 1]) == [{"client": "zed", "params": {"top_p": 0.95}}]
+
+
+def test_trace_proxy_reads_rewrite_rules_from_env(tmp_path, monkeypatch) -> None:
+    """trace-proxy reads rewrite rules from the environment config."""
+    env_file = tmp_path / "local.json"
+    env_file.write_text(
+        json.dumps(
+            {"proxy": {"rewrite": [{"client": "zed", "params": {"temperature": None, "top_p": 0.95}}]}}
+        ),
+        encoding="utf-8",
+    )
+    captured: dict = {}
+
+    def fake_run_proxy(*a, **kw) -> None:
+        captured.update(kw)
+
+    monkeypatch.setattr("tkt.proxy.run_proxy", fake_run_proxy)
+
+    from click.testing import CliRunner
+
+    from tkt._cli import cli
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "trace-proxy",
+            "--environment",
+            str(env_file),
+            "--upstream",
+            "http://127.0.0.1:1",
+            "--listen",
+            "8090",
+            "--traces-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["rewrite_rules"] == [{"client": "zed", "params": {"temperature": None, "top_p": 0.95}}]
+
+
+def test_trace_proxy_defaults_to_no_rules(tmp_path, monkeypatch) -> None:
+    """trace-proxy defaults to empty rewrite rules without an env file."""
+    monkeypatch.delenv("TKT_ENVIRONMENT", raising=False)
+    captured: dict = {}
+
+    def fake_run_proxy(*a, **kw) -> None:
+        captured.update(kw)
+
+    monkeypatch.setattr("tkt.proxy.run_proxy", fake_run_proxy)
+
+    from click.testing import CliRunner
+
+    from tkt._cli import cli
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "trace-proxy",
+            "--upstream",
+            "http://127.0.0.1:1",
+            "--listen",
+            "8090",
+            "--traces-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["rewrite_rules"] == []

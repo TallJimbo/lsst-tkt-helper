@@ -135,6 +135,36 @@ def _record_turns(record: dict) -> list[tuple[str, str]]:
     return turns
 
 
+def _first_user_text(record: dict) -> str | None:
+    """Return the first user message's text content, or None."""
+    try:
+        msgs = json.loads(record.get("request_body", "{}")).get("messages", [])
+    except (ValueError, AttributeError):
+        return None
+    for m in msgs:
+        if m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return None
+
+
+def _fallback_label(records: list[dict], entries: list[int]) -> str:
+    """Label a session that has no usable title: its opening user message.
+
+    Entries are visited in time order (already sorted by the caller); the first
+    user message that yields text is used, with whitespace collapsed and
+    truncated, so the label stays a single readable line. Falls back to
+    ``(untitled)`` when no such message exists.
+    """
+    for i in entries:
+        text = _first_user_text(records[i])
+        if text:
+            return " ".join(text.split())[:80]
+    return "(untitled)"
+
+
 def _continue_score(a: list[tuple[str, str]], b: list[tuple[str, str]]) -> float:
     """Score how well b's history re-presents a's (``a`` earlier, ``b`` later).
 
@@ -218,7 +248,7 @@ def _session(
                     label = title
                     break
     if label is None:
-        label = str(records[entries[0]].get("time", ""))
+        label = _fallback_label(records, entries)
     start = records[entries[0]].get("time")
     end = records[entries[-1]].get("time")
     client_ua = _header(records[entries[0]], "user-agent")
