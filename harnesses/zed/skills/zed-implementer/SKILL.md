@@ -31,6 +31,8 @@ Report one of:
 ## Rules
 
 - You do not dispatch subagents. Do all of this task's work yourself.
+- Do not call `ask_user`: it is for the primary agent only. Surface any
+  ambiguity or blockers in your report (NEEDS_CONTEXT / BLOCKED) instead.
 - Self-review your diff before reporting (completeness, quality, YAGNI,
   test validity).
 - Run the focused test for what you are changing while iterating; run the full

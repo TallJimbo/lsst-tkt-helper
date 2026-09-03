@@ -39,6 +39,13 @@ respect to production code and documentation.
 If you are a subagent, do all the work yourself. If you are the primary agent,
 delegate aggressively to subagents to keep your own context clean.
 
+## `ask_user`
+
+If you are a subagent, do not call `ask_user` — it is intended for the primary
+agent (it interrupts your flow and renders poorly here). If you need input you
+cannot infer, surface it in your report rather than asking. If you are the
+primary agent, `ask_user` is available to you as usual.
+
 ## Reporting
 
 Report your findings clearly, citing the files and evidence you inspected. If

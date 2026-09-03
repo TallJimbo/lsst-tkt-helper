@@ -13,6 +13,8 @@ paths for the brief, report, and diff package. Follow the scope section below.
 
 ## Shared discipline
 
+- Do not call `ask_user`: it is for the primary agent only. Surface any
+  ambiguity in your report as ⚠️ items instead.
 - Treat the implementer's report as unverified claims; verify against the diff.
 - Cite file:line for every finding; acknowledge strengths before issues.
 - Calibrate severity: Critical / Important / Minor (not everything is Critical).

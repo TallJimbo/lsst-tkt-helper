@@ -49,20 +49,20 @@ surface while keeping Zed's UI-integrated native tools for editing.
 
 ## 4. Target tool suite
 
-| Tool                             | Backed by                               | Claude Code analog | Notes                                                     |
-| -------------------------------- | --------------------------------------- | ------------------ | --------------------------------------------------------- |
-| `Bash`                           | tkt MCP (sandboxed)                     | `Bash`             | **done**                                                  |
-| `Read`                           | tkt MCP (sandboxed, `$HOME`-blocked)    | `Read`             | see R2 tension below                                      |
-| `Grep`                           | tkt MCP (sandboxed)                     | `Grep`             |                                                           |
-| `Glob`                           | tkt MCP (sandboxed)                     | `Glob`             |                                                           |
-| `LS`                             | tkt MCP (sandboxed)                     | `LS`               |                                                           |
-| `Write` / `Edit`                 | **Zed native** `write_file`/`edit_file` | `Write`/`Edit`     | kept native for UI diffs; regex-scope to `.agent/**`      |
-| `TodoWrite`                      | tkt MCP                                 | `TodoWrite`        | added per decision                                        |
-| `Task`                           | **Zed native** `spawn_agent`            | `Task`             |                                                           |
-| `Skill`                          | **Zed native** `skill`                  | `Skill`            |                                                           |
-| `WebFetch`                       | deferred                                | `WebFetch`         | use native `fetch` meanwhile (R4)                         |
-| `AskUserQuestion`                | **Zed native** `ask_user`               | `AskUserQuestion`  | encourage for primary; discourage/block in subagents (E1) |
-| (`delete`/`copy`/`move`/`mkdir`) | Zed native                              | —                  | write-ish ops; native + regex                             |
+| Tool                             | Backed by                               | Claude Code analog | Notes                                                |
+| -------------------------------- | --------------------------------------- | ------------------ | ---------------------------------------------------- |
+| `Bash`                           | tkt MCP (sandboxed)                     | `Bash`             | **done**                                             |
+| `Read`                           | tkt MCP (sandboxed, `$HOME`-blocked)    | `Read`             | see R2 tension below                                 |
+| `Grep`                           | tkt MCP (sandboxed)                     | `Grep`             |                                                      |
+| `Glob`                           | tkt MCP (sandboxed)                     | `Glob`             |                                                      |
+| `LS`                             | tkt MCP (sandboxed)                     | `LS`               |                                                      |
+| `Write` / `Edit`                 | **Zed native** `write_file`/`edit_file` | `Write`/`Edit`     | kept native for UI diffs; regex-scope to `.agent/**` |
+| `TodoWrite`                      | tkt MCP                                 | `TodoWrite`        | added per decision                                   |
+| `Task`                           | **Zed native** `spawn_agent`            | `Task`             |                                                      |
+| `Skill`                          | **Zed native** `skill`                  | `Skill`            |                                                      |
+| `WebFetch`                       | deferred                                | `WebFetch`         | use native `fetch` meanwhile (R4)                    |
+| `AskUserQuestion`                | **Zed native** `ask_user`               | `AskUserQuestion`  | primary only; discouraged in subagents (E1, DONE)    |
+| (`delete`/`copy`/`move`/`mkdir`) | Zed native                              | —                  | write-ish ops; native + regex                        |
 
 Target total is roughly 6–8 primary tools versus ~59 offered today.
 
@@ -185,7 +185,7 @@ if anything does come up.
   `~/.config/opencode/agents` points at `harnesses/opencode/agents`.
 - **`tests/test_pull.py` `forkpty()` deprecation warning** (maintenance): the suite
   emits `DeprecationWarning: this process is multi-threaded, use of forkpty() may
-  lead to deadlocks` from `pty.fork()` in
+lead to deadlocks` from `pty.fork()` in
   `test_diverged_rebase_with_tty_editor_succeeds`. Pre-existing and harmless today
   (currently a single-threaded run), but worth addressing eventually — e.g. by
   running that test in a way that avoids `forkpty` on a multi-threaded process, or
@@ -197,21 +197,30 @@ Emergent items surfaced since the roadmap was approved. **None are scheduled for
 action yet** — they are tracked here so they aren't lost. Each should be triaged into
 its own design -> plan -> build cycle (or an investigation) before being acted on.
 
-### E1 — Keep `ask_user` for the primary agent; discourage/block it in subagents
+### E1 — Keep `ask_user` for the primary agent; discourage/block it in subagents (DONE, 2026-09-02)
 
 `ask_user` is wanted and encouraged for the **primary agent**. The problem is that
 **subagents** (dispatched via `spawn_agent`) can also call it, and it does not work well
-in that context (interrupts their flow / renders poorly). Prefer to block it for
-subagents if possible; otherwise discourage it at the prompt/skill level. This _refines_
-— but does not reverse — design decision #6: primary agents keep encouragement, subagents
-should not use it.
+in that context (interrupts their flow / renders poorly). This _refines_ — but does not
+reverse — design decision #6: primary agents keep encouragement, subagents should not
+use it.
 
-- Confirm whether `ask_user` can be blocked for subagents (e.g. via tool permissions /
-  profile) while remaining available to the primary agent.
-- If it can't be blocked, discourage its use in subagent prompts/skills (e.g. something
-  like a `spawn_agent`-scoped rule).
-- Update `zed-tools.md`, the question-asking skills, and the tool-suite table (see §4)
-  to reflect the primary-vs-subagent split.
+**Feasibility finding (2026-09-02): blocking is not possible in current Zed.** Tool
+availability is purely profile-driven (`Thread::enabled_tools` filters by the active
+profile's `tools` allowlist), and subagents inherit the parent's `profile_id` via
+`inherit_parent_settings` — there is no `subagent_profile` setting (only
+`subagent_model`). `enabled_tools` never special-cases `subagent_context`, so a subagent
+sees exactly the tools its inherited profile enables, `ask_user` included. So the
+"block it" option is out; we implement the fallback — discourage at the prompt/skill
+level.
+
+- **Skills** (`zed-explorer` — when used as a subagent — and `zed-implementer`,
+  `zed-reviewer`) now instruct subagents not to call `ask_user`; surface
+  uncertainty/blockers in their report instead. `zed-explorer` is also usable by
+  the primary agent, where `ask_user` remains available.
+- **`zed-tools.md`** updated: `ask_user` is marked primary-agent-only, with a note
+  explaining it can't be blocked but is discouraged in subagents.
+- **Tool-suite table (see §4)** updated to reflect the primary-vs-subagent split.
 
 ### E2 — Compaction: OpenCode vs Zed
 
