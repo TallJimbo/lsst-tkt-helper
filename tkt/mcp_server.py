@@ -49,22 +49,36 @@ from pydantic import BaseModel
 
 from .sandbox import Sandbox
 
-# Model-facing cap for a single `bash` stream (stdout or stderr), in
-# characters.
-_MAX_OUTPUT_CHARS = 5_000
+# Model-facing cap for the `bash` tool output, in characters (unchanged
+# default).
+_BASH_OUTPUT_CHARS = 5_000
+
+# Shared hard cap / ceiling (chars) for tool output; `read`'s per-call cap
+# scales up to this value.
+_MAX_OUTPUT_CHARS = 25_000
 
 # Driver-side hard cap (bytes) per stream; SIGPIPE-kills a runaway producer.
 _DRIVER_OUT_CAP = 50_000
+
+# Sandbox-side bound for `read` (bytes): `fold` wraps over-long lines at this
+# width and `head -c` caps the shipped slice, so a huge single-line file can
+# neither OOM `sed` nor exceed the driver's wire cap
+# (base64(CAP) < _DRIVER_OUT_CAP).
+_READ_BYTE_CAP = 32_000
+
+# Per-line scale factor for `read`'s model-facing cap (this repo's ruff
+# line-length). cap = min(_MAX_OUTPUT_CHARS, limit * _CHARS_PER_LINE).
+_CHARS_PER_LINE = 110
 
 
 class BashResult(BaseModel):
     """The outcome of one sandboxed ``bash`` call.
 
     ``stdout`` and ``stderr`` are the child's captured output (truncated to
-    ``_MAX_OUTPUT_CHARS`` for the model); ``exit_code`` is its exit status;
+    ``_BASH_OUTPUT_CHARS`` for the model); ``exit_code`` is its exit status;
     ``timed_out`` is True when the call was killed for exceeding its
     ``timeout_ms``; ``truncated`` is True when either stream was cut to
-    ``_MAX_OUTPUT_CHARS``.
+    ``_BASH_OUTPUT_CHARS``.
     """
 
     stdout: str
@@ -94,6 +108,15 @@ def encode_field(text: str) -> str:
 def decode_field(field: str) -> str:
     """Inverse of :func:`encode_field`."""
     return base64.b64decode(field.encode("ascii")).decode("utf-8")
+
+
+def read_char_cap(limit: int) -> int:
+    """Model-facing char cap for a ``read`` of ``limit`` lines.
+
+    Scales with the requested line count (about one ruff-formatted line per
+    ``_CHARS_PER_LINE`` chars) and is hard-capped at ``_MAX_OUTPUT_CHARS``.
+    """
+    return min(_MAX_OUTPUT_CHARS, limit * _CHARS_PER_LINE)
 
 
 def truncate_output(text: str, max_chars: int) -> tuple[str, bool]:
@@ -159,7 +182,8 @@ def build_read_command(path: str, offset: int, limit: int) -> str:
     the raw slice base64-encoded on stdout, so the byte stream round-trips
     losslessly through the UTF-8 decode in :func:`parse_result_line` (a binary
     file degrades to a host-side "binary" message instead of crashing the
-    framing). The total line count is reported on stderr as a
+    framing). ``fold -b -w`` bounds per-line memory and ``head -c`` bounds
+    the shipped output bytes. The total line count is reported on stderr as a
     ``READ_TOTAL <n>`` marker so the host can compute the truncation note.
     ``path`` is embedded via ``shlex.quote``.
     """
@@ -172,7 +196,9 @@ def build_read_command(path: str, offset: int, limit: int) -> str:
         'printf "read: no such file or not a regular file: %s\\n" '
         '"$f" >&2; exit 1; fi\n'
         'printf "READ_TOTAL %s\\n" "$(wc -l < "$f")" >&2\n'
-        f'sed -n "{start},{end}p" "$f" | base64 -w0\n'
+        f'fold -b -w "{_READ_BYTE_CAP}" "$f" | '
+        f'sed -n "{start},{end}p" | '
+        f'head -c "{_READ_BYTE_CAP}" | base64 -w0\n'
         'printf "\\n"\n'
     )
 
@@ -181,6 +207,24 @@ def _parse_read_total(stderr: str) -> int | None:
     """Return the ``READ_TOTAL`` count parsed from ``stderr``, or None."""
     m = _READ_TOTAL_RE.search(stderr)
     return int(m.group(1)) if m else None
+
+
+def _trim_incomplete_trailing(raw: bytes) -> bytes:
+    """Drop trailing bytes that form an incomplete UTF-8 sequence.
+
+    Byte-based truncation (``head -c`` / ``fold -b``) can cut a multi-byte
+    character mid-sequence; the incomplete tail would otherwise make the whole
+    buffer fail strict UTF-8 decode. Returns the buffer with up to 3 trailing
+    bytes dropped when that recovers valid UTF-8, else the input unchanged.
+    """
+    for n in range(4):
+        candidate = raw[:-n] if n else raw
+        try:
+            candidate.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        return candidate
+    return raw
 
 
 def read_tool(warm: WarmSandbox, *, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
@@ -196,7 +240,8 @@ def read_tool(warm: WarmSandbox, *, file_path: str, offset: int = 0, limit: int 
     total = _parse_read_total(result.stderr)
     raw = base64.b64decode(result.stdout.strip())
     try:
-        text = raw.decode("utf-8")
+        trimmed = _trim_incomplete_trailing(raw)
+        text = trimmed.decode("utf-8")
     except UnicodeDecodeError:
         return ReadResult(
             content="read: file appears to be binary (did not decode as UTF-8)",
@@ -211,10 +256,15 @@ def read_tool(warm: WarmSandbox, *, file_path: str, offset: int = 0, limit: int 
     if total is None:
         total = returned
     more = total - returned
-    truncated = more > 0
-    if truncated and offset == 0:
+    line_truncated = more > 0
+    if line_truncated and offset == 0:
         numbered += f"\n... ({more} more lines)"
-    return ReadResult(content=numbered, truncated=truncated)
+    # Model-facing byte cap: truncate head+tail, flagging if cut. Dropping
+    # trailing incomplete-UTF-8 bytes is itself evidence that the sandbox's
+    # byte cap cut the output, so that read is reported as truncated too.
+    content, byte_truncated = truncate_output(numbered, read_char_cap(limit))
+    byte_cut = len(trimmed) < len(raw)
+    return ReadResult(content=content, truncated=line_truncated or byte_truncated or byte_cut)
 
 
 def build_driver_script(setup_lines: list[str]) -> str:
@@ -420,8 +470,8 @@ def run_server(
         that exceeds its timeout is killed and reported with ``timed_out``. The
         command is also hard-capped in the sandbox at ``_DRIVER_OUT_CAP`` bytes
         per stream (a runaway producer is killed); the model sees stdout/stderr
-        truncated to ``_MAX_OUTPUT_CHARS`` chars each (head+tail, ``truncated``
-        set if cut).
+        truncated to ``_BASH_OUTPUT_CHARS`` chars each (head+tail,
+        ``truncated`` set if cut).
         ``description`` is a per-call rationale for the human (e.g. shown when
         a host requests tool confirmation); it is not used to change behavior.
 
@@ -431,7 +481,7 @@ def run_server(
                 no timeout).
             description: Optional human-readable rationale for this call.
         """
-        return _cap_result(warm.run(command, timeout_ms=timeout_ms), _MAX_OUTPUT_CHARS)
+        return _cap_result(warm.run(command, timeout_ms=timeout_ms), _BASH_OUTPUT_CHARS)
 
     @mcp.tool()
     def read(

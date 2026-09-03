@@ -276,3 +276,19 @@ OOM/server-hang risk the `bash` truncation fixes.
   and/or capping the base64 line before host-side decode — so a huge single-line file
   cannot blow the context window or OOM the server.
 - Triage into its own design -> plan -> build cycle before implementation.
+
+### E5 — Harness: `write_file`/`edit_file` fail on git-ignored `.superpowers/` paths
+
+Surfaced during E4's build (2026-09-02) while running the SDD workflow in this repo. A
+subagent reported that the `write_file`/`edit_file` tools failed on the git-ignored
+`<repo>/.superpowers/sdd/<plan>/...` scratch paths with a false
+"parent directory doesn't exist" error (the directory does exist), and fell back to
+`bash` to write its report file. The precise tools were blocked on a path that `bash`
+can access normally.
+
+- Likely the sandbox's project-root-path allowance treats git-ignored scratch dirs
+  (like the `investigations/` scratch) as outside the project, so the precise file
+  tools refuse them while `bash` (cwd-scoped) succeeds.
+- Triage whether these precise-tool path allowances should include the SDD workspace
+  (`.superpowers/`) or whether subagents should treat it as `bash`-only scratch.
+- Triage into its own investigation before the next SDD-driven build.

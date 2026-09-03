@@ -29,6 +29,7 @@ import subprocess as sp
 from unittest import mock
 
 from tkt.mcp_server import (
+    _MAX_OUTPUT_CHARS,
     BashResult,
     WarmSandbox,
     _cap_result,
@@ -37,8 +38,18 @@ from tkt.mcp_server import (
     decode_field,
     encode_field,
     parse_result_line,
+    read_char_cap,
     truncate_output,
 )
+
+
+def test_read_char_cap_scales_with_limit():
+    """Cap grows with requested lines, hard-capped at _MAX_OUTPUT_CHARS."""
+    assert read_char_cap(1) == 110
+    assert read_char_cap(100) == 11000
+    assert read_char_cap(2000) == 25000
+    assert read_char_cap(10**6) == 25000
+    assert read_char_cap(2000) == _MAX_OUTPUT_CHARS
 
 
 def test_encode_decode_roundtrip():
@@ -224,6 +235,18 @@ def test_build_read_command_respects_offset():
     assert 'sed -n "6,8p"' in cmd
 
 
+def test_build_read_command_bounds_line_length_and_output():
+    """Fold bounds per-line memory and head -c bounds output before base64."""
+    from tkt.mcp_server import _READ_BYTE_CAP
+
+    cmd = build_read_command("/a b/c.txt", offset=0, limit=2000)
+    assert f'fold -b -w "{_READ_BYTE_CAP}"' in cmd
+    assert f'head -c "{_READ_BYTE_CAP}"' in cmd
+    assert "| base64 -w0" in cmd
+    # The fold must appear before sed in the pipeline.
+    assert cmd.index("fold -b -w") < cmd.index("sed -n")
+
+
 def test_read_tool_numbers_lines_and_no_truncation():
     """A full slice is numbered with absolute line numbers, not truncated."""
     from tkt.mcp_server import read_tool
@@ -304,6 +327,52 @@ def test_read_tool_clamps_offset_and_limit():
     )
     res = read_tool(warm, file_path="/tmp/x.txt", offset=-5, limit=0)
     assert res.content == "1\tx"
+
+
+def test_read_tool_byte_cap_truncates_long_single_line():
+    """A single line longer than the per-call cap is head+tail truncated."""
+    from tkt.mcp_server import read_tool
+
+    sl = ("x" * 50000 + "\n").encode()
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(
+        stdout=base64.b64encode(sl).decode(), stderr="READ_TOTAL 1\n", exit_code=0
+    )
+    res = read_tool(warm, file_path="/tmp/x.txt", limit=100)  # cap = 11000
+    assert res.truncated is True
+    assert "chars truncated" in res.content
+    assert len(res.content) < 12000
+
+
+def test_read_tool_byte_cap_not_truncated_when_within_budget():
+    """A read within the char cap is not byte-truncated."""
+    from tkt.mcp_server import read_tool
+
+    sl = b"hello\n"
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(
+        stdout=base64.b64encode(sl).decode(), stderr="READ_TOTAL 1\n", exit_code=0
+    )
+    res = read_tool(warm, file_path="/tmp/x.txt", limit=1)
+    assert res.truncated is False
+    assert res.content == "1\thello"
+
+
+def test_read_tool_tolerates_byte_cut_multibyte_utf8():
+    """A byte-cap cut landing mid-multibyte-char returns content, not
+    'binary'.
+    """
+    from tkt.mcp_server import read_tool
+
+    full = ("\u4e2d" * 12000).encode()  # 36000 bytes of 3-byte UTF-8
+    cut = full[:31999]  # ends mid-character (31999 % 3 == 1)
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(
+        stdout=base64.b64encode(cut).decode(), stderr="READ_TOTAL 1\n", exit_code=0
+    )
+    res = read_tool(warm, file_path="/tmp/x.txt", limit=100)
+    assert "binary" not in res.content
+    assert res.truncated is True
 
 
 def test_truncate_output_passthrough_when_within_cap():
