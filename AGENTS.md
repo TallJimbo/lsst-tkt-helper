@@ -32,6 +32,12 @@ single-line docstrings back to the first line, breaking its own
 doc-line-length check. Either shorten the single line so it fits, or put the
 last word on the second line.
 
+## Git Workflow
+
+Agents should create a feature branch for their session and start by committing
+the spec and plan documents. When work is complete, _offer_ to squash the
+branch into a single commit and rebase it onto main.
+
 ## File layout
 
 - **`tkt/__init__.py`** — Public API exports: `cli`, `Environment`,
@@ -67,7 +73,7 @@ last word on the second line.
 - **`harnesses/opencode/agents/`** — Custom OpenCode workflow agents
   `sp-design`, `sp-plan`, `sp-build`, `sp-debug`, `sp-review`;
   `~/.config/opencode/agents/` is a symlink to it (via `tkt
-  install-opencode-agent`).
+install-opencode-agent`).
 - **`harnesses/zed/`** — Zed harness: `rules.md` (role-scoped dispatch table,
   symlinked to `~/.config/zed/AGENTS.md`) and `skills/<name>/` (Zed-only skills,
   symlinked to `~/.agents/skills/<name>`); see `harnesses/README.md` for
