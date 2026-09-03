@@ -30,6 +30,9 @@ __all__ = (
     "GrepResult",
     "LSResult",
     "ReadResult",
+    "TodoItem",
+    "TodoStore",
+    "TodoWriteResult",
     "WarmSandbox",
     "build_driver_script",
     "build_glob_command",
@@ -141,6 +144,48 @@ class GrepResult(BaseModel):
 
     content: str
     truncated: bool
+
+
+class TodoItem(BaseModel):
+    """One entry in the agent's todo list.
+
+    ``status`` is one of ``pending``, ``in_progress``, ``completed``, or
+    ``cancelled``; ``activeForm`` is the present-participle verb phrase
+    (e.g. ``Building``, ``Testing``) shown while the item is in progress.
+    """
+
+    content: str
+    status: str = "pending"
+    activeForm: str | None = None
+
+
+class TodoWriteResult(BaseModel):
+    """The todo list after a ``todo_write`` call.
+
+    ``todos`` is the full current list; the caller replaces it wholesale on
+    each call, so this is both the result and the read of the current state.
+    """
+
+    todos: list[TodoItem]
+
+
+class TodoStore:
+    """In-memory scratchpad holding the agent's current todo list.
+
+    Each ``run_server`` instance owns one ``TodoStore``. ``todo_write``
+    replaces the list wholesale (Claude Code-style) and returns it, so the
+    store is a trivial holder. State is host-side (not sandboxed — this is
+    model bookkeeping with no file access) and is lost if the server process
+    restarts, which is acceptable for a scratchpad.
+    """
+
+    def __init__(self) -> None:
+        self._todos: list[TodoItem] = []
+
+    def replace(self, todos: list[TodoItem]) -> TodoWriteResult:
+        """Replace the stored list with ``todos`` and return it."""
+        self._todos = list(todos)
+        return TodoWriteResult(todos=list(self._todos))
 
 
 def encode_field(text: str) -> str:
@@ -746,5 +791,31 @@ def run_server(
             ignore_case=ignore_case,
             line_number=line_number,
         )
+
+    todo_store = TodoStore()
+
+    @mcp.tool()
+    def todo_write(
+        todos: list[TodoItem],
+        description: str | None = None,  # present for human approvals of tool actions
+    ) -> TodoWriteResult:
+        """Replace the agent's todo list and return the full new list.
+
+        The caller passes the entire desired list on every call (Claude
+        Code-style); the stored list is replaced wholesale, so this is
+        idempotent and stateless from the model's perspective. The list is
+        held in memory for the life of this server process (not sandboxed —
+        it is model bookkeeping with no file access) and is lost if the
+        process restarts. ``description`` is a per-call rationale for the
+        human; it does not change behavior.
+
+        Args:
+            todos: The full desired todo list. Each item has ``content``,
+                ``status`` (``pending``, ``in_progress``, ``completed``, or
+                ``cancelled``; default ``pending``), and an optional
+                ``activeForm`` verb phrase.
+            description: Optional human-readable rationale for this call.
+        """
+        return todo_store.replace(todos)
 
     mcp.run()

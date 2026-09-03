@@ -34,6 +34,9 @@ from tkt.mcp_server import (
     GlobResult,
     GrepResult,
     LSResult,
+    TodoItem,
+    TodoStore,
+    TodoWriteResult,
     WarmSandbox,
     _cap_result,
     build_driver_script,
@@ -585,3 +588,56 @@ def test_ls_tool_truncation():
     res = ls_tool(warm, path=".")
     assert res.truncated is True
     assert "chars truncated" in res.content
+
+
+def test_todo_item_defaults_status_pending():
+    """TodoItem defaults to status='pending' and no activeForm."""
+    item = TodoItem(content="Do the thing")
+    assert item.status == "pending"
+    assert item.activeForm is None
+
+
+def test_todo_item_fields_passthrough():
+    """content/status/activeForm round-trip through TodoItem."""
+    item = TodoItem(content="Build", status="in_progress", activeForm="Building")
+    assert item.content == "Build"
+    assert item.status == "in_progress"
+    assert item.activeForm == "Building"
+
+
+def test_todo_store_replace_returns_list():
+    """replace() stores the list and returns it in a TodoWriteResult."""
+    store = TodoStore()
+    result = store.replace([TodoItem(content="a"), TodoItem(content="b")])
+    assert isinstance(result, TodoWriteResult)
+    assert [t.content for t in result.todos] == ["a", "b"]
+
+
+def test_todo_store_replace_overwrites_previous():
+    """A later replace() fully replaces the prior list."""
+    store = TodoStore()
+    store.replace([TodoItem(content="a"), TodoItem(content="b")])
+    result = store.replace([TodoItem(content="c")])
+    assert [t.content for t in result.todos] == ["c"]
+
+
+def test_todo_store_empty_clears():
+    """Replacing with an empty list clears the stored list."""
+    store = TodoStore()
+    store.replace([TodoItem(content="a")])
+    result = store.replace([])
+    assert result.todos == []
+
+
+def test_todo_store_preserves_statuses_and_active_form():
+    """status/activeForm are preserved through replace()."""
+    store = TodoStore()
+    result = store.replace(
+        [
+            TodoItem(content="done", status="completed"),
+            TodoItem(content="doing", status="in_progress", activeForm="Building"),
+        ]
+    )
+    assert result.todos[0].status == "completed"
+    assert result.todos[1].status == "in_progress"
+    assert result.todos[1].activeForm == "Building"

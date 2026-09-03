@@ -146,7 +146,7 @@ disabled tool** — so far only the `Read` batch (`read_file`); `Grep`/`Glob`/`L
    sandboxed `read` MCP tool, `Read a file` -> `read` mapping in `zed-tools.md` and
    `zed-explorer`, native `read_file` disabled machine-side.
 2. `Grep`, `Glob`, `LS`. **DONE, 2026-09-02**
-3. `TodoWrite`.
+3. `TodoWrite`. **DONE, 2026-09-03**
 
 OpenCode is kept working throughout.
 
@@ -299,3 +299,31 @@ can access normally.
 - Triage whether these precise-tool path allowances should include the SDD workspace
   (`.superpowers/`) or whether subagents should treat it as `bash`-only scratch.
 - Triage into its own investigation before the next SDD-driven build.
+
+### E6 — Cross-session state in the MCP server: shared tracked CWD and future persisted todo list (DONE: triaged, 2026-09-03)
+
+Surfaced during R2 batch 3 (`TodoWrite`) feasibility (2026-09-03). The tkt MCP
+server process is **per-project, not per-session** (in Zed, `ContextServerStore` is
+owned by `Project`), so every agent conversation in a project shares one server
+process and therefore its weakly-stateful channels:
+
+- **The tracked `WarmSandbox._cwd`** — updated from each call's end-of-call `pwd`
+  (`mcp_server.py`), so a `bash "cd …"` in one session changes the resolution base
+  for every other session's `read`/`ls`/`glob`/`grep` (path args default to
+  relative `"."` and resolve against the shared child cwd). Verified the CWD is
+  wired uniformly through the driver (`cd "$cwd"` at the top of each loop) — no
+  per-tool gap.
+- **The in-memory `TodoStore`** (added in R2 batch 3) — all sessions in a project
+  share one todo list.
+
+This is a latent cross-session interference bug, pre-existing (CWD) and newly
+introduced (todo list). Feasibility finding: **no session identifier exists
+today** — Zed sends none at spawn (env), at `initialize`, or per tool call for
+stdio; `Mcp-Session-Id` is HTTP-only and server-assigned. So session isolation
+would require introducing a key that flows through the tool call (e.g. a
+`session_id` parameter) with the project root as the namespace.
+
+**Decision:** the R2 batch-3 `todo_write` MVP lands as in-memory, per-project
+(no session isolation, no persistence across server restarts). Persistence
+and/or session isolation are triaged into their own design -> plan -> build
+cycle(s).
