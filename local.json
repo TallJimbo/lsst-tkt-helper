@@ -59,7 +59,8 @@
           "~/.inputrc",
           "~/.nvm/versions/node/v24.18.0",
           "~/.config/opencode",
-          "~/.agents/skills"
+          "~/.agents/skills",
+          "~/.tkt"
         ],
         "rw": [
           "~/.local/share/opencode",
