@@ -31,12 +31,21 @@ from unittest import mock
 from tkt.mcp_server import (
     _MAX_OUTPUT_CHARS,
     BashResult,
+    GlobResult,
+    GrepResult,
+    LSResult,
     WarmSandbox,
     _cap_result,
     build_driver_script,
+    build_glob_command,
+    build_grep_command,
+    build_ls_command,
     build_read_command,
     decode_field,
     encode_field,
+    glob_tool,
+    grep_tool,
+    ls_tool,
     parse_result_line,
     read_char_cap,
     truncate_output,
@@ -459,3 +468,120 @@ def test_driver_preserves_small_output_and_rc(tmp_path):
     frame = _run_driver(tmp_path, "exit 7")
     assert frame["stdout"] == ""
     assert frame["exit_code"] == 7
+
+
+def test_build_ls_command_quotes_path_and_lists():
+    """build_ls_command lists with -laF and quotes the path."""
+    cmd = build_ls_command("/a b")
+    assert "ls -laF --" in cmd
+    assert "'/a b'" in cmd
+
+
+def test_build_glob_command_globstar_nullglob_and_quotes():
+    """build_glob_command sets globstar/nullglob and quotes path+pattern."""
+    cmd = build_glob_command("**/*.py", "/a b")
+    assert "cd '/a b'" in cmd
+    assert "shopt -s globstar nullglob" in cmd
+    assert "for f in $pattern" in cmd
+    assert '[ -e "$f" ]' in cmd
+    assert "**/*.py" in cmd
+    # pattern is assigned to a quoted var (injection-safe), not inlined
+    assert "'**/*.py'" in cmd
+
+
+def test_build_grep_command_defaults_content():
+    """build_grep_command content mode has -rEIH and --exclude-dir=.git."""
+    cmd = build_grep_command("foo", "src")
+    assert "grep -r -E -I -H" in cmd
+    assert "--exclude-dir=.git" in cmd
+    assert "-e foo" in cmd
+    assert " -- src" in cmd
+
+
+def test_build_grep_command_output_modes_and_flags():
+    """output_mode/ignore_case/line_number map to grep flags; glob to
+    --include.
+    """
+    cmd = build_grep_command("x", "src", glob="*.py", output_mode="files", ignore_case=True)
+    assert "-l" in cmd and "-i" in cmd
+    assert "--include='*.py'" in cmd
+    cmd = build_grep_command("x", "src", output_mode="matches")
+    assert "-o" in cmd
+    cmd = build_grep_command("x", "src", line_number=True)
+    assert "-n" in cmd
+
+
+def test_ls_tool_success():
+    """ls_tool returns stdout as content, not truncated."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="a\nb\n", stderr="", exit_code=0)
+    res = ls_tool(warm, path=".")
+    assert isinstance(res, LSResult)
+    assert res.content == "a\nb\n"
+    assert res.truncated is False
+
+
+def test_ls_tool_error():
+    """ls_tool surfaces stderr on nonzero exit."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="", stderr="ls: cannot access nope\n", exit_code=2)
+    res = ls_tool(warm, path="nope")
+    assert res.content.startswith("ls: ")
+    assert "cannot access" in res.content
+    assert res.truncated is False
+
+
+def test_glob_tool_success():
+    """glob_tool returns one path per line."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="a.py\nb.py\n", stderr="", exit_code=0)
+    res = glob_tool(warm, pattern="*.py", path=".")
+    assert isinstance(res, GlobResult)
+    assert res.content == "a.py\nb.py\n"
+    assert res.truncated is False
+
+
+def test_glob_tool_no_match_is_empty_success():
+    """A nullglob no-match yields empty content with rc 0, not an error."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="", stderr="", exit_code=0)
+    res = glob_tool(warm, pattern="*.zzz", path=".")
+    assert res.content == ""
+    assert res.truncated is False
+
+
+def test_grep_tool_content():
+    """grep_tool content mode returns the match lines."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="src/a.py:3: foo\n", stderr="", exit_code=0)
+    res = grep_tool(warm, pattern="foo", path=".")
+    assert isinstance(res, GrepResult)
+    assert res.content == "src/a.py:3: foo\n"
+    assert res.truncated is False
+
+
+def test_grep_tool_no_matches_normalized():
+    """Grep rc 1 (no matches) becomes empty content, not an error."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="", stderr="", exit_code=1)
+    res = grep_tool(warm, pattern="none", path=".")
+    assert res.content == ""
+    assert res.truncated is False
+
+
+def test_grep_tool_error():
+    """Grep rc >1 surfaces stderr as an error."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="", stderr="grep: bad\n", exit_code=2)
+    res = grep_tool(warm, pattern="x", path=".")
+    assert res.content.startswith("grep: ")
+    assert res.truncated is False
+
+
+def test_ls_tool_truncation():
+    """ls_tool caps oversized content and sets truncated."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="A" * 100000 + "\n", stderr="", exit_code=0)
+    res = ls_tool(warm, path=".")
+    assert res.truncated is True
+    assert "chars truncated" in res.content

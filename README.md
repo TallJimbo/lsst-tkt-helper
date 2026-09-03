@@ -55,5 +55,5 @@ tkt trace-log list                                # label each session
 ```
 
 **Other** — `mcp-server` runs the MCP stdio server that exposes the sandboxed
-`bash` tool, and `fix-openspec` rewrites OpenSpec skill files for OpenCode's
-harness.
+`bash`, `read`, `grep`, `glob`, and `ls` tools, and `fix-openspec` rewrites
+OpenSpec skill files for OpenCode's harness.

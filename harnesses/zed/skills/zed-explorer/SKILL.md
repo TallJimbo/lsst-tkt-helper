@@ -10,8 +10,8 @@ respect to production code and documentation.
 
 ## Investigation discipline
 
-- Find files with `find_path` (glob patterns); search contents with `grep`;
-  read with the `read` tool; list with `list_directory`; run shell commands with
+- Find files with `glob` (glob patterns); search contents with `grep`;
+  read with the `read` tool; list with `ls`; run shell commands with
   the `bash` tool.
 - Match the thoroughness level the caller asked for: quick (basic searches),
   medium (moderate), or very thorough (comprehensive across multiple locations

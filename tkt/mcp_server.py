@@ -26,12 +26,21 @@ from __future__ import annotations
 
 __all__ = (
     "BashResult",
+    "GlobResult",
+    "GrepResult",
+    "LSResult",
     "ReadResult",
     "WarmSandbox",
     "build_driver_script",
+    "build_glob_command",
+    "build_grep_command",
+    "build_ls_command",
     "build_read_command",
     "decode_field",
     "encode_field",
+    "glob_tool",
+    "grep_tool",
+    "ls_tool",
     "parse_result_line",
     "run_server",
     "truncate_output",
@@ -94,6 +103,40 @@ class ReadResult(BaseModel):
     ``content`` is the line-numbered slice of a text file. When lines remain
     past the slice, ``content`` ends with a ``... (N more lines)`` note and
     ``truncated`` is True.
+    """
+
+    content: str
+    truncated: bool
+
+
+class LSResult(BaseModel):
+    """The outcome of one sandboxed ``ls`` call.
+
+    ``content`` is a ``ls -laF``-style listing of ``path``; ``truncated`` is
+    True when the output was cut to the model-facing cap.
+    """
+
+    content: str
+    truncated: bool
+
+
+class GlobResult(BaseModel):
+    """The outcome of one sandboxed ``glob`` call.
+
+    ``content`` is one matching path per line; ``truncated`` is True when the
+    output was cut to the model-facing cap.
+    """
+
+    content: str
+    truncated: bool
+
+
+class GrepResult(BaseModel):
+    """The outcome of one sandboxed ``grep`` call.
+
+    ``content`` holds the matches in the requested ``output_mode``; an empty
+    ``content`` means no matches were found (not an error). ``truncated`` is
+    True when the output was cut to the model-facing cap.
     """
 
     content: str
@@ -203,6 +246,72 @@ def build_read_command(path: str, offset: int, limit: int) -> str:
     )
 
 
+def build_ls_command(path: str) -> str:
+    """Build the sandbox command that lists ``path``.
+
+    ``ls -laF`` lists all entries in long format with type indicators; ``--``
+    guards a path that begins with ``-``. ``path`` is embedded via
+    ``shlex.quote``.
+    """
+    return f"ls -laF -- {shlex.quote(path)}\n"
+
+
+def build_glob_command(pattern: str, path: str) -> str:
+    """Build the sandbox command that finds files matching a glob.
+
+    ``globstar`` makes ``**`` recurse across directories and ``nullglob`` drops
+    unmatched patterns, so a no-match yields empty output (rc 0). The
+    pattern is assigned to a quoted variable (preventing shell injection) and
+    then ``for f in $pattern`` glob-expands it; ``[ -e "$f" ]`` filters
+    literals that do not exist. ``path`` and ``pattern`` are embedded via
+    ``shlex.quote``.
+    """
+    quoted_path = shlex.quote(path)
+    quoted_pattern = shlex.quote(pattern)
+    return (
+        f"cd {quoted_path} && "
+        "shopt -s globstar nullglob && "
+        f"pattern={quoted_pattern} && "
+        'for f in $pattern; do [ -e "$f" ] && printf \'%s\\n\' "$f"; done\n'
+    )
+
+
+def build_grep_command(
+    pattern: str,
+    path: str = ".",
+    glob: str | None = None,
+    output_mode: str = "content",
+    ignore_case: bool = False,
+    line_number: bool = False,
+) -> str:
+    """Build the sandbox command that searches file contents.
+
+    ``grep -rE -IH`` searches recursively with extended regex, skipping
+    binary files (``-I`` avoids the UTF-8 framing failure ``read`` defends
+    against) and always prefixing filenames (``-H``). ``--exclude-dir=.git``
+    skips the
+    mounted git dir; ``--include`` (when ``glob`` is given) restricts to
+    matching files. ``output_mode`` maps to ``-l`` (files) or ``-o`` (matches);
+    ``line_number`` adds ``-n`` (content mode). ``-e`` precedes the pattern so
+    patterns beginning with ``-`` work. ``pattern`` and ``path`` are embedded
+    via ``shlex.quote``.
+    """
+    flags = ["-r", "-E", "-I", "-H"]
+    if ignore_case:
+        flags.append("-i")
+    if glob is not None:
+        flags.append(f"--include={shlex.quote(glob)}")
+    flags.append("--exclude-dir=.git")
+    if output_mode == "files":
+        flags.append("-l")
+    elif output_mode == "matches":
+        flags.append("-o")
+    elif line_number:
+        flags.append("-n")
+    flag_str = " ".join(flags)
+    return f"grep {flag_str} -e {shlex.quote(pattern)} -- {shlex.quote(path)}\n"
+
+
 def _parse_read_total(stderr: str) -> int | None:
     """Return the ``READ_TOTAL`` count parsed from ``stderr``, or None."""
     m = _READ_TOTAL_RE.search(stderr)
@@ -265,6 +374,56 @@ def read_tool(warm: WarmSandbox, *, file_path: str, offset: int = 0, limit: int 
     content, byte_truncated = truncate_output(numbered, read_char_cap(limit))
     byte_cut = len(trimmed) < len(raw)
     return ReadResult(content=content, truncated=line_truncated or byte_truncated or byte_cut)
+
+
+def ls_tool(warm: WarmSandbox, *, path: str = ".") -> LSResult:
+    """Run one sandboxed ``ls`` against ``warm`` and return an
+    :class:`LSResult`.
+    """
+    result = warm.run(build_ls_command(path))
+    if result.exit_code != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        return LSResult(content=f"ls: {err}", truncated=False)
+    content, truncated = truncate_output(result.stdout, _MAX_OUTPUT_CHARS)
+    return LSResult(content=content, truncated=truncated)
+
+
+def glob_tool(warm: WarmSandbox, *, pattern: str, path: str = ".") -> GlobResult:
+    """Run one sandboxed ``glob`` against ``warm`` and return a
+    :class:`GlobResult`.
+    """
+    result = warm.run(build_glob_command(pattern, path))
+    if result.exit_code != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        return GlobResult(content=f"glob: {err}", truncated=False)
+    content, truncated = truncate_output(result.stdout, _MAX_OUTPUT_CHARS)
+    return GlobResult(content=content, truncated=truncated)
+
+
+def grep_tool(
+    warm: WarmSandbox,
+    *,
+    pattern: str,
+    path: str = ".",
+    glob: str | None = None,
+    output_mode: str = "content",
+    ignore_case: bool = False,
+    line_number: bool = False,
+) -> GrepResult:
+    """Run one sandboxed ``grep`` against ``warm`` and return a
+    :class:`GrepResult`.
+
+    ``grep``'s rc 1 (no matches) is normalized to empty ``content`` rather than
+    reported as an error.
+    """
+    result = warm.run(build_grep_command(pattern, path, glob, output_mode, ignore_case, line_number))
+    if result.exit_code == 1:
+        return GrepResult(content="", truncated=False)
+    if result.exit_code != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        return GrepResult(content=f"grep: {err}", truncated=False)
+    content, truncated = truncate_output(result.stdout, _MAX_OUTPUT_CHARS)
+    return GrepResult(content=content, truncated=truncated)
 
 
 def build_driver_script(setup_lines: list[str]) -> str:
@@ -509,5 +668,83 @@ def run_server(
             description: Optional human-readable rationale for this call.
         """
         return read_tool(warm, file_path=file_path, offset=offset, limit=limit)
+
+    @mcp.tool()
+    def ls(
+        path: str = ".",
+        description: str | None = None,  # present for human approvals of tool actions
+    ) -> LSResult:
+        """List files and subdirectories at ``path`` inside the tkt sandbox.
+
+        Equivalent to ``ls -laF`` (all entries, long format, type indicators).
+        The sandbox blocks ``$HOME`` (so credentials are never exposed) but
+        mounts the workspace and the read-only ``~/.agents/skills`` directory.
+        ``description`` is a per-call rationale for the human; it does not
+        change behavior.
+
+        Args:
+            path: Directory to list (default ".").
+            description: Optional human-readable rationale for this call.
+        """
+        return ls_tool(warm, path=path)
+
+    @mcp.tool()
+    def glob(
+        pattern: str,
+        path: str = ".",
+        description: str | None = None,  # present for human approvals of tool actions
+    ) -> GlobResult:
+        """Find files under ``path`` matching the glob ``pattern`` in the
+        sandbox.
+
+        ``*`` matches within a directory; ``**`` matches recursively across
+        directories (bash ``globstar``). Hidden entries require an explicit
+        leading dot. Returns one matching path per line. ``description`` is a
+        per-call rationale for the human; it does not change behavior.
+
+        Args:
+            pattern: The glob pattern to match.
+            path: Directory to search under (default ".").
+            description: Optional human-readable rationale for this call.
+        """
+        return glob_tool(warm, pattern=pattern, path=path)
+
+    @mcp.tool()
+    def grep(
+        pattern: str,
+        path: str = ".",
+        glob: str | None = None,
+        output_mode: str = "content",
+        ignore_case: bool = False,
+        line_number: bool = False,
+        description: str | None = None,  # present for human approvals of tool actions
+    ) -> GrepResult:
+        """Search file contents under ``path`` for a regex in the sandbox.
+
+        ``output_mode`` is ``content`` (default), ``files`` (paths only), or
+        ``matches`` (matched text only). ``ignore_case`` is case-insensitive;
+        ``line_number`` prefixes line numbers (content mode); ``glob``
+        restricts to matching file paths. Binary files are skipped. No matches
+        yields an empty ``content`` (not an error). ``description`` is a
+        per-call rationale for the human; it does not change behavior.
+
+        Args:
+            pattern: The regular expression to search for.
+            path: Directory to search under (default ".").
+            glob: Optional glob restricting which files are searched.
+            output_mode: "content", "files", or "matches".
+            ignore_case: Case-insensitive search.
+            line_number: Prefix line numbers in content mode.
+            description: Optional human-readable rationale for this call.
+        """
+        return grep_tool(
+            warm,
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            output_mode=output_mode,
+            ignore_case=ignore_case,
+            line_number=line_number,
+        )
 
     mcp.run()

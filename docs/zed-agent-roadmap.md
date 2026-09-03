@@ -95,8 +95,10 @@ mitigation via an override prompt:
   needs to confirm sandboxed reads of skill files work and aren't misled by the
   native `read_file` guidance.
 
-The system-prompt override is maintained **per-batch inside R2**, alongside the skills
-and profile updates.
+The system-prompt override (the `rules.md` / AGENTS.md "Tool changes" note) is updated
+**only when the hard-coded system prompt references a tool we disable** — so far only
+`read_file` (lines 243–245). Tool batches whose only system-prompt guidance is
+conditional on `available_tools` (e.g. `grep`/`glob`/`ls`) add no override.
 
 ## 6. Roadmap phases
 
@@ -134,13 +136,16 @@ rather than strictly subagent-only; the optional skill renaming to
 
 ### R2 — Iterative MCP tool batches
 
-Each batch is one design -> plan -> build cycle that updates **all of**: the MCP server
-tool(s), the skills references, the agent profile, and the Zed system-prompt override —
-together. Expected order:
+Each batch is one design -> plan -> build cycle that updates the MCP server tool(s), the
+skills references, and the agent profile together. The Zed system-prompt override
+(`rules.md` / AGENTS.md) is updated **only when the hard-coded system prompt references a
+disabled tool** — so far only the `Read` batch (`read_file`); `Grep`/`Glob`/`LS` and
+`TodoWrite` add none. Expected order:
 
 1. `Read` (resolve the `~/.agents/skills`/`$HOME` tension first). **DONE, 2026-09-01** —
-   sandboxed `read` MCP tool, `Read a file -> `read`mapping in`zed-tools.md`and`zed-explorer`, native `read_file` disabled machine-side.
-2. `Grep`, `Glob`, `LS`.
+   sandboxed `read` MCP tool, `Read a file` -> `read` mapping in `zed-tools.md` and
+   `zed-explorer`, native `read_file` disabled machine-side.
+2. `Grep`, `Glob`, `LS`. **DONE, 2026-09-02**
 3. `TodoWrite`.
 
 OpenCode is kept working throughout.
@@ -172,7 +177,9 @@ if anything does come up.
    _subagents_, which can call it too and where it works poorly. See §9.
 7. **OpenCode support is retained**, coexisting with the Zed setup during testing.
 8. **Prompts-first order:** move prompts to skills (R1) before expanding tools (R2).
-9. **System-prompt override maintained per-batch** in R2, alongside skills + profile.
+9. **System-prompt override added only when needed** — when the hard-coded system prompt
+   references a disabled tool. Only `read_file` qualifies; later tool batches
+   (`Grep`/`Glob`/`LS`, `TodoWrite`) add no override.
 10. **Normalize content placement** with documented rules (skills vs. AGENTS.md vs.
     profiles vs. override).
 
