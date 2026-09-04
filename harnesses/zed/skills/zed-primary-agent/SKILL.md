@@ -20,6 +20,19 @@ Your first goal is to categorize the request.
 The human will often invoke one of these skills for you to make their intent
 clear.
 
+## `ask_user` usage
+
+`ask_user` is a first-class way to get a decision from the human. Prefer it at every "ready to move on to the next step?" gate, and for multiple-choice design questions.
+
+Follow these rules:
+
+- **Always allow free text.** Set `allow_free_text: true` on every call. The
+  human may not want any of the offered options, and without the free-text box
+  they'd have no way to say so.
+- **Keep it short.** The choices don't wrap long text well, so don't put much
+  prose into it. Give context in the surrounding chat message or the question
+  instead.
+
 ## The code change flow and gates
 
 The common path for code changes is:
@@ -38,4 +51,5 @@ But this path is not set in stone:
 
 The human drives the flow by invoking one of these skills or otherwise
 explicitly indicating their intent to move forward; if intent is at all
-unclear, STOP and ask before moving to a different phase.
+unclear, STOP and ask (prefer `ask_user` with `allow_free_text: true`) before
+moving to a different phase.

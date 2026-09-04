@@ -39,7 +39,7 @@ The design rationale that holds:
   instead of opaque JSON. One hard rule from the W1 caveat: the **bare-path
   auto-linker that applies to agent messages does NOT apply to tool output** —
   to get a clickable path in a tool result you must emit an explicit link with
-  backticked text, `` [`path`](path) ``. Never rely on bare-path auto-linking.
+  backticked text, ``[`path`](path)``. Never rely on bare-path auto-linking.
 - **Tool-output formatting conventions** (W2): `bash`, `read`, `ls`, `glob`, and
   `grep` return code-fenced blocks (monospace, and clear about what is stdout vs.
   stderr vs. status); `read` links the target file path up top, as `write`/`edit`
@@ -55,7 +55,7 @@ The design rationale that holds:
 | `read`                               | tkt MCP (sandboxed) | read files            |
 | `ls` / `glob` / `grep`               | tkt MCP (sandboxed) | list / find / search  |
 | `write` / `edit`                     | tkt MCP (sandboxed) | sandboxed create/edit |
-| `todo_write`                         | tkt MCP (sandboxed) | returns a checklist |
+| `todo_write`                         | tkt MCP (sandboxed) | returns a checklist   |
 | `skill` / `spawn_agent` / `ask_user` | Zed native          | intrinsic             |
 
 File operations (delete/move/copy/mkdir) are done with `bash` (`rm`/`mv`/`cp`/`mkdir`),
@@ -76,11 +76,6 @@ across every session that uses a project's MCP server process.
   per-session state.
 - Not urgent — simultaneous sessions in a project are rare — but worth deciding
   deliberately before the surface grows further.
-
-### W4 — `ask_user` usage guidance
-
-Add additional instructions for effective `ask_user` usage (primary agent) in
-the harness/skills.
 
 ### W5 — GitHub MCP permissions
 
