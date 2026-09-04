@@ -35,11 +35,14 @@ __all__ = (
     "TodoWriteResult",
     "WarmSandbox",
     "build_driver_script",
+    "build_edit_command",
     "build_glob_command",
     "build_grep_command",
     "build_ls_command",
     "build_read_command",
+    "build_write_command",
     "decode_field",
+    "edit_tool",
     "encode_field",
     "glob_tool",
     "grep_tool",
@@ -47,6 +50,7 @@ __all__ = (
     "parse_result_line",
     "run_server",
     "truncate_output",
+    "write_tool",
 )
 
 import base64
@@ -59,6 +63,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
+from .mcp_files import MAX_CONTENT_BYTES
 from .sandbox import Sandbox
 
 # Model-facing cap for the `bash` tool output, in characters (unchanged
@@ -471,6 +476,68 @@ def grep_tool(
     return GrepResult(content=content, truncated=truncated)
 
 
+def build_write_command(file_path: str, content: str) -> str:
+    """Build the sandbox command that writes ``content`` to ``file_path``.
+
+    ``content`` rides as base64 (shell-safe, arbitrary bytes) and is decoded by
+    ``tkt.mcp_files`` inside the sandbox; ``file_path`` is embedded via
+    ``shlex.quote`` and resolved against the tracked cwd by the module.
+    """
+    content_b64 = base64.b64encode(content.encode()).decode("ascii")
+    return f"python -m tkt.mcp_files write {shlex.quote(file_path)} {content_b64}"
+
+
+def build_edit_command(file_path: str, old_string: str, new_string: str, replace_all: bool) -> str:
+    """Build the sandbox command that edits ``file_path``.
+
+    ``old_string``/``new_string`` ride as base64; ``replace_all`` is
+    ``1``/``0``.
+    """
+    old_b64 = base64.b64encode(old_string.encode()).decode("ascii")
+    new_b64 = base64.b64encode(new_string.encode()).decode("ascii")
+    flag = "1" if replace_all else "0"
+    return f"python -m tkt.mcp_files edit {shlex.quote(file_path)} {old_b64} {new_b64} {flag}"
+
+
+def _run_files_op(warm: WarmSandbox, *, command: str) -> str:
+    """Run a ``python -m tkt.mcp_files`` command and return its message.
+
+    The module formats both success and failure as markdown on stdout; exit 0
+    means success, nonzero a graceful error (or, on a crash, the stderr tail).
+    """
+    result = warm.run(command)
+    body = result.stdout.strip()
+    if result.exit_code != 0 and not body:
+        body = result.stderr.strip()
+    if result.exit_code != 0 and not body:
+        body = f"mcp_files exited {result.exit_code}"
+    return body
+
+
+def write_tool(warm: WarmSandbox, *, file_path: str, content: str) -> str:
+    """Run one sandboxed ``write`` against ``warm`` and return markdown."""
+    nbytes = len(content.encode("utf-8"))
+    if nbytes > MAX_CONTENT_BYTES:
+        return f"Write failed: content too large ({nbytes} bytes, max {MAX_CONTENT_BYTES})"
+    return _run_files_op(warm, command=build_write_command(file_path, content))
+
+
+def edit_tool(
+    warm: WarmSandbox,
+    *,
+    file_path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> str:
+    """Run one sandboxed ``edit`` against ``warm`` and return markdown."""
+    for name, value in (("old_string", old_string), ("new_string", new_string)):
+        nbytes = len(value.encode("utf-8"))
+        if nbytes > MAX_CONTENT_BYTES:
+            return f"Edit failed: {name} too large ({nbytes} bytes, max {MAX_CONTENT_BYTES})"
+    return _run_files_op(warm, command=build_edit_command(file_path, old_string, new_string, replace_all))
+
+
 def build_driver_script(setup_lines: list[str]) -> str:
     """Build the warm-holder driver bash script.
 
@@ -790,6 +857,59 @@ def run_server(
             output_mode=output_mode,
             ignore_case=ignore_case,
             line_number=line_number,
+        )
+
+    @mcp.tool()
+    def write(
+        file_path: str,
+        content: str,
+        description: str | None = None,  # present for human approvals of tool actions
+    ) -> str:
+        """Create or overwrite a file inside the tkt sandbox.
+
+        Writes are confined by the sandbox mount model (``.agent/**`` in a
+        workspace, the whole repo in single-repo mode). Missing parent
+        directories are created; ``content`` may contain arbitrary bytes.
+        Returns a path-only confirmation (clickable). ``description`` is a
+        per-call rationale for the human; it does not change behavior.
+
+        Args:
+            file_path: Path to create or overwrite (absolute, or relative to
+                the sandbox cwd).
+            content: The file content to write.
+            description: Optional human-readable rationale for this call.
+        """
+        return write_tool(warm, file_path=file_path, content=content)
+
+    @mcp.tool()
+    def edit(
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+        description: str | None = None,  # present for human approvals of tool actions
+    ) -> str:
+        """Edit a file inside the tkt sandbox.
+
+        Replaces ``old_string`` with ``new_string`` (once, or every
+        occurrence when ``replace_all`` is true) and returns a per-call
+        snapshot diff, or a stats confirmation when the diff exceeds the
+        line budget. Confined by the sandbox mount model. ``description``
+        is a per-call rationale for the human; it does not change behavior.
+
+        Args:
+            file_path: Path to edit (absolute, or relative to the sandbox cwd).
+            old_string: The exact text to find.
+            new_string: The replacement text.
+            replace_all: Replace every occurrence instead of just the first.
+            description: Optional human-readable rationale for this call.
+        """
+        return edit_tool(
+            warm,
+            file_path=file_path,
+            old_string=old_string,
+            new_string=new_string,
+            replace_all=replace_all,
         )
 
     todo_store = TodoStore()

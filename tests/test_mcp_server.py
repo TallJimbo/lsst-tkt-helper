@@ -28,6 +28,7 @@ import base64
 import subprocess as sp
 from unittest import mock
 
+from tkt.mcp_files import MAX_CONTENT_BYTES
 from tkt.mcp_server import (
     _MAX_OUTPUT_CHARS,
     BashResult,
@@ -40,11 +41,14 @@ from tkt.mcp_server import (
     WarmSandbox,
     _cap_result,
     build_driver_script,
+    build_edit_command,
     build_glob_command,
     build_grep_command,
     build_ls_command,
     build_read_command,
+    build_write_command,
     decode_field,
+    edit_tool,
     encode_field,
     glob_tool,
     grep_tool,
@@ -52,6 +56,7 @@ from tkt.mcp_server import (
     parse_result_line,
     read_char_cap,
     truncate_output,
+    write_tool,
 )
 
 
@@ -641,3 +646,69 @@ def test_todo_store_preserves_statuses_and_active_form():
     assert result.todos[0].status == "completed"
     assert result.todos[1].status == "in_progress"
     assert result.todos[1].activeForm == "Building"
+
+
+def test_build_write_command_quotes_path_and_b64_content():
+    """build_write_command embeds the quoted path and base64 content."""
+    cmd = build_write_command("/a b/f.py", "x y\n")
+    assert "python -m tkt.mcp_files write" in cmd
+    assert "'/a b/f.py'" in cmd
+    assert base64.b64encode(b"x y\n").decode("ascii") in cmd
+
+
+def test_build_edit_command_flags_replace_all():
+    """build_edit_command encodes old/new and appends the replace_all flag."""
+    cmd = build_edit_command("f.py", "old", "new", True)
+    assert "python -m tkt.mcp_files edit" in cmd
+    assert base64.b64encode(b"old").decode("ascii") in cmd
+    assert base64.b64encode(b"new").decode("ascii") in cmd
+    assert cmd.endswith(" 1")
+
+
+def test_write_tool_success():
+    """write_tool returns the module's stdout confirmation on success."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="Wrote [`/x`](/x)\n", stderr="", exit_code=0)
+    res = write_tool(warm, file_path="f.py", content="hi")
+    assert res == "Wrote [`/x`](/x)"
+
+
+def test_write_tool_surfaces_module_error():
+    """A graceful module failure is returned verbatim from stdout."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="Write failed: boom\n", stderr="", exit_code=1)
+    res = write_tool(warm, file_path="f.py", content="hi")
+    assert "Write failed" in res
+
+
+def test_write_tool_stderr_fallback_on_empty_stdout():
+    """Empty stdout falls back to stderr when the run fails."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="", stderr="boom", exit_code=1)
+    res = write_tool(warm, file_path="f.py", content="hi")
+    assert "boom" in res
+
+
+def test_write_tool_too_large_does_not_run():
+    """Oversized content is rejected without invoking the sandbox."""
+    warm = mock.Mock()
+    res = write_tool(warm, file_path="f.py", content="x" * (MAX_CONTENT_BYTES + 1))
+    assert "content too large" in res
+    warm.run.assert_not_called()
+
+
+def test_edit_tool_success():
+    """edit_tool returns the module's edit summary on success."""
+    warm = mock.Mock()
+    warm.run.return_value = BashResult(stdout="Edited [`/x`](/x)\n", stderr="", exit_code=0)
+    res = edit_tool(warm, file_path="f.py", old_string="a", new_string="b")
+    assert res == "Edited [`/x`](/x)"
+
+
+def test_edit_tool_too_large_does_not_run():
+    """Oversized old/new content is rejected without invoking the sandbox."""
+    warm = mock.Mock()
+    big = "x" * (MAX_CONTENT_BYTES + 1)
+    res = edit_tool(warm, file_path="f.py", old_string=big, new_string="b")
+    assert "old_string too large" in res
+    warm.run.assert_not_called()

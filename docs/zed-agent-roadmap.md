@@ -33,21 +33,24 @@ The design rationale that holds:
 - **A small, familiar tool suite**, modeled on Claude Code for names and
   argument shapes. Zed-native tools remain where the UI is the point (`skill`,
   `spawn_agent`, `ask_user`, `fetch`, `diagnostics`, `search_web`).
-- **MCP tool returns are rendered as markdown in Zed's agent UI** (Zed renders
-  MCP text content through the same markdown engine as agent messages). So our
-  MCP tools return markdown, which keeps the agent's activity legible to the
-  human instead of opaque.
+- **MCP tool returns are rendered as markdown in Zed's agent UI**: code fences,
+  inline code, and explicit links render (so diffs highlight, links click). One
+  caveat learned in W1: the **bare-path auto-linker that applies to agent
+  messages does NOT apply to tool output** — to get a clickable path in a tool
+  result you must emit an explicit link (see W2). So our MCP tools return
+  markdown, which keeps the agent's activity legible to the human instead of
+  opaque.
 
 ### Tool surface
 
-| Tool                                 | Backed by               | Notes                        |
-| ------------------------------------ | ----------------------- | ---------------------------- |
-| `bash`                               | tkt MCP (sandboxed)     | shell commands               |
-| `read`                               | tkt MCP (sandboxed)     | read files                   |
-| `ls` / `glob` / `grep`               | tkt MCP (sandboxed)     | list / find / search         |
-| `write_file` / `edit_file`           | **tkt MCP (sandboxed)** | W1 — moving into the sandbox |
-| `todo_write`                         | tkt MCP (sandboxed)     | W2 — returns markdown        |
-| `skill` / `spawn_agent` / `ask_user` | Zed native              | intrinsic                    |
+| Tool                                 | Backed by           | Notes                 |
+| ------------------------------------ | ------------------- | --------------------- |
+| `bash`                               | tkt MCP (sandboxed) | shell commands        |
+| `read`                               | tkt MCP (sandboxed) | read files            |
+| `ls` / `glob` / `grep`               | tkt MCP (sandboxed) | list / find / search  |
+| `write` / `edit`                     | tkt MCP (sandboxed) | sandboxed create/edit |
+| `todo_write`                         | tkt MCP (sandboxed) | W2 — returns markdown |
+| `skill` / `spawn_agent` / `ask_user` | Zed native          | intrinsic             |
 
 File operations (delete/move/copy/mkdir) are done with `bash` (`rm`/`mv`/`cp`/`mkdir`),
 which is already sandboxed and confined; they are not separate MCP tools.
@@ -57,28 +60,30 @@ which is already sandboxed and confined; they are not separate MCP tools.
 Each workstream is tracked at design-decision level; implementation details are
 worked out when the workstream is picked up.
 
-### W1 — Sandboxed MCP write/edit (project-level cwd)
-
-Move the write/edit surface into the sandbox as MCP tools.
-
-- Add MCP write and read tools, to be modeled on **Claude Code** (names and
-  argument shapes TBD), not on Zed's native tools.
-- Run in the sandbox, sharing the existing **project-level tracked cwd** (not
-  session-isolated; multiple simultaneous sessions in a project are rare).
-- Writes are confined by the mount model: `.agent/**` in a workspace, the whole
-  repo in single-repo mode. This also fixes writes to git-ignored scratch under
-  `<pkg>/.superpowers/`, which native tools refused.
-- Each call returns a **markdown diff summary** so the human can review the
-  change in the tool card.
-- Update the `zed-tools.md` mapping to point write/edit at the MCP tools.
-- Disable the native `write_file` and `edit_file` tools in the agent profile
-  (human does this).
-
 ### W2 — MCP tools return Markdown
 
 Have every MCP tool return markdown-formatted output so it renders readably in
 the agent UI: `todo_write`, `bash`, `read`, `ls`, `glob`, `grep`, and the new
-read/edit. JSON returns do not format well.
+`write`/`edit`. JSON returns do not format well.
+
+What renders in MCP tool output (verified during W1, 2026-09-04):
+
+- **Code fences** render with syntax highlighting (a ` ```diff ` fence shows
+  colored +/- lines).
+- **Explicit markdown links** `[text](path)` render as clickable links; an
+  absolute target resolves to the file, a relative one against the workspace
+  root.
+- **Backticked code spans** render as monospace. They do **not** auto-link a
+  bare path in `write`/`edit` output (though they did linkify absolute paths in
+  `bash` output — tool-output renderers are not consistent with each other, nor
+  with agent messages).
+- **Bare file paths do not auto-link** in tool output at all. This differs from
+  agent messages, where Zed auto-links bare and embedded paths.
+
+Rule for W2: whenever a tool returns a path the human should click, emit it as
+an explicit markdown link with backticked text for monospace —
+`` [`/abs/path`](/abs/path) ``. Never rely on bare-path auto-linking in tool
+output. Test each tool's actual rendered card rather than assuming consistency.
 
 ### W3 — Cross-session-state decision point (CWD + todo store)
 
