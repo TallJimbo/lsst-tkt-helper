@@ -1,329 +1,134 @@
 # Zed Native Agent Roadmap
 
-**Status:** Approved by human (design session, 2026-08-31).
-**Purpose:** A human-readable roadmap guiding the migration of the working harness from
-OpenCode to Zed's native agent. Each phase below is expected to run as its own
-design -> plan -> build cycle, except where noted.
+**Status:** Active — forward-looking baseline for the Zed-native agent harness.
 
-## 1. Context & motivation
+**Purpose:** A human-readable roadmap for the Zed agent setup: the shape of the
+agent's tool surface, the active workstreams, and the deferred items. It is
+organized around where the harness is going, not a log of what has already
+shipped.
 
-`tkt` currently runs LLM agents via **OpenCode** inside a `bwrap` sandbox (`tkt
-sandbox-run`), using custom `sp-*` agent definitions and the `superpowers` skills.
-The motivation to switch to **Zed's native agent** is a better UI for combining
-agentic work with the human's own work than either the OpenCode TUI or running
-OpenCode in Zed over ACP provides.
+**Updates:** When a task is completed, _remove_ it, but update the design
+rationale and/or standing constraints in-place as appropriate. Do not try to
+maintain old designs or plans that have been obsoleted.
 
-The tkt MCP server (`tkt/mcp_server.py`, `tkt mcp-server`) already exists: a
-FastMCP stdio server exposing a sandboxed `bash` tool backed by a warm-but-stateless
-`bwrap` holder. The goal is to grow this into the agent's default read/execute
-surface while keeping Zed's UI-integrated native tools for editing.
+## 1. Context & design rationale
 
-## 2. Goals
+`tkt` runs LLM agents from the Zed editor via a custom agent profile plus the
+tkt MCP server (`tkt mcp-server`). The MCP server is a sandboxed surface
+(`bwrap`-based, per-project, warm-but-stateless) that the agent uses for its
+read/execute/write work, while Zed-native tools are used for harness-intrinsic
+operations that don't touch files.
 
-1. **A small, coherent, familiar tool suite**, not a 1:1 port of Zed's ~24 built-in
-   tools (plus MCP tools, ~59 offered). **Claude Code** is the baseline for tool
-   _shape and naming_; OpenCode is second-best; Zed is worst on familiarity.
-   Fewer, familiar tools is itself a goal.
-2. **Sandboxed default for the read/execute surface** (where `$HOME` read-blocking
-   and bulletproof rules matter), and **Zed native tools kept only where the UI is
-   the point** (`write_file`/`edit_file` for clickable diffs). We deliberately do
-   not rely on `tool_permissions` regexes for _reads_ — they cannot block reads of
-   `$HOME` at all; sandboxing can.
-3. **Move prompts out of OpenCode agent definitions into skills**, with clear,
-   documented rules for what content belongs in each place (skills vs. `AGENTS.md`
-   vs. OpenCode profiles vs. the Zed override).
-4. **OpenCode coexists** throughout testing — skills/AGENTS changes must not break
-   the existing OpenCode workflow.
+The design rationale that holds:
 
-## 3. Current state
+- **The sandbox is the security boundary** for the agent's read/execute/write
+  surface. Reads and writes that matter are sandboxed; `$HOME` is blocked and
+  write locations are determined by the sandbox mount model, not by
+  `tool_permissions` regexes (which are global, match on raw relative path
+  strings, and cannot be scoped per project).
+- **Per-project write scoping comes from the sandbox mount model.** In a tkt
+  workspace the workspace root is mounted read-only with `.agent/` writable
+  (writes are confined to `.agent/**` plus git metadata); in a single repo the
+  whole repo is mounted writable.
+- **A small, familiar tool suite**, modeled on Claude Code for names and
+  argument shapes. Zed-native tools remain where the UI is the point (`skill`,
+  `spawn_agent`, `ask_user`, `fetch`, `diagnostics`, `search_web`).
+- **MCP tool returns are rendered as markdown in Zed's agent UI** (Zed renders
+  MCP text content through the same markdown engine as agent messages). So our
+  MCP tools return markdown, which keeps the agent's activity legible to the
+  human instead of opaque.
 
-- **MCP server:** `tkt mcp-server` exposes a sandboxed `bash` tool (warm holder,
-  fresh child per call, tracked cwd, timeout enforcement). Registered as a Zed
-  context server. Design and hardening are done.
-- **Agent profile:** a custom Zed profile already maps `terminal` -> `bash`
-  (disables built-in `terminal`, enables the MCP `bash`). Lives on the human's
-  machine (not visible from this repo).
-- **Skills:** the `superpowers` skills are _mostly_ adapted to Zed already. The
-  only gaps are `terminal` -> `bash` in `zed-tools.md` and the absence of
-  `ask_user`.
+### Tool surface
 
-## 4. Target tool suite
+| Tool                                 | Backed by               | Notes                        |
+| ------------------------------------ | ----------------------- | ---------------------------- |
+| `bash`                               | tkt MCP (sandboxed)     | shell commands               |
+| `read`                               | tkt MCP (sandboxed)     | read files                   |
+| `ls` / `glob` / `grep`               | tkt MCP (sandboxed)     | list / find / search         |
+| `write_file` / `edit_file`           | **tkt MCP (sandboxed)** | W1 — moving into the sandbox |
+| `todo_write`                         | tkt MCP (sandboxed)     | W2 — returns markdown        |
+| `skill` / `spawn_agent` / `ask_user` | Zed native              | intrinsic                    |
 
-| Tool                             | Backed by                               | Claude Code analog | Notes                                                |
-| -------------------------------- | --------------------------------------- | ------------------ | ---------------------------------------------------- |
-| `Bash`                           | tkt MCP (sandboxed)                     | `Bash`             | **done**                                             |
-| `Read`                           | tkt MCP (sandboxed, `$HOME`-blocked)    | `Read`             | see R2 tension below                                 |
-| `Grep`                           | tkt MCP (sandboxed)                     | `Grep`             |                                                      |
-| `Glob`                           | tkt MCP (sandboxed)                     | `Glob`             |                                                      |
-| `LS`                             | tkt MCP (sandboxed)                     | `LS`               |                                                      |
-| `Write` / `Edit`                 | **Zed native** `write_file`/`edit_file` | `Write`/`Edit`     | kept native for UI diffs; regex-scope to `.agent/**` |
-| `TodoWrite`                      | tkt MCP                                 | `TodoWrite`        | added per decision                                   |
-| `Task`                           | **Zed native** `spawn_agent`            | `Task`             |                                                      |
-| `Skill`                          | **Zed native** `skill`                  | `Skill`            |                                                      |
-| `WebFetch`                       | deferred                                | `WebFetch`         | use native `fetch` meanwhile (R4)                    |
-| `AskUserQuestion`                | **Zed native** `ask_user`               | `AskUserQuestion`  | primary only; discouraged in subagents (E1, DONE)    |
-| (`delete`/`copy`/`move`/`mkdir`) | Zed native                              | —                  | write-ish ops; native + regex                        |
+File operations (delete/move/copy/mkdir) are done with `bash` (`rm`/`mv`/`cp`/`mkdir`),
+which is already sandboxed and confined; they are not separate MCP tools.
 
-Target total is roughly 6–8 primary tools versus ~59 offered today.
+## 2. Active workstreams
 
-## 5. Zed system-prompt adaptation findings
+Each workstream is tracked at design-decision level; implementation details are
+worked out when the workstream is picked up.
 
-Zed's system prompt (`crates/agent/src/templates/system_prompt.hbs`) references tools
-both conditionally and unconditionally. We cannot change Zed source, so adaptation is
-mitigation via an override prompt:
+### W1 — Sandboxed MCP write/edit (project-level cwd)
 
-- **Conditional on `available_tools`** (disabling the tool removes its guidance — a
-  clean win):
-  - `grep`/`find_path` (lines 60–63): the whole "prefer `grep`… use `find_path`…"
-    block disappears when `grep` is disabled.
-  - `terminal` (lines 157–202): the entire "Terminal sandbox" section (sandbox
-    permissions, `fs_write_paths`, elevated-permission requests) is gated on
-    `terminal`; disabling it removes a long section that would otherwise mislead the
-    model about sandbox semantics.
-- **Unconditional** (the override must be explicit here):
-  - Line 39: "…and terminal commands for build, test…" — the override should state
-    shell commands run via the `bash` tool.
-  - Lines 243–245 (Agent Skills): "If the Skill references additional files, use
-    `read_file` to access them." Conflicts with replacing `read_file` with sandboxed
-    MCP `Read`.
-- **Tension for the `Read` batch:** global skills live in `~/.agents/skills/`, which
-  is under `$HOME` — exactly what the sandbox blocks. A sandboxed `Read` cannot read
-  skill reference files unless we (a) mount `~/.agents/skills` read-only into the
-  sandbox, (b) keep native `read_file` for skill files, or (c) skills stop relying on
-  `$HOME` reference files. **R1 chose (a)** — `~/.agents/skills` is mounted read-only
-  into the sandbox (so bundled skill `scripts/` resolve); the `Read` batch still
-  needs to confirm sandboxed reads of skill files work and aren't misled by the
-  native `read_file` guidance.
+Move the write/edit surface into the sandbox as MCP tools.
 
-The system-prompt override (the `rules.md` / AGENTS.md "Tool changes" note) is updated
-**only when the hard-coded system prompt references a tool we disable** — so far only
-`read_file` (lines 243–245). Tool batches whose only system-prompt guidance is
-conditional on `available_tools` (e.g. `grep`/`glob`/`ls`) add no override.
+- Add MCP write and read tools, to be modeled on **Claude Code** (names and
+  argument shapes TBD), not on Zed's native tools.
+- Run in the sandbox, sharing the existing **project-level tracked cwd** (not
+  session-isolated; multiple simultaneous sessions in a project are rare).
+- Writes are confined by the mount model: `.agent/**` in a workspace, the whole
+  repo in single-repo mode. This also fixes writes to git-ignored scratch under
+  `<pkg>/.superpowers/`, which native tools refused.
+- Each call returns a **markdown diff summary** so the human can review the
+  change in the tool card.
+- Update the `zed-tools.md` mapping to point write/edit at the MCP tools.
+- Disable the native `write_file` and `edit_file` tools in the agent profile
+  (human does this).
 
-## 6. Roadmap phases
+### W2 — MCP tools return Markdown
 
-### R0 — Catchup (maintenance)
+Have every MCP tool return markdown-formatted output so it renders readably in
+the agent UI: `todo_write`, `bash`, `read`, `ls`, `glob`, `grep`, and the new
+read/edit. JSON returns do not format well.
 
-- [x] Update `superpowers/skills/using-superpowers/references/zed-tools.md`: `terminal` ->
-      `bash`; add `ask_user` (and the question-asking skills). Small; the profile
-      already maps `terminal` -> `bash`.
+### W3 — Cross-session-state decision point (CWD + todo store)
 
-### R1 — Prompts -> skills (DONE, 2026-09-01)
+Both the tracked cwd and the in-memory todo store are **per-project**, shared
+across every session that uses a project's MCP server process.
 
-Prompts moved out of OpenCode agent definitions into a per-harness Zed layer, with
-documented content-placement rules.
+- Decision point: **session-isolate** them (requires a session key that flows
+  through tool calls), or **drop them** in favor of root-anchored calls and
+  per-session state.
+- Not urgent — simultaneous sessions in a project are rare — but worth deciding
+  deliberately before the surface grows further.
 
-- [x] **Zed harness layer** under `harnesses/zed/`: `rules.md` (role-scoped dispatch
-      table, symlinked to `~/.config/zed/AGENTS.md`) + Zed-only skills
-      (`zed-primary-agent`, `zed-explorer`, `zed-implementer`, `zed-reviewer`), each
-      with YAML front-matter, usable by a primary or a subagent.
-- [x] **Install commands**: `tkt install-zed-agent` symlinks `harnesses/zed/skills/*`
-      and the shared `superpowers/skills/*` into `~/.agents/skills`, plus `rules.md` ->
-      `~/.config/zed/AGENTS.md`; `tkt install-opencode-agent` links
-      `harnesses/opencode/agents` -> `~/.config/opencode/agents`. OpenCode `sp-*`
-      agents copied under `harnesses/opencode/agents`; `sp-review` thinned.
-- [x] **Deliverable: content-placement rules** documented in `harnesses/README.md`
-      (what belongs in skills vs. `AGENTS.md` vs. OpenCode profiles vs. the Zed
-      override).
-- [x] **Sandbox**: `~/.config/opencode` and `~/.agents/skills` mounted read-only so
-      bundled skill scripts resolve at the paths the skills expect.
+### W4 — `ask_user` usage guidance
 
-R1 deviations from the original sketch: the primary agent is framed as a categorizer
-that loads follow-up skills (gate = ask when intent is unclear), not a strict
-"wait for a human-invoked gate"; subagent role prompts became general Zed skills
-rather than strictly subagent-only; the optional skill renaming to
-`design`/`plan`/`build` was not done.
+Add additional instructions for effective `ask_user` usage (primary agent) in
+the harness/skills.
 
-### R2 — Iterative MCP tool batches
+### W5 — GitHub MCP permissions
 
-Each batch is one design -> plan -> build cycle that updates the MCP server tool(s), the
-skills references, and the agent profile together. The Zed system-prompt override
-(`rules.md` / AGENTS.md) is updated **only when the hard-coded system prompt references a
-disabled tool** — so far only the `Read` batch (`read_file`); `Grep`/`Glob`/`LS` and
-`TodoWrite` add none. Expected order:
+Identify which GitHub MCP tools are read-only vs. read-write, and define agent
+profiles that use them.
 
-1. `Read` (resolve the `~/.agents/skills`/`$HOME` tension first). **DONE, 2026-09-01** —
-   sandboxed `read` MCP tool, `Read a file` -> `read` mapping in `zed-tools.md` and
-   `zed-explorer`, native `read_file` disabled machine-side.
-2. `Grep`, `Glob`, `LS`. **DONE, 2026-09-02**
-3. `TodoWrite`. **DONE, 2026-09-03**
+## 3. Backlog / deferred
 
-OpenCode is kept working throughout.
+A. **WebFetch security** — explore why Zed sandboxes `fetch`/`terminal` and
+decide whether/how to provide a sandboxed `webfetch`. Web access is disabled
+in the meantime.
 
-### R4 — Deferred: WebFetch security
+B. **Compaction research** — compare how OpenCode and Zed compact conversation
+history; improve Zed's compaction if possible. Research/design first.
 
-Explore why Zed sandboxes `fetch` and `terminal`; decide whether/how to provide a
-sandboxed `webfetch`. Use Zed native `fetch` in the meantime. Last on the list, done
-after everything else.
+C. **Todo persistence to a visible file** — a future enhancement where the todo
+list lives in a file the human can keep open, giving a persistent status
+view rather than per-call markdown cards.
 
-### Verify-only (was R3): `AGENTS.md.in`
+D. **`test_pull.py` `forkpty()` deprecation warning** — maintenance; the suite
+emits `DeprecationWarning: this process is multi-threaded, use of forkpty()
+may lead to deadlocks` from `pty.fork()` in
+`test_diverged_rebase_with_tty_editor_succeeds`. Pre-existing and harmless
+today, but worth addressing.
 
-Confirm whether the workspace instructions template needs any adaptation to the
-host-agent model. Likely nothing; treat as a check, and ride along inside R2 batches
-if anything does come up.
+## 4. Standing constraints
 
-## 7. Design decisions log
-
-1. **Tool suite = redesign, not 1:1 port.** Claude Code baseline; small, familiar.
-2. **Sandbox = default for read/execute; native only for UI** (`write_file`/`edit_file`
-   diffs), regex-scoped to `.agent/**`.
-3. **Don't fight Zed tool names** of tools we use natively (e.g. keep
-   `write_file`/`edit_file`); only _our_ MCP tools get Claude-style names.
-4. **Add `TodoWrite`** as an MCP tool.
-5. **`WebFetch` deferred** to the end (R4); use native `fetch` meanwhile.
-6. **`ask_user` should be used** for the primary agent; add it to `zed-tools.md` and
-   question-asking skills (it was overlooked in the prior Zed support work). — **Refined
-   by E1**: keep encouraging it for the primary agent, but discourage/block it for
-   _subagents_, which can call it too and where it works poorly. See §9.
-7. **OpenCode support is retained**, coexisting with the Zed setup during testing.
-8. **Prompts-first order:** move prompts to skills (R1) before expanding tools (R2).
-9. **System-prompt override added only when needed** — when the hard-coded system prompt
-   references a disabled tool. Only `read_file` qualifies; later tool batches
-   (`Grep`/`Glob`/`LS`, `TodoWrite`) add no override.
-10. **Normalize content placement** with documented rules (skills vs. AGENTS.md vs.
-    profiles vs. override).
-
-## 8. Deferred / open items
-
-- WebFetch security rationale and design (R4).
-- `AGENTS.md.in` — confirm whether anything needs adapting (verify-only).
-- Skill renaming to `design`/`plan`/`build` — dropped as optional; not done in R1.
-- Task 14 (manual): remove the superseded `agents/opencode` directory now that
-  `~/.config/opencode/agents` points at `harnesses/opencode/agents`.
-- **`tests/test_pull.py` `forkpty()` deprecation warning** (maintenance): the suite
-  emits `DeprecationWarning: this process is multi-threaded, use of forkpty() may
-lead to deadlocks` from `pty.fork()` in
-  `test_diverged_rebase_with_tty_editor_succeeds`. Pre-existing and harmless today
-  (currently a single-threaded run), but worth addressing eventually — e.g. by
-  running that test in a way that avoids `forkpty` on a multi-threaded process, or
-  switching its mechanism.
-
-## 9. Emergent work (added 2026-09-01)
-
-Emergent items surfaced since the roadmap was approved. **None are scheduled for
-action yet** — they are tracked here so they aren't lost. Each should be triaged into
-its own design -> plan -> build cycle (or an investigation) before being acted on.
-
-### E1 — Keep `ask_user` for the primary agent; discourage/block it in subagents (DONE, 2026-09-02)
-
-`ask_user` is wanted and encouraged for the **primary agent**. The problem is that
-**subagents** (dispatched via `spawn_agent`) can also call it, and it does not work well
-in that context (interrupts their flow / renders poorly). This _refines_ — but does not
-reverse — design decision #6: primary agents keep encouragement, subagents should not
-use it.
-
-**Feasibility finding (2026-09-02): blocking is not possible in current Zed.** Tool
-availability is purely profile-driven (`Thread::enabled_tools` filters by the active
-profile's `tools` allowlist), and subagents inherit the parent's `profile_id` via
-`inherit_parent_settings` — there is no `subagent_profile` setting (only
-`subagent_model`). `enabled_tools` never special-cases `subagent_context`, so a subagent
-sees exactly the tools its inherited profile enables, `ask_user` included. So the
-"block it" option is out; we implement the fallback — discourage at the prompt/skill
-level.
-
-- **Skills** (`zed-explorer` — when used as a subagent — and `zed-implementer`,
-  `zed-reviewer`) now instruct subagents not to call `ask_user`; surface
-  uncertainty/blockers in their report instead. `zed-explorer` is also usable by
-  the primary agent, where `ask_user` remains available.
-- **`zed-tools.md`** updated: `ask_user` is marked primary-agent-only, with a note
-  explaining it can't be blocked but is discouraged in subagents.
-- **Tool-suite table (see §4)** updated to reflect the primary-vs-subagent split.
-
-### E2 — Compaction: OpenCode vs Zed
-
-OpenCode compacts (summarizes) conversation history differently from Zed. Compare the
-two approaches and, if possible, improve Zed's compaction based on what we learn from
-OpenCode. Research/design first — no code changes yet.
-
-### E3 — Long-running model-degradation tracing proxy (DONE, 2026-09-02)
-
-Observed model degradation with the Zed agent that isn't seen with OpenCode: incorrect
-use (or non-use) of thinking tags and repeated tool-use mistakes. A prior investigation
-into this was inconclusive but produced a debugging proxy server for tracing the API
-calls. The throwaway proxy is now productized into two continuously-running commands so
-it can gather a large, session-linked dataset for a future investigation.
-
-- **`tkt trace-proxy`** — long-lived capture. Relays model HTTP traffic through a
-  sandboxed-forwarding proxy (optionally co-invoked over SSH to the model host) into the
-  data root, masking the `Authorization` header (case-insensitive) to `<redacted>`.
-- **`tkt trace-log`** — retroactive session segmentation and labeling: `segment` splits
-  the flat capture into conversation sessions (by OpenCode `x-session-id` header, or by
-  content-connected components for Zed, which sends no session header and may interleave a
-  primary conversation with empty-context `spawn_agent` subagents that are split into
-  their own sessions); plus `list`, `show`, `pin`/`unpin`, and `prune`.
-- **Data layout** — `~/.tkt/traces/` (override with `TKT_TRACES_DIR`): `capture.jsonl`
-  for the live stream, `sessions/<date>_<id>.jsonl.gz` per session, and paired
-  `*.meta.json` (label, id, start, end, client user-agent, pinned).
-- **Labeling** — sessions are labeled from the generated title (title-gen request at
-  session start), falling back to the session id / start time. **Pin/prune** — pinned
-  sessions are never pruned; `prune` removes old/extra unpinned sessions (default 30-day
-  horizon, keep 20).
-
-This supersedes the throwaway `investigations/bad-thinking/zed-agent-request-proxy/`
-prototype (left in place). Run it during normal Zed-agent use to accumulate data for the
-future degradation investigation.
-
-### E4 — `read` tool: byte-level output cap (surfaced during bash truncation)
-
-Surfaced while implementing the `bash` MCP tool's output truncation (2026-09-02). The
-`bash` fix caps each stream head+tail at 5000 chars on the host and hard-kills runaway
-output at the source (50,000-byte `head -c` pipe). The built-in `read` tool was
-**deliberately left untouched** by that work, but it shares the same class of bug in
-narrower form.
-
-`read` truncates by **line count**, not bytes
-(`build_read_command` runs `sed -n "{start},{end}p" "$f" | base64 -w0`, and
-`read_tool` caps at `limit` lines, default 2000). For a file with one **extremely long
-line** (a multi-GB single-line file — minified JS, a huge JSONL record, a log with no
-newlines), the line-based truncation does not bound bytes: `sed` buffers the whole line
-in memory (OOM risk) and `base64` ships it up unmodified. This is the same
-OOM/server-hang risk the `bash` truncation fixes.
-
-- Add a byte-level cap to `read` — e.g. a `head -c` bound inside `build_read_command`,
-  and/or capping the base64 line before host-side decode — so a huge single-line file
-  cannot blow the context window or OOM the server.
-- Triage into its own design -> plan -> build cycle before implementation.
-
-### E5 — Harness: `write_file`/`edit_file` fail on git-ignored `.superpowers/` paths
-
-Surfaced during E4's build (2026-09-02) while running the SDD workflow in this repo. A
-subagent reported that the `write_file`/`edit_file` tools failed on the git-ignored
-`<repo>/.superpowers/sdd/<plan>/...` scratch paths with a false
-"parent directory doesn't exist" error (the directory does exist), and fell back to
-`bash` to write its report file. The precise tools were blocked on a path that `bash`
-can access normally.
-
-- Likely the sandbox's project-root-path allowance treats git-ignored scratch dirs
-  (like the `investigations/` scratch) as outside the project, so the precise file
-  tools refuse them while `bash` (cwd-scoped) succeeds.
-- Triage whether these precise-tool path allowances should include the SDD workspace
-  (`.superpowers/`) or whether subagents should treat it as `bash`-only scratch.
-- Triage into its own investigation before the next SDD-driven build.
-
-### E6 — Cross-session state in the MCP server: shared tracked CWD and future persisted todo list (DONE: triaged, 2026-09-03)
-
-Surfaced during R2 batch 3 (`TodoWrite`) feasibility (2026-09-03). The tkt MCP
-server process is **per-project, not per-session** (in Zed, `ContextServerStore` is
-owned by `Project`), so every agent conversation in a project shares one server
-process and therefore its weakly-stateful channels:
-
-- **The tracked `WarmSandbox._cwd`** — updated from each call's end-of-call `pwd`
-  (`mcp_server.py`), so a `bash "cd …"` in one session changes the resolution base
-  for every other session's `read`/`ls`/`glob`/`grep` (path args default to
-  relative `"."` and resolve against the shared child cwd). Verified the CWD is
-  wired uniformly through the driver (`cd "$cwd"` at the top of each loop) — no
-  per-tool gap.
-- **The in-memory `TodoStore`** (added in R2 batch 3) — all sessions in a project
-  share one todo list.
-
-This is a latent cross-session interference bug, pre-existing (CWD) and newly
-introduced (todo list). Feasibility finding: **no session identifier exists
-today** — Zed sends none at spawn (env), at `initialize`, or per tool call for
-stdio; `Mcp-Session-Id` is HTTP-only and server-assigned. So session isolation
-would require introducing a key that flows through the tool call (e.g. a
-`session_id` parameter) with the project root as the namespace.
-
-**Decision:** the R2 batch-3 `todo_write` MVP lands as in-memory, per-project
-(no session isolation, no persistence across server restarts). Persistence
-and/or session isolation are triaged into their own design -> plan -> build
-cycle(s).
+- **OpenCode coexists** throughout testing; skill/AGENTS changes must not break
+  the existing OpenCode workflow.
+- **Sandbox mount model** — workspace: root read-only + `.agent` writable;
+  single repo: whole repo writable. This is the source of per-project write
+  scoping and should be preserved, and is automatic as long as the existing
+  sandbox set-up code is used.
+- **`ask_user` is for the primary agent.** Subagents also have the tool (it
+  cannot be blocked — subagents inherit the parent's profile), but it interrupts
+  their flow and renders poorly, so the skills discourage it and instruct
+  subagents to surface uncertainty in their report instead.
