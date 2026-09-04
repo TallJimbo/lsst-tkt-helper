@@ -34,12 +34,18 @@ The design rationale that holds:
   argument shapes. Zed-native tools remain where the UI is the point (`skill`,
   `spawn_agent`, `ask_user`, `fetch`, `diagnostics`, `search_web`).
 - **MCP tool returns are rendered as markdown in Zed's agent UI**: code fences,
-  inline code, and explicit links render (so diffs highlight, links click). One
-  caveat learned in W1: the **bare-path auto-linker that applies to agent
-  messages does NOT apply to tool output** — to get a clickable path in a tool
-  result you must emit an explicit link (see W2). So our MCP tools return
-  markdown, which keeps the agent's activity legible to the human instead of
-  opaque.
+  inline code, and explicit links render (so diffs highlight, links click). Every
+  MCP tool returns markdown, so the agent's activity is legible to the human
+  instead of opaque JSON. One hard rule from the W1 caveat: the **bare-path
+  auto-linker that applies to agent messages does NOT apply to tool output** —
+  to get a clickable path in a tool result you must emit an explicit link with
+  backticked text, `` [`path`](path) ``. Never rely on bare-path auto-linking.
+- **Tool-output formatting conventions** (W2): `bash`, `read`, `ls`, `glob`, and
+  `grep` return code-fenced blocks (monospace, and clear about what is stdout vs.
+  stderr vs. status); `read` links the target file path up top, as `write`/`edit`
+  do for the files they touch; `todo_write` returns a markdown checklist. Nonzero
+  exit codes, timeouts, and truncation are surfaced as plain-text notes. No
+  path in a tool result is assumed to be clickable; only explicit links are.
 
 ### Tool surface
 
@@ -49,7 +55,7 @@ The design rationale that holds:
 | `read`                               | tkt MCP (sandboxed) | read files            |
 | `ls` / `glob` / `grep`               | tkt MCP (sandboxed) | list / find / search  |
 | `write` / `edit`                     | tkt MCP (sandboxed) | sandboxed create/edit |
-| `todo_write`                         | tkt MCP (sandboxed) | W2 — returns markdown |
+| `todo_write`                         | tkt MCP (sandboxed) | returns a checklist |
 | `skill` / `spawn_agent` / `ask_user` | Zed native          | intrinsic             |
 
 File operations (delete/move/copy/mkdir) are done with `bash` (`rm`/`mv`/`cp`/`mkdir`),
@@ -59,31 +65,6 @@ which is already sandboxed and confined; they are not separate MCP tools.
 
 Each workstream is tracked at design-decision level; implementation details are
 worked out when the workstream is picked up.
-
-### W2 — MCP tools return Markdown
-
-Have every MCP tool return markdown-formatted output so it renders readably in
-the agent UI: `todo_write`, `bash`, `read`, `ls`, `glob`, `grep`, and the new
-`write`/`edit`. JSON returns do not format well.
-
-What renders in MCP tool output (verified during W1, 2026-09-04):
-
-- **Code fences** render with syntax highlighting (a ` ```diff ` fence shows
-  colored +/- lines).
-- **Explicit markdown links** `[text](path)` render as clickable links; an
-  absolute target resolves to the file, a relative one against the workspace
-  root.
-- **Backticked code spans** render as monospace. They do **not** auto-link a
-  bare path in `write`/`edit` output (though they did linkify absolute paths in
-  `bash` output — tool-output renderers are not consistent with each other, nor
-  with agent messages).
-- **Bare file paths do not auto-link** in tool output at all. This differs from
-  agent messages, where Zed auto-links bare and embedded paths.
-
-Rule for W2: whenever a tool returns a path the human should click, emit it as
-an explicit markdown link with backticked text for monospace —
-`` [`/abs/path`](/abs/path) ``. Never rely on bare-path auto-linking in tool
-output. Test each tool's actual rendered card rather than assuming consistency.
 
 ### W3 — Cross-session-state decision point (CWD + todo store)
 
@@ -124,6 +105,13 @@ emits `DeprecationWarning: this process is multi-threaded, use of forkpty()
 may lead to deadlocks` from `pty.fork()` in
 `test_diverged_rebase_with_tty_editor_succeeds`. Pre-existing and harmless
 today, but worth addressing.
+
+E. **Language-aware `read` fences** — `read` fences its output as `text` (no
+syntax highlighting), like `bash`/`ls`/`glob`/`grep`. Possible enhancement:
+detect the language from the file extension (e.g. `python` for `.py`) so reads
+colorize the way `edit` diffs do. Deferred; the uniform `text` fence was a
+deliberate choice to avoid mis-highlighting arbitrary output, and the value of
+colored reads is unproven.
 
 ## 4. Standing constraints
 

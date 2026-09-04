@@ -26,13 +26,8 @@ from __future__ import annotations
 
 __all__ = (
     "BashResult",
-    "GlobResult",
-    "GrepResult",
-    "LSResult",
-    "ReadResult",
     "TodoItem",
     "TodoStore",
-    "TodoWriteResult",
     "WarmSandbox",
     "build_driver_script",
     "build_edit_command",
@@ -44,6 +39,7 @@ __all__ = (
     "decode_field",
     "edit_tool",
     "encode_field",
+    "format_bash_result",
     "glob_tool",
     "grep_tool",
     "ls_tool",
@@ -105,52 +101,6 @@ class BashResult(BaseModel):
     truncated: bool = False
 
 
-class ReadResult(BaseModel):
-    """The outcome of one sandboxed ``read`` call.
-
-    ``content`` is the line-numbered slice of a text file. When lines remain
-    past the slice, ``content`` ends with a ``... (N more lines)`` note and
-    ``truncated`` is True.
-    """
-
-    content: str
-    truncated: bool
-
-
-class LSResult(BaseModel):
-    """The outcome of one sandboxed ``ls`` call.
-
-    ``content`` is a ``ls -laF``-style listing of ``path``; ``truncated`` is
-    True when the output was cut to the model-facing cap.
-    """
-
-    content: str
-    truncated: bool
-
-
-class GlobResult(BaseModel):
-    """The outcome of one sandboxed ``glob`` call.
-
-    ``content`` is one matching path per line; ``truncated`` is True when the
-    output was cut to the model-facing cap.
-    """
-
-    content: str
-    truncated: bool
-
-
-class GrepResult(BaseModel):
-    """The outcome of one sandboxed ``grep`` call.
-
-    ``content`` holds the matches in the requested ``output_mode``; an empty
-    ``content`` means no matches were found (not an error). ``truncated`` is
-    True when the output was cut to the model-facing cap.
-    """
-
-    content: str
-    truncated: bool
-
-
 class TodoItem(BaseModel):
     """One entry in the agent's todo list.
 
@@ -164,33 +114,44 @@ class TodoItem(BaseModel):
     activeForm: str | None = None
 
 
-class TodoWriteResult(BaseModel):
-    """The todo list after a ``todo_write`` call.
-
-    ``todos`` is the full current list; the caller replaces it wholesale on
-    each call, so this is both the result and the read of the current state.
-    """
-
-    todos: list[TodoItem]
-
-
 class TodoStore:
     """In-memory scratchpad holding the agent's current todo list.
 
     Each ``run_server`` instance owns one ``TodoStore``. ``todo_write``
-    replaces the list wholesale (Claude Code-style) and returns it, so the
-    store is a trivial holder. State is host-side (not sandboxed — this is
-    model bookkeeping with no file access) and is lost if the server process
-    restarts, which is acceptable for a scratchpad.
+    replaces the list wholesale (Claude Code-style) and returns it rendered as
+    a markdown checklist, so the store is a trivial holder. State is host-side
+    (not sandboxed — this is model bookkeeping with no file access) and is
+    lost if the server process restarts, which is acceptable for a scratchpad.
     """
 
     def __init__(self) -> None:
         self._todos: list[TodoItem] = []
 
-    def replace(self, todos: list[TodoItem]) -> TodoWriteResult:
-        """Replace the stored list with ``todos`` and return it."""
+    def replace(self, todos: list[TodoItem]) -> str:
+        """Replace the stored list with ``todos`` and return it as markdown."""
         self._todos = list(todos)
-        return TodoWriteResult(todos=list(self._todos))
+        return _format_todos(self._todos)
+
+
+def _format_todos(todos: list[TodoItem]) -> str:
+    """Render a todo list as a markdown checklist.
+
+    ``completed`` maps to ``- [x]``, ``cancelled`` to a struck-through
+    ``- [~]``, and ``pending``/``in_progress`` to ``- [ ]`` (the latter
+    showing ``activeForm`` when present).
+    """
+    lines = []
+    for t in todos:
+        if t.status == "completed":
+            lines.append(f"- [x] {t.content}")
+        elif t.status == "cancelled":
+            lines.append(f"- [~] ~~{t.content}~~")
+        elif t.status == "in_progress":
+            suffix = f" ({t.activeForm})" if t.activeForm else ""
+            lines.append(f"- [ ] {t.content}{suffix}")
+        else:
+            lines.append(f"- [ ] {t.content}")
+    return "\n".join(lines)
 
 
 def encode_field(text: str) -> str:
@@ -243,6 +204,47 @@ def _cap_result(result: BashResult, max_chars: int) -> BashResult:
         timed_out=result.timed_out,
         truncated=s_trunc or e_trunc,
     )
+
+
+def _md_fence(text: str) -> str:
+    """Wrap ``text`` in a ``text`` code fence for monospace rendering."""
+    return f"```text\n{text}\n```"
+
+
+def _format_listing(text: str) -> str:
+    """Render listing output (ls/glob/grep) as a fenced block.
+
+    Trailing newlines are stripped so the fence closes cleanly; empty output
+    yields an empty string (not an empty fence).
+    """
+    body = text.rstrip("\n")
+    if not body:
+        return ""
+    return _md_fence(body)
+
+
+def format_bash_result(result: BashResult) -> str:
+    """Render a :class:`BashResult` as markdown for the agent UI.
+
+    Stdout is shown in its own code fence; stderr is fenced separately and
+    labelled. Nonzero exit codes, timeouts, and truncation are appended as
+    plain-text notes so the human can distinguish output from status.
+    """
+    parts = []
+    if result.stdout:
+        parts.append(_md_fence(result.stdout.rstrip("\n")))
+    if result.stderr:
+        parts.append(f"stderr:\n{_md_fence(result.stderr.rstrip('\n'))}")
+    notes = []
+    if result.exit_code != 0:
+        notes.append(f"exit code {result.exit_code}")
+    if result.timed_out:
+        notes.append("timed out")
+    if result.truncated:
+        notes.append("output truncated")
+    if notes:
+        parts.append("\n".join(notes))
+    return "\n\n".join(parts)
 
 
 def parse_result_line(line: str) -> dict[str, Any]:
@@ -386,26 +388,25 @@ def _trim_incomplete_trailing(raw: bytes) -> bytes:
     return raw
 
 
-def read_tool(warm: WarmSandbox, *, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
-    """Run one sandboxed ``read`` against ``warm`` and return a
-    :class:`ReadResult`.
+def read_tool(warm: WarmSandbox, *, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+    """Run one sandboxed ``read`` against ``warm`` and return markdown.
+
+    The result links the file path (clickable) and shows the line-numbered
+    slice in a code fence, keeping the ``... (N more lines)`` note.
     """
     offset = max(0, offset)
     limit = max(1, limit)
     result = warm.run(build_read_command(file_path, offset, limit))
     if result.exit_code != 0:
         err = (result.stderr or result.stdout or "").strip()
-        return ReadResult(content=f"read: {err}", truncated=False)
+        return f"read: {err}"
     total = _parse_read_total(result.stderr)
     raw = base64.b64decode(result.stdout.strip())
     try:
         trimmed = _trim_incomplete_trailing(raw)
         text = trimmed.decode("utf-8")
     except UnicodeDecodeError:
-        return ReadResult(
-            content="read: file appears to be binary (did not decode as UTF-8)",
-            truncated=False,
-        )
+        return "read: file appears to be binary (did not decode as UTF-8)"
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
@@ -415,39 +416,40 @@ def read_tool(warm: WarmSandbox, *, file_path: str, offset: int = 0, limit: int 
     if total is None:
         total = returned
     more = total - returned
-    line_truncated = more > 0
-    if line_truncated and offset == 0:
+    if more > 0 and offset == 0:
         numbered += f"\n... ({more} more lines)"
-    # Model-facing byte cap: truncate head+tail, flagging if cut. Dropping
-    # trailing incomplete-UTF-8 bytes is itself evidence that the sandbox's
-    # byte cap cut the output, so that read is reported as truncated too.
-    content, byte_truncated = truncate_output(numbered, read_char_cap(limit))
-    byte_cut = len(trimmed) < len(raw)
-    return ReadResult(content=content, truncated=line_truncated or byte_truncated or byte_cut)
+    # Model-facing byte cap: truncate head+tail. Dropping trailing
+    # incomplete-UTF-8 bytes is itself evidence that the sandbox's byte cap cut
+    # the output, so that read is reported as truncated too.
+    content, _ = truncate_output(numbered, read_char_cap(limit))
+    return f"[`{file_path}`]({file_path})\n{_md_fence(content)}"
 
 
-def ls_tool(warm: WarmSandbox, *, path: str = ".") -> LSResult:
-    """Run one sandboxed ``ls`` against ``warm`` and return an
-    :class:`LSResult`.
+def ls_tool(warm: WarmSandbox, *, path: str = ".") -> str:
+    """Run one sandboxed ``ls`` against ``warm`` and return markdown.
+
+    The ``ls -laF`` listing is shown in a code fence to preserve column
+    alignment.
     """
     result = warm.run(build_ls_command(path))
     if result.exit_code != 0:
         err = (result.stderr or result.stdout or "").strip()
-        return LSResult(content=f"ls: {err}", truncated=False)
-    content, truncated = truncate_output(result.stdout, _MAX_OUTPUT_CHARS)
-    return LSResult(content=content, truncated=truncated)
+        return f"ls: {err}"
+    content, _ = truncate_output(result.stdout, _MAX_OUTPUT_CHARS)
+    return _format_listing(content)
 
 
-def glob_tool(warm: WarmSandbox, *, pattern: str, path: str = ".") -> GlobResult:
-    """Run one sandboxed ``glob`` against ``warm`` and return a
-    :class:`GlobResult`.
+def glob_tool(warm: WarmSandbox, *, pattern: str, path: str = ".") -> str:
+    """Run one sandboxed ``glob`` against ``warm`` and return markdown.
+
+    Matching paths are shown one per line in a code fence.
     """
     result = warm.run(build_glob_command(pattern, path))
     if result.exit_code != 0:
         err = (result.stderr or result.stdout or "").strip()
-        return GlobResult(content=f"glob: {err}", truncated=False)
-    content, truncated = truncate_output(result.stdout, _MAX_OUTPUT_CHARS)
-    return GlobResult(content=content, truncated=truncated)
+        return f"glob: {err}"
+    content, _ = truncate_output(result.stdout, _MAX_OUTPUT_CHARS)
+    return _format_listing(content)
 
 
 def grep_tool(
@@ -459,21 +461,20 @@ def grep_tool(
     output_mode: str = "content",
     ignore_case: bool = False,
     line_number: bool = False,
-) -> GrepResult:
-    """Run one sandboxed ``grep`` against ``warm`` and return a
-    :class:`GrepResult`.
+) -> str:
+    """Run one sandboxed ``grep`` against ``warm`` and return markdown.
 
-    ``grep``'s rc 1 (no matches) is normalized to empty ``content`` rather than
+    ``grep``'s rc 1 (no matches) is normalized to empty output rather than
     reported as an error.
     """
     result = warm.run(build_grep_command(pattern, path, glob, output_mode, ignore_case, line_number))
     if result.exit_code == 1:
-        return GrepResult(content="", truncated=False)
+        return ""
     if result.exit_code != 0:
         err = (result.stderr or result.stdout or "").strip()
-        return GrepResult(content=f"grep: {err}", truncated=False)
-    content, truncated = truncate_output(result.stdout, _MAX_OUTPUT_CHARS)
-    return GrepResult(content=content, truncated=truncated)
+        return f"grep: {err}"
+    content, _ = truncate_output(result.stdout, _MAX_OUTPUT_CHARS)
+    return _format_listing(content)
 
 
 def build_write_command(file_path: str, content: str) -> str:
@@ -734,17 +735,24 @@ def run_server(
         command: str,
         timeout_ms: int | None = None,
         description: str | None = None,  # present for human approvals of tool actions
-    ) -> BashResult:
+    ) -> str:
         """Run a shell command inside the tkt sandbox.
+
+        The result is markdown rendered in the agent UI. Stdout appears in a
+        code fence; stderr, when present, is fenced separately under a
+        ``stderr:`` label. A nonzero exit code, a timeout, and truncated output
+        are each appended as a plain-text note (``exit code N``, ``timed out``,
+        ``output truncated``); a clean run adds no note, so the absence of an
+        ``exit code N`` note means the command exited 0.
 
         ``timeout_ms`` defaults to 60s; a request may override it. A command
         that exceeds its timeout is killed and reported with ``timed_out``. The
         command is also hard-capped in the sandbox at ``_DRIVER_OUT_CAP`` bytes
         per stream (a runaway producer is killed); the model sees stdout/stderr
         truncated to ``_BASH_OUTPUT_CHARS`` chars each (head+tail,
-        ``truncated`` set if cut).
-        ``description`` is a per-call rationale for the human (e.g. shown when
-        a host requests tool confirmation); it is not used to change behavior.
+        ``truncated`` set if cut). ``description`` is a per-call rationale for
+        the human (e.g. shown when a host requests tool confirmation); it is
+        not used to change behavior.
 
         Args:
             command: The shell command to run.
@@ -752,7 +760,7 @@ def run_server(
                 no timeout).
             description: Optional human-readable rationale for this call.
         """
-        return _cap_result(warm.run(command, timeout_ms=timeout_ms), _BASH_OUTPUT_CHARS)
+        return format_bash_result(_cap_result(warm.run(command, timeout_ms=timeout_ms), _BASH_OUTPUT_CHARS))
 
     @mcp.tool()
     def read(
@@ -760,7 +768,7 @@ def run_server(
         offset: int = 0,
         limit: int = 2000,
         description: str | None = None,  # present for human approvals of tool actions
-    ) -> ReadResult:
+    ) -> str:
         """Read a file (or a slice of it) inside the tkt sandbox.
 
         The sandbox blocks ``$HOME`` (so credentials are never exposed) but
@@ -785,7 +793,7 @@ def run_server(
     def ls(
         path: str = ".",
         description: str | None = None,  # present for human approvals of tool actions
-    ) -> LSResult:
+    ) -> str:
         """List files and subdirectories at ``path`` inside the tkt sandbox.
 
         Equivalent to ``ls -laF`` (all entries, long format, type indicators).
@@ -805,7 +813,7 @@ def run_server(
         pattern: str,
         path: str = ".",
         description: str | None = None,  # present for human approvals of tool actions
-    ) -> GlobResult:
+    ) -> str:
         """Find files under ``path`` matching the glob ``pattern`` in the
         sandbox.
 
@@ -830,7 +838,7 @@ def run_server(
         ignore_case: bool = False,
         line_number: bool = False,
         description: str | None = None,  # present for human approvals of tool actions
-    ) -> GrepResult:
+    ) -> str:
         """Search file contents under ``path`` for a regex in the sandbox.
 
         ``output_mode`` is ``content`` (default), ``files`` (paths only), or
@@ -918,7 +926,7 @@ def run_server(
     def todo_write(
         todos: list[TodoItem],
         description: str | None = None,  # present for human approvals of tool actions
-    ) -> TodoWriteResult:
+    ) -> str:
         """Replace the agent's todo list and return the full new list.
 
         The caller passes the entire desired list on every call (Claude

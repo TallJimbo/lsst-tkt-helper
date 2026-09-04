@@ -32,12 +32,8 @@ from tkt.mcp_files import MAX_CONTENT_BYTES
 from tkt.mcp_server import (
     _MAX_OUTPUT_CHARS,
     BashResult,
-    GlobResult,
-    GrepResult,
-    LSResult,
     TodoItem,
     TodoStore,
-    TodoWriteResult,
     WarmSandbox,
     _cap_result,
     build_driver_script,
@@ -274,12 +270,11 @@ def test_read_tool_numbers_lines_and_no_truncation():
         stdout=base64.b64encode(sl).decode(), stderr="READ_TOTAL 3\n", exit_code=0
     )
     res = read_tool(warm, file_path="/tmp/x.txt")
-    assert res.content == "1\ta\n2\tbb\n3\tccc"
-    assert res.truncated is False
+    assert res == ("[`/tmp/x.txt`](/tmp/x.txt)\n```text\n1\ta\n2\tbb\n3\tccc\n```")
 
 
 def test_read_tool_truncation_note():
-    """A partial slice appends a '... (N more lines)' note; truncated=True."""
+    """A partial slice appends a '... (N more lines)' note."""
     from tkt.mcp_server import read_tool
 
     sl = b"l1\nl2\nl3\nl4\nl5\n"
@@ -288,8 +283,7 @@ def test_read_tool_truncation_note():
         stdout=base64.b64encode(sl).decode(), stderr="READ_TOTAL 5\n", exit_code=0
     )
     res = read_tool(warm, file_path="/tmp/x.txt", offset=0, limit=2)
-    assert res.content == "1\tl1\n2\tl2\n... (3 more lines)"
-    assert res.truncated is True
+    assert res == ("[`/tmp/x.txt`](/tmp/x.txt)\n```text\n1\tl1\n2\tl2\n... (3 more lines)\n```")
 
 
 def test_read_tool_offset_numbers_from_absolute():
@@ -302,8 +296,7 @@ def test_read_tool_offset_numbers_from_absolute():
         stdout=base64.b64encode(sl).decode(), stderr="READ_TOTAL 5\n", exit_code=0
     )
     res = read_tool(warm, file_path="/tmp/x.txt", offset=2, limit=2)
-    assert res.content == "3\tl3\n4\tl4"
-    assert res.truncated is True  # 2 returned + 2 offset = 4 < 5
+    assert "3\tl3\n4\tl4" in res
 
 
 def test_read_tool_missing_file_error():
@@ -315,9 +308,8 @@ def test_read_tool_missing_file_error():
         stdout="", stderr="read: no such file or not a regular file: /nope\n", exit_code=1
     )
     res = read_tool(warm, file_path="/nope")
-    assert res.content.startswith("read: ")
-    assert "no such file" in res.content
-    assert res.truncated is False
+    assert res.startswith("read: ")
+    assert "no such file" in res
 
 
 def test_read_tool_binary_file():
@@ -330,8 +322,7 @@ def test_read_tool_binary_file():
         stdout=base64.b64encode(raw).decode(), stderr="READ_TOTAL 1\n", exit_code=0
     )
     res = read_tool(warm, file_path="/tmp/blob")
-    assert "binary" in res.content
-    assert res.truncated is False
+    assert "binary" in res
 
 
 def test_read_tool_clamps_offset_and_limit():
@@ -343,7 +334,7 @@ def test_read_tool_clamps_offset_and_limit():
         stdout=base64.b64encode(b"x\n").decode(), stderr="READ_TOTAL 1\n", exit_code=0
     )
     res = read_tool(warm, file_path="/tmp/x.txt", offset=-5, limit=0)
-    assert res.content == "1\tx"
+    assert "1\tx" in res
 
 
 def test_read_tool_byte_cap_truncates_long_single_line():
@@ -356,9 +347,8 @@ def test_read_tool_byte_cap_truncates_long_single_line():
         stdout=base64.b64encode(sl).decode(), stderr="READ_TOTAL 1\n", exit_code=0
     )
     res = read_tool(warm, file_path="/tmp/x.txt", limit=100)  # cap = 11000
-    assert res.truncated is True
-    assert "chars truncated" in res.content
-    assert len(res.content) < 12000
+    assert "chars truncated" in res
+    assert len(res) < 12000
 
 
 def test_read_tool_byte_cap_not_truncated_when_within_budget():
@@ -371,8 +361,8 @@ def test_read_tool_byte_cap_not_truncated_when_within_budget():
         stdout=base64.b64encode(sl).decode(), stderr="READ_TOTAL 1\n", exit_code=0
     )
     res = read_tool(warm, file_path="/tmp/x.txt", limit=1)
-    assert res.truncated is False
-    assert res.content == "1\thello"
+    assert "chars truncated" not in res
+    assert "1\thello" in res
 
 
 def test_read_tool_tolerates_byte_cut_multibyte_utf8():
@@ -388,8 +378,7 @@ def test_read_tool_tolerates_byte_cut_multibyte_utf8():
         stdout=base64.b64encode(cut).decode(), stderr="READ_TOTAL 1\n", exit_code=0
     )
     res = read_tool(warm, file_path="/tmp/x.txt", limit=100)
-    assert "binary" not in res.content
-    assert res.truncated is True
+    assert "binary" not in res
 
 
 def test_truncate_output_passthrough_when_within_cap():
@@ -437,6 +426,31 @@ def test_cap_result_no_truncation_preserves_fields():
     assert capped.exit_code == 3
     assert capped.timed_out is True
     assert capped.truncated is False
+
+
+def test_format_bash_result_success():
+    """A clean success fences only stdout, with no status notes."""
+    from tkt.mcp_server import format_bash_result
+
+    res = format_bash_result(BashResult(stdout="hello out", stderr="", exit_code=0))
+    assert res == "```text\nhello out\n```"
+
+
+def test_format_bash_result_fences_stderr_and_notes_status():
+    """Fence stderr separately; note exit code, timeout and truncation."""
+    from tkt.mcp_server import format_bash_result
+
+    res = format_bash_result(
+        BashResult(stdout="", stderr="boom", exit_code=2, timed_out=True, truncated=True)
+    )
+    assert res == ("stderr:\n```text\nboom\n```\n\nexit code 2\ntimed out\noutput truncated")
+
+
+def test_format_bash_result_empty_is_empty():
+    """No output and clean status yields an empty string."""
+    from tkt.mcp_server import format_bash_result
+
+    assert format_bash_result(BashResult(stdout="", stderr="", exit_code=0)) == ""
 
 
 def _run_driver(tmp_path, command, timeout_ms="0"):
@@ -520,13 +534,11 @@ def test_build_grep_command_output_modes_and_flags():
 
 
 def test_ls_tool_success():
-    """ls_tool returns stdout as content, not truncated."""
+    """ls_tool fences stdout as markdown, not truncated."""
     warm = mock.Mock()
     warm.run.return_value = BashResult(stdout="a\nb\n", stderr="", exit_code=0)
     res = ls_tool(warm, path=".")
-    assert isinstance(res, LSResult)
-    assert res.content == "a\nb\n"
-    assert res.truncated is False
+    assert res == "```text\na\nb\n```"
 
 
 def test_ls_tool_error():
@@ -534,19 +546,16 @@ def test_ls_tool_error():
     warm = mock.Mock()
     warm.run.return_value = BashResult(stdout="", stderr="ls: cannot access nope\n", exit_code=2)
     res = ls_tool(warm, path="nope")
-    assert res.content.startswith("ls: ")
-    assert "cannot access" in res.content
-    assert res.truncated is False
+    assert res.startswith("ls: ")
+    assert "cannot access" in res
 
 
 def test_glob_tool_success():
-    """glob_tool returns one path per line."""
+    """glob_tool fences one path per line as markdown."""
     warm = mock.Mock()
     warm.run.return_value = BashResult(stdout="a.py\nb.py\n", stderr="", exit_code=0)
     res = glob_tool(warm, pattern="*.py", path=".")
-    assert isinstance(res, GlobResult)
-    assert res.content == "a.py\nb.py\n"
-    assert res.truncated is False
+    assert res == "```text\na.py\nb.py\n```"
 
 
 def test_glob_tool_no_match_is_empty_success():
@@ -554,18 +563,15 @@ def test_glob_tool_no_match_is_empty_success():
     warm = mock.Mock()
     warm.run.return_value = BashResult(stdout="", stderr="", exit_code=0)
     res = glob_tool(warm, pattern="*.zzz", path=".")
-    assert res.content == ""
-    assert res.truncated is False
+    assert res == ""
 
 
 def test_grep_tool_content():
-    """grep_tool content mode returns the match lines."""
+    """grep_tool content mode fences the match lines as markdown."""
     warm = mock.Mock()
     warm.run.return_value = BashResult(stdout="src/a.py:3: foo\n", stderr="", exit_code=0)
     res = grep_tool(warm, pattern="foo", path=".")
-    assert isinstance(res, GrepResult)
-    assert res.content == "src/a.py:3: foo\n"
-    assert res.truncated is False
+    assert res == "```text\nsrc/a.py:3: foo\n```"
 
 
 def test_grep_tool_no_matches_normalized():
@@ -573,8 +579,7 @@ def test_grep_tool_no_matches_normalized():
     warm = mock.Mock()
     warm.run.return_value = BashResult(stdout="", stderr="", exit_code=1)
     res = grep_tool(warm, pattern="none", path=".")
-    assert res.content == ""
-    assert res.truncated is False
+    assert res == ""
 
 
 def test_grep_tool_error():
@@ -582,17 +587,16 @@ def test_grep_tool_error():
     warm = mock.Mock()
     warm.run.return_value = BashResult(stdout="", stderr="grep: bad\n", exit_code=2)
     res = grep_tool(warm, pattern="x", path=".")
-    assert res.content.startswith("grep: ")
-    assert res.truncated is False
+    assert res.startswith("grep: ")
+    assert "bad" in res
 
 
 def test_ls_tool_truncation():
-    """ls_tool caps oversized content and sets truncated."""
+    """ls_tool caps oversized content and flags truncation."""
     warm = mock.Mock()
     warm.run.return_value = BashResult(stdout="A" * 100000 + "\n", stderr="", exit_code=0)
     res = ls_tool(warm, path=".")
-    assert res.truncated is True
-    assert "chars truncated" in res.content
+    assert "chars truncated" in res
 
 
 def test_todo_item_defaults_status_pending():
@@ -610,12 +614,11 @@ def test_todo_item_fields_passthrough():
     assert item.activeForm == "Building"
 
 
-def test_todo_store_replace_returns_list():
-    """replace() stores the list and returns it in a TodoWriteResult."""
+def test_todo_store_replace_returns_markdown_checklist():
+    """replace() stores the list and returns it as a markdown checklist."""
     store = TodoStore()
     result = store.replace([TodoItem(content="a"), TodoItem(content="b")])
-    assert isinstance(result, TodoWriteResult)
-    assert [t.content for t in result.todos] == ["a", "b"]
+    assert result == "- [ ] a\n- [ ] b"
 
 
 def test_todo_store_replace_overwrites_previous():
@@ -623,7 +626,7 @@ def test_todo_store_replace_overwrites_previous():
     store = TodoStore()
     store.replace([TodoItem(content="a"), TodoItem(content="b")])
     result = store.replace([TodoItem(content="c")])
-    assert [t.content for t in result.todos] == ["c"]
+    assert result == "- [ ] c"
 
 
 def test_todo_store_empty_clears():
@@ -631,21 +634,21 @@ def test_todo_store_empty_clears():
     store = TodoStore()
     store.replace([TodoItem(content="a")])
     result = store.replace([])
-    assert result.todos == []
+    assert result == ""
 
 
-def test_todo_store_preserves_statuses_and_active_form():
-    """status/activeForm are preserved through replace()."""
+def test_todo_store_renders_all_statuses():
+    """Each status maps to a distinct checklist glyph; activeForm is shown."""
     store = TodoStore()
     result = store.replace(
         [
             TodoItem(content="done", status="completed"),
             TodoItem(content="doing", status="in_progress", activeForm="Building"),
+            TodoItem(content="plain", status="in_progress"),
+            TodoItem(content="scrapped", status="cancelled"),
         ]
     )
-    assert result.todos[0].status == "completed"
-    assert result.todos[1].status == "in_progress"
-    assert result.todos[1].activeForm == "Building"
+    assert result == ("- [x] done\n- [ ] doing (Building)\n- [ ] plain\n- [~] ~~scrapped~~")
 
 
 def test_build_write_command_quotes_path_and_b64_content():
