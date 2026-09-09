@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Iterable
@@ -795,3 +796,55 @@ def sandbox_cleanup(*, dry_run: bool = False, verbose: int = 0) -> None:
     click.echo(f"done: {verb} {killed} stale bridge socat(s)")
     for net in dirs:
         logging.info(f"  {net}")
+
+
+@cli.command(
+    "probe-llm",
+    help=(
+        "Probe a local OpenAI-compatible LLM server and print a ready-to-paste "
+        "Zed openai_compatible settings block. With --json, prints the full "
+        "machine-readable probe report."
+    ),
+)
+@click.argument("model")
+@click.option(
+    "--url",
+    default="http://localhost:8080",
+    show_default=True,
+    help="Base URL of the OpenAI-compatible server.",
+)
+@click.option(
+    "--api-key",
+    default="dummy",
+    show_default=True,
+    help="Bearer token to send (Zed always sends one; local servers usually ignore it).",
+)
+@click.option(
+    "--provider-id",
+    default="local-llm",
+    show_default=True,
+    help="Provider key in the emitted settings block; also names its API key env var.",
+)
+@click.option("--timeout", type=float, default=30.0, show_default=True)
+@click.option("--json", "as_json", is_flag=True, help="Print the machine-readable report only.")
+@click.option("-v", "--verbose", count=True)
+def probe_llm(
+    model: str,
+    *,
+    url: str,
+    api_key: str,
+    provider_id: str,
+    timeout: float,
+    as_json: bool,
+    verbose: int,
+) -> None:
+    _setup_logging(verbose)
+    from dataclasses import asdict
+
+    from .llmprobe import render_report, run_probes
+
+    profile = run_probes(url, model, api_key=api_key, timeout=timeout)
+    if as_json:
+        click.echo(json.dumps(asdict(profile), indent=2))
+    else:
+        click.echo(render_report(profile, provider_id=provider_id))
