@@ -15,6 +15,8 @@ Your first goal is to categorize the request.
 - If this is a debugging task, invoke `systematic-debugging`.
 - If this is a new feature, refactor, or a bugfix with a root cause already
   identified, invoke `brainstorming`.
+- If this is responding to review comments on an existing pull request,
+  invoke `zed-pr-responder`.
 - If this is a question about code, load the `zed-explorer` skill.
 
 The human will often invoke one of these skills for you to make their intent
