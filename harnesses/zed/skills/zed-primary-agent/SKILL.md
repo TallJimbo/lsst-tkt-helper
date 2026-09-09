@@ -17,6 +17,8 @@ Your first goal is to categorize the request.
   identified, invoke `brainstorming`.
 - If this is responding to review comments on an existing pull request,
   invoke `zed-pr-responder`.
+- If this is a request to review code or review somebody else's pull
+  request, invoke `zed-reviewer`.
 - If this is a question about code, load the `zed-explorer` skill.
 
 The human will often invoke one of these skills for you to make their intent

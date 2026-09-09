@@ -19,7 +19,8 @@ harnesses/
 - **OpenCode subagent templates (implementer-prompt, task-reviewer-prompt,
   re-review-prompt, code-reviewer)** — superpowers templates
 - **Zed role prompts** — Zed-only skills (`zed-explorer`, `zed-implementer`,
-  `zed-reviewer`, `zed-primary-agent`), usable by a primary or a subagent
+  `zed-primary-agent`), usable by a primary or a subagent; `zed-reviewer` is
+  primary-only (the human asks it to review code or somebody else's PR)
 - **Primary phase orchestration + gate signal** — per-harness: OpenCode
   `sp-*.md` shells; Zed `rules.md` + `zed-primary-agent`
 - **Tool mapping / subagent names / permissions** — harness layer

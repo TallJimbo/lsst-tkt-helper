@@ -13,9 +13,6 @@ Load the skill matching the task you were asked to do:
 
 - explore the codebase / find files / answer "how does X work" → `zed-explorer`
 - implement a task (brief + report file) → `zed-implementer`
-- review a task's diff → `zed-reviewer` (scope: task)
-- re-review a fix round → `zed-reviewer` (scope: re-review)
-- final whole-branch review → `zed-reviewer` (scope: final)
 
 ## Harness bug reporting
 
