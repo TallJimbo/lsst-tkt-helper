@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, TextIO
@@ -328,6 +329,102 @@ def rm(
         env = Environment.from_file(environment)
     workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
     workspace.remove()
+
+
+@cli.command(
+    "rm-package",
+    help=(
+        "Remove package(s) from an existing tkt workspace: drops them from "
+        "tkt.json, the workspace EUPS table and tool configs, removes the "
+        ".agent sandbox worktree, and deletes the clone (externals are only "
+        "dropped from the table). When the workspace is EUPS-setup in your "
+        "shell, prefer the 'tkt-rm-package' shell function, which runs "
+        "'unsetup -j <pkg>' first; this command refuses to delete a clone "
+        "that is still setup in place unless --force is given."
+    ),
+)
+@click.argument("packages", nargs=-1, required=True)
+@click.option(
+    "-d",
+    "--directory",
+    type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
+)
+@click.option("--ticket")
+@click.option(
+    "--environment",
+    envvar="TKT_ENVIRONMENT",
+    type=click.File(),
+)
+@click.option("-f", "--force", is_flag=True, help="Skip the setup and unsaved-work checks.")
+@click.option("-n", "--dry-run", is_flag=True)
+@click.option("-v", "--verbose", count=True)
+def rm_package(
+    packages: Iterable[str],
+    *,
+    ticket: str | None,
+    directory: str | None,
+    environment: TextIO | None,
+    force: bool = False,
+    dry_run: bool = False,
+    verbose: int = 0,
+) -> None:
+    _setup_logging(verbose)
+    if environment is None:
+        raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
+    else:
+        env = Environment.from_file(environment)
+    workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
+    workspace.remove_packages(
+        packages,
+        environment=env,
+        dry_run=dry_run,
+        force=force,
+        confirm=click.confirm,
+    )
+
+
+@cli.command(
+    "_rm-sh",
+    hidden=True,
+    help=(
+        "Print shell code that unsets up (with 'unsetup -j') any of the named "
+        "packages that are currently EUPS-setup in place from this workspace "
+        "and then runs 'tkt rm-package' on them. Intended for the "
+        "'tkt-rm-package' alias defined in tkt's EUPS table; the eval'd code "
+        "runs in the user's shell, where unsetup can take effect."
+    ),
+)
+@click.argument("packages", nargs=-1, required=True)
+@click.option(
+    "-d",
+    "--directory",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+)
+@click.option("-v", "--verbose", count=True)
+def rm_sh(
+    packages: Iterable[str],
+    *,
+    directory: str | None,
+    verbose: int = 0,
+) -> None:
+    _setup_logging(verbose)
+    if directory is None:
+        directory = Workspace.find_directory()
+    workspace = Workspace.from_directory(directory)
+    packages = list(packages)
+    for package in packages:
+        if package not in workspace.packages and package not in workspace.externals:
+            raise click.ClickException(f"{package} is not a package or external of this workspace.")
+    parts = [
+        f"unsetup -j {shlex.quote(package)};"
+        for package in packages
+        if workspace.is_setup_in_place(
+            package,
+            workspace.externals.get(package, os.path.join(workspace.directory, package)),
+        )
+    ]
+    parts.append("tkt rm-package " + " ".join(shlex.quote(package) for package in packages))
+    click.echo(" ".join(parts))
 
 
 @cli.command(

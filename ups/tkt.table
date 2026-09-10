@@ -1,2 +1,3 @@
 envPrepend(PATH, ${PRODUCT_DIR}/bin)
 envPrepend(PYTHONPATH, ${PRODUCT_DIR})
+addAlias(tkt-rm-package, eval `\"${PRODUCT_DIR}/bin/tkt-rm-sh\" \"$@\"`);

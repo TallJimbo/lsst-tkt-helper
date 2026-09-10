@@ -29,8 +29,9 @@ __all__ = ("Workspace",)
 import json
 import logging
 import os
+import re
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 
 import git
 
@@ -114,6 +115,19 @@ class Workspace:
             tools=data["tools"],
         )
 
+    @staticmethod
+    def find_directory(start: str = ".") -> str:
+        """Search up from ``start`` for the nearest directory with tkt.json."""
+        directory = os.path.abspath(start)
+        while not os.path.exists(os.path.join(directory, "tkt.json")):
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                raise RuntimeError(
+                    "No ticket or directory provided, and no tkt.json found in current or its parents."
+                )
+            directory = parent
+        return directory
+
     @classmethod
     def from_existing(
         cls,
@@ -126,15 +140,7 @@ class Workspace:
             if ticket is not None:
                 directory = environment.get_workspace_directory(ticket)
             else:
-                directory = os.path.curdir
-                while not os.path.exists(os.path.join(directory, "tkt.json")):
-                    new_directory = os.path.normpath(os.path.join(directory, ".."))
-                    if new_directory == directory:
-                        raise RuntimeError(
-                            "No ticket or directory provided, and no tkt.json found "
-                            "in current or its parents."
-                        )
-                    directory = new_directory
+                directory = cls.find_directory()
         return cls.from_directory(directory)
 
     @classmethod
@@ -225,6 +231,142 @@ class Workspace:
             self._write_description()
             self._write_eups_table(environment)
             self._write_tools(environment)
+
+    def remove_packages(
+        self,
+        packages: Iterable[str],
+        *,
+        environment: Environment,
+        dry_run: bool = False,
+        force: bool = False,
+        confirm: Callable[[str], bool] | None = None,
+    ) -> list[str]:
+        """Remove package(s) from this workspace.
+
+        Cloned packages are removed from disk (after their ``.agent`` sandbox
+        worktree is removed); externals only lose their EUPS table line.
+        All removed packages are dropped from ``tkt.json``, the workspace
+        EUPS table and the tool configs.
+
+        Unless ``force`` is set, removal of a clone is refused if it is
+        still EUPS-setup in place in the caller's shell (EUPS cannot
+        resolve or unsetup a product whose directory has been deleted),
+        and ``confirm`` (e.g. ``click.confirm``) is asked before deleting
+        a clone with unsaved work; without a ``confirm`` callable such
+        packages are skipped.  Returns the names actually removed.
+        """
+        removed: list[str] = []
+        for package in packages:
+            if package in self._externals:
+                logging.info(f"{package}: dropping external {self._externals[package]} from the EUPS table.")
+                if not dry_run:
+                    del self._externals[package]
+                removed.append(package)
+                continue
+            if package not in self._packages:
+                raise KeyError(f"{package} is not a package or external of this workspace.")
+            pkg_dir = os.path.join(self._directory, package)
+            if not force:
+                if self.is_setup_in_place(package, pkg_dir):
+                    raise RuntimeError(
+                        f"{package} is still EUPS-setup in place from this workspace. "
+                        f"Use the 'tkt-rm-package' shell function, or run "
+                        f"'unsetup -j {package}' first, or pass --force."
+                    )
+                warnings = self._package_work_warnings(package)
+                if warnings and (confirm is None or not confirm("; ".join(warnings) + ". Remove?")):
+                    logging.warning(f"{package}: removal declined; skipping.")
+                    continue
+            self._remove_agent_worktree(package, dry_run=dry_run)
+            logging.info(f"{package}: removing {pkg_dir}.")
+            if not dry_run:
+                if os.path.exists(pkg_dir):
+                    shutil.rmtree(pkg_dir)
+                del self._packages[package]
+            removed.append(package)
+        if removed and not dry_run:
+            self._write_description()
+            self._write_eups_table(environment)
+            self._write_tools(environment)
+        return removed
+
+    @staticmethod
+    def _eups_env_prefix(product: str) -> str:
+        """Return the EUPS variable-name identifier for ``product``."""
+        return re.sub(r"[^A-Z0-9]", "_", product.upper())
+
+    def is_setup_in_place(self, product: str, directory: str) -> bool:
+        """Report whether ``product`` is setup from ``directory``.
+
+        Checks the caller's shell environment: EUPS records setup state in
+        exported variables such as ``SETUP_<PRODUCT>`` and ``<PRODUCT>_DIR``,
+        which a subprocess inherits but cannot modify.
+        """
+        prefix = self._eups_env_prefix(product)
+        if os.environ.get(f"{prefix}_DIR") == directory:
+            return True
+        value = os.environ.get(f"SETUP_{prefix}")
+        if value is None:
+            return False
+        tokens = value.split()
+        return directory in tokens or f"LOCAL:{directory}" in tokens
+
+    def _package_work_warnings(self, package: str) -> list[str]:
+        """Return warnings about work that removing ``package`` would lose."""
+        warnings: list[str] = []
+        pkg_dir = os.path.join(self._directory, package)
+        agent_dir = os.path.join(self._directory, ".agent", package)
+        if os.path.isdir(pkg_dir):
+            try:
+                repo = git.Repo(pkg_dir)
+            except git.InvalidGitRepositoryError:
+                repo = None
+            if repo is None:
+                warnings.append(f"the {package} directory is not a git repository")
+            else:
+                if repo.is_dirty(untracked_files=True):
+                    warnings.append(f"{package} has uncommitted changes")
+                branch = self._packages[package]
+                try:
+                    unpushed = int(repo.git.rev_list("--count", branch, "--not", "--remotes").strip())
+                except git.GitCommandError:
+                    unpushed = -1  # e.g. branch or remote refs missing; treat as unsaved
+                if unpushed > 0:
+                    warnings.append(f"{package} has {unpushed} commit(s) not on any remote")
+                elif unpushed < 0:
+                    warnings.append(f"{package} has commits that could not be checked against remotes")
+        if os.path.isdir(agent_dir):
+            try:
+                if git.Repo(agent_dir).is_dirty(untracked_files=True):
+                    warnings.append(
+                        "the agent worktree has uncommitted changes "
+                        "(run tkt pull-sandbox or sandbox-reset first)"
+                    )
+            except (git.GitCommandError, git.InvalidGitRepositoryError):
+                warnings.append("the agent worktree could not be checked for uncommitted changes")
+        return warnings
+
+    def _remove_agent_worktree(self, package: str, *, dry_run: bool = False) -> None:
+        """Remove the sandbox worktree at ``.agent/<package>`` if present."""
+        pkg_dir = os.path.join(self._directory, package)
+        agent_dir = os.path.join(self._directory, ".agent", package)
+        if not os.path.isdir(agent_dir):
+            return
+        logging.info(f"{package}: removing agent worktree at {agent_dir}.")
+        if dry_run:
+            return
+        if os.path.isdir(pkg_dir):
+            try:
+                git.Repo(pkg_dir).git.worktree("remove", "--force", agent_dir)
+                return
+            except (git.GitCommandError, git.InvalidGitRepositoryError):
+                logging.info(f"{package}: git worktree remove failed; removing the directory.")
+        shutil.rmtree(agent_dir, ignore_errors=True)
+        if os.path.isdir(pkg_dir):
+            try:
+                git.Repo(pkg_dir).git.worktree("prune")
+            except (git.GitCommandError, git.InvalidGitRepositoryError):
+                pass
 
     def remove(self) -> None:
         shutil.rmtree(self._directory)

@@ -43,8 +43,8 @@ branch into a single commit and rebase it onto main.
 - **`tkt/__init__.py`** — Public API exports: `cli`, `Environment`,
   `Workspace`.
 - **`tkt/_cli.py`** — Click-based CLI commands: `new`, `update`,
-  `upgrade-metapackage`, `rm`, `agent-run` (as `sandbox-run`), `sandbox-reset`,
-  `pull-sandbox`.
+  `upgrade-metapackage`, `rm`, `rm-package`, `agent-run` (as `sandbox-run`),
+  `sandbox-reset`, `pull-sandbox`.
 - **`tkt/_environment.py`** — Abstract base classes `Environment` and `Tool`.
   `Environment` is subclassed per observatory (e.g. `RubinEnvironment`); `Tool`
   is subclassed per integration (e.g. `Zed`, `Pyright`, `Sandbox`).
