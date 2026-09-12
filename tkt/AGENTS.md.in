@@ -37,15 +37,20 @@ files yourself.
 ## Finding Repositories
 
 Repositories relevant for the ticket appear as subdirectories of `.agent/`
-(excluding `ups/`). Each corresponds to a git worktree of a main repository in
-the parent ticket directory.
+(excluding `ups/` and `superpowers-docs/`). Each corresponds to a git
+worktree of a main repository in the parent ticket directory.
 
 ## Superpowers docs
 
-Design specs and implementation plans for superpowers live under the docs root
-set by `SUPERPOWERS_DIR` (a per-ticket namespace in the shared repo
-`~/LSST/superpowers-docs`); if unset, use the in-repo `docs/superpowers/`. The
-shared repo is mounted read-write. Do superpowers doc work there or in-repo as
+`.agent/superpowers-docs/` is a git worktree of the shared docs repo, checked
+out on this ticket's main branch (e.g., `tickets/DM-XXXXX` — no `-agent`
+suffix). Design specs belong under `.agent/superpowers-docs/<ticket>/specs/`
+and implementation plans under `.agent/superpowers-docs/<ticket>/plans/`.
+Commit doc work there on the ticket branch: those commits are the durable
+artifact, and the human merges that branch into the shared repo's `main` when
+the ticket is done. (A repo may instead keep its superpowers docs in-repo
+under `docs/superpowers/` — follow the working repo's own AGENTS.md when it
+says otherwise.) Do superpowers doc work in the docs worktree or in-repo as
 appropriate; make _ALL_ code changes in `.agent/**`. Transient superpowers
 scratch (`.superpowers/`) lives under `.agent/<repo-name>/` and is git-ignored.
 

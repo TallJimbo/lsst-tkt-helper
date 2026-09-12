@@ -368,7 +368,17 @@ class Workspace:
             except (git.GitCommandError, git.InvalidGitRepositoryError):
                 pass
 
-    def remove(self) -> None:
+    def remove(self, environment: Environment) -> None:
+        """Delete the workspace, letting each configured tool clean up first.
+
+        Tools' ``remove`` hooks run before the directory tree is deleted so
+        they can deregister state kept outside the workspace (e.g. git
+        worktree registrations in shared repositories).
+        """
+        for name in self._tools:
+            tool = environment.get_tool(name)
+            if tool is not None:
+                tool.remove(self._directory)
         shutil.rmtree(self._directory)
 
     @staticmethod

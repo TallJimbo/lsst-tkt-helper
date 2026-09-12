@@ -328,7 +328,7 @@ def rm(
     else:
         env = Environment.from_file(environment)
     workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
-    workspace.remove()
+    workspace.remove(env)
 
 
 @cli.command(

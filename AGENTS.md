@@ -61,6 +61,14 @@ branch into a single commit and rebase it onto main.
   per-workspace ledger.
 - **`tkt/zed.py`** — `Zed` tool: writes Zed editor configuration into the
   workspace.
+- **`tkt/superpowers.py`** — `Superpowers` tool: attaches a git worktree of
+  the shared docs repo (its `path`, e.g. `~/LSST/superpowers-docs`) at
+  `<workspace>/.agent/superpowers-docs` on the ticket branch (no `-agent`
+  suffix, created from `main`). The agent writes specs/plans under
+  `<ticket>/specs|plans` there and commits; the human merges that branch into
+  the shared repo's `main`. `tkt rm` deregisters the worktree via the tool's
+  `remove` hook. No `SUPERPOWERS_DIR` env var anymore: `tkt/AGENTS.md.in`
+  tells agents where the docs live.
 - **`tkt/pyright.py`** — `Pyright` tool: writes `pyrightconfig.json` into the
   workspace.
 - **`tkt/precommit.py`** — `PreCommit` tool: installs pre-commit or prek git

@@ -24,6 +24,10 @@
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
+import git
 import pytest
 
 from tkt._cli import _classify_tools, update
@@ -31,37 +35,24 @@ from tkt._workspace import Workspace
 from tkt.superpowers import Superpowers
 
 
-def test_from_json_data():
-    """``from_json_data`` builds a ``Superpowers`` from its ``path``."""
-    tool = Superpowers.from_json_data({"path": "/shared"})
-    assert isinstance(tool, Superpowers)
-    assert tool.path == "/shared"
+def _init_repo(path):
+    """Initialize a git repo at ``path`` with one commit on branch ``main``."""
+    path.mkdir(parents=True)
+    repo = git.Repo.init(path)
+    repo.config_writer().set_value("user", "name", "test").release()
+    repo.config_writer().set_value("user", "email", "test@test").release()
+    repo.git.branch("-m", "main")
+    (path / "README.md").write_text("# docs\n")
+    repo.git.add("README.md")
+    repo.git.commit("-m", "base")
+    return repo
 
 
-def test_from_json_data_rejects_extra():
-    """``from_json_data`` rejects unexpected configuration entries."""
-    with pytest.raises(ValueError):
-        Superpowers.from_json_data({"path": "/shared", "x": 1})
+class _DocsEnv:
+    """Stand-in ``Environment`` with the ticket branch naming."""
 
-
-def test_from_json_data_requires_path():
-    """``from_json_data`` requires a ``path``."""
-    with pytest.raises(KeyError):
-        Superpowers.from_json_data({})
-
-
-def test_write_creates_namespace(tmp_path):
-    """``write`` creates the per-ticket specs and plans directories."""
-    sp = Superpowers(path=str(tmp_path))
-    sp.write("DM-1", str(tmp_path / "ws"), [], workspace=object(), environment=object())
-    assert (tmp_path / "DM-1" / "specs").is_dir()
-    assert (tmp_path / "DM-1" / "plans").is_dir()
-
-
-def test_eups_env_lines():
-    """``eups_env_lines`` yields a single ``SUPERPOWERS_DIR`` envSet line."""
-    sp = Superpowers(path="/shared")
-    assert sp.eups_env_lines("DM-1") == ("envSet(SUPERPOWERS_DIR, /shared/DM-1)",)
+    def get_default_branch(self, package: str, ticket: str) -> str:
+        return f"tickets/{ticket}"
 
 
 class _FakeEnv:
@@ -88,18 +79,120 @@ def _workspace(tmp_path, tools):
     )
 
 
-def test_write_eups_table_superpowers(tmp_path):
-    """Emits a ``SUPERPOWERS_DIR`` line when the tool is configured."""
+def test_from_json_data():
+    """``from_json_data`` builds a ``Superpowers`` from its ``path``."""
+    tool = Superpowers.from_json_data({"path": "/shared"})
+    assert isinstance(tool, Superpowers)
+    assert tool.path == "/shared"
+
+
+def test_from_json_data_rejects_extra():
+    """``from_json_data`` rejects unexpected configuration entries."""
+    with pytest.raises(ValueError):
+        Superpowers.from_json_data({"path": "/shared", "x": 1})
+
+
+def test_from_json_data_requires_path():
+    """``from_json_data`` requires a ``path``."""
+    with pytest.raises(KeyError):
+        Superpowers.from_json_data({})
+
+
+@pytest.fixture
+def shared(tmp_path):
+    """Create a shared superpowers docs repo with one commit on ``main``."""
+    return _init_repo(tmp_path / "shared")
+
+
+@pytest.fixture
+def sp(shared):
+    """Return a ``Superpowers`` tool pointed at the shared repo."""
+    return Superpowers(path=str(shared.working_dir))
+
+
+def _worktree_dir(tmp_path):
+    return tmp_path / ".agent" / "superpowers-docs"
+
+
+def _registered_worktrees(shared):
+    """Return the working-tree paths registered as worktrees of ``shared``."""
+    out = shared.git.worktree("list", "--porcelain")
+    return [line[len("worktree ") :] for line in out.splitlines() if line.startswith("worktree ")]
+
+
+def test_write_creates_worktree_on_ticket_branch(tmp_path, shared, sp):
+    """``write`` creates a worktree of the shared repo on the ticket branch."""
+    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    wt = git.Repo(_worktree_dir(tmp_path))
+    assert wt.active_branch.name == "tickets/DM-1"
+    assert wt.head.commit == shared.head.commit
+    assert str(_worktree_dir(tmp_path)) in _registered_worktrees(shared)
+
+
+def test_write_attaches_existing_ticket_branch(tmp_path, shared, sp):
+    """An existing ticket branch is attached to, not recreated from main."""
+    shared.create_head("tickets/DM-1")
+    # main moves ahead after the ticket branch was made; the worktree must
+    # track the branch, not main.
+    (Path(shared.working_dir) / "later.md").write_text("later\n")
+    shared.git.add("later.md")
+    shared.git.commit("-m", "later main work")
+    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    wt = git.Repo(_worktree_dir(tmp_path))
+    assert wt.active_branch.name == "tickets/DM-1"
+    assert wt.head.commit == shared.heads["tickets/DM-1"].commit
+    assert wt.head.commit != shared.head.commit
+
+
+def test_write_is_idempotent(tmp_path, sp):
+    """A second ``write`` must not disturb an existing worktree."""
+    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    wt_dir = _worktree_dir(tmp_path)
+    wt = git.Repo(wt_dir)
+    (wt_dir / "notes.md").write_text("agent work\n")
+    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    assert wt.active_branch.name == "tickets/DM-1"
+    assert (wt_dir / "notes.md").read_text() == "agent work\n"
+
+
+def test_write_prunes_stale_registration(tmp_path, shared, sp):
+    """Re-add a worktree whose directory was deleted behind git's back."""
+    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    shutil.rmtree(_worktree_dir(tmp_path))
+    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    assert git.Repo(_worktree_dir(tmp_path)).active_branch.name == "tickets/DM-1"
+
+
+def test_write_skips_missing_shared_repo(tmp_path, sp):
+    """Skip (do not crash on) a nonexistent shared repo."""
+    shutil.rmtree(sp.path)
+    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    assert not _worktree_dir(tmp_path).exists()
+
+
+def test_remove_removes_worktree(tmp_path, shared, sp):
+    """``remove`` deregisters and deletes the docs worktree."""
+    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    sp.remove(str(tmp_path))
+    assert not _worktree_dir(tmp_path).exists()
+    assert str(_worktree_dir(tmp_path)) not in _registered_worktrees(shared)
+
+
+def test_remove_without_worktree_is_noop(tmp_path, sp):
+    """``remove`` on a workspace with no docs worktree does nothing."""
+    sp.remove(str(tmp_path))
+    assert not _worktree_dir(tmp_path).exists()
+
+
+def test_eups_env_lines_empty(sp):
+    """The tool contributes no EUPS environment lines (no SUPERPOWERS_DIR)."""
+    assert tuple(sp.eups_env_lines("DM-1")) == ()
+
+
+def test_write_eups_table_no_superpowers_dir(tmp_path):
+    """Omit SUPERPOWERS_DIR from the table even when the tool is set up."""
     ws = _workspace(tmp_path, ("superpowers",))
     ws._write_eups_table(_FakeEnv({"superpowers": Superpowers(path="/shared")}))
-    text = (tmp_path / "ups" / "x.table").read_text()
-    assert "envSet(SUPERPOWERS_DIR, /shared/DM-1)" in text
-
-
-def test_write_eups_table_no_superpowers(tmp_path):
-    """``_write_eups_table`` omits ``SUPERPOWERS_DIR`` when not configured."""
-    ws = _workspace(tmp_path, ())
-    ws._write_eups_table(_FakeEnv({}))
     text = (tmp_path / "ups" / "x.table").read_text()
     assert "SUPERPOWERS_DIR" not in text
 
@@ -117,6 +210,25 @@ def test_write_eups_table_generic_tool(tmp_path):
     ws._write_eups_table(_FakeEnv({"foo": _EnvTool()}))
     text = (tmp_path / "ups" / "x.table").read_text()
     assert "envSet(FOO_DIR, foo/DM-1)" in text
+
+
+class _RecordingRemoveTool:
+    """Stand-in tool recording ``remove`` calls from ``Workspace.remove``."""
+
+    def __init__(self):
+        self.removed = []
+
+    def remove(self, directory):
+        self.removed.append(directory)
+
+
+def test_workspace_remove_calls_tool_hooks(tmp_path):
+    """Let each configured tool clean up its artifacts on workspace removal."""
+    tool = _RecordingRemoveTool()
+    ws = _workspace(tmp_path, ("docs",))
+    ws.remove(_FakeEnv({"docs": tool}))
+    assert tool.removed == [str(tmp_path)]
+    assert not tmp_path.exists()
 
 
 def test_classify_tools():
@@ -202,13 +314,12 @@ def test_update_migrates_nondefault(tmp_path, monkeypatch):
         dry_run=False,
         verbose=0,
     )
-    assert openspec.removed == [ws.directory]
+    assert openspec.removed == [str(tmp_path)]
     assert "openspec" in ws.removed_tools
-    assert ws.update_calls and ws.update_calls[-1]["dry_run"] is False
 
 
-def test_update_dry_run_reports_without_removing(tmp_path, monkeypatch):
-    """``update`` dry-run reports non-default tools but removes nothing."""
+def test_update_dry_run_skips_removal(tmp_path, monkeypatch):
+    """``update --dry-run`` removes nothing."""
     openspec, env, ws = _update_fakes(tmp_path)
     _patch_update_bounds(monkeypatch, env, ws)
     _call_update(

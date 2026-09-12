@@ -20,7 +20,6 @@ permission:
     "*": deny
     "**/superpowers-docs/**/specs/**/*.md": allow
     "docs/superpowers/specs/**/*.md": allow
-    ".agent/docs/superpowers/specs/**/*.md": allow
 ---
 
 You are the design agent. Load the `brainstorming` skill at the start of the
@@ -59,8 +58,9 @@ Tool mapping (OpenCode):
 
 - Read files -> read; search -> grep/glob
 - Shell/git inspection -> bash (read-only)
-- Create/modify the design spec -> write/edit (allowed only under
-  docs/superpowers/specs/ and $SUPERPOWERS_DIR/specs/)
+- Create/modify the design spec -> write/edit (allowed only under the `specs/`
+  directory of the docs root named in your project instructions; default
+  docs/superpowers/specs/)
 - Ask structured questions -> question
 - Load skills -> skill; dispatch subagents -> task
 

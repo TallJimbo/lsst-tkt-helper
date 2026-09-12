@@ -26,22 +26,40 @@ from __future__ import annotations
 
 __all__ = ("Superpowers",)
 
+import logging
 import os
+import shutil
 from collections.abc import Iterable
 from typing import Any
 
+import git
+
 from ._environment import Environment, Tool
 from ._workspace import Workspace
+from .sandbox import AGENT_SUBDIR
+
+# Name of the docs worktree directory under the workspace's agent dir.
+WORKTREE_NAME = "superpowers-docs"
+
+# Shared-repo branch new ticket branches are created from.
+BASE_BRANCH = "main"
 
 
 class Superpowers(Tool):
-    """Tool that gives a workspace a shared superpowers docs home.
+    """Tool that gives a workspace a git worktree of the shared docs repo.
 
-    ``write`` creates the per-ticket namespace ``<path>/<ticket>/specs`` and
-    ``<path>/<ticket>/plans`` in the shared repo so the ticket has a
-    ready-to-use docs location.  The workspace EUPS table sets
-    ``SUPERPOWERS_DIR`` to ``<path>/<ticket>``, which the superpowers skills
-    read.
+    ``write`` attaches a worktree of the shared repo (``path``) at
+    ``<workspace>/.agent/superpowers-docs``, checked out on the workspace's
+    ticket branch (the same branch name the packages use, without the
+    ``-agent`` suffix); new ticket branches are created from ``main``.  The
+    agent writes design specs and plans under ``<ticket>/specs`` and
+    ``<ticket>/plans`` in that worktree and commits them there, so the
+    ticket's docs live durably on the shared repo's ticket branch; the human
+    merges that branch into the shared repo's main branch when the ticket is
+    done.  ``remove`` deregisters the worktree from the shared repo.
+
+    The sandbox keeps the shared repo mounted read-write: the worktree's
+    common git directory (refs, objects) lives there.
     """
 
     def __init__(self, path: str):
@@ -54,6 +72,14 @@ class Superpowers(Tool):
             raise ValueError(f"Unexpected entries in superpowers configuration: {data}.")
         return cls(path)
 
+    def _shared_repo(self) -> git.Repo | None:
+        """Return the shared docs repo, or None if it is unavailable."""
+        path = os.path.expanduser(self.path)
+        if not os.path.isdir(path):
+            logging.warning(f"Superpowers docs repo {path} does not exist; skipping docs worktree.")
+            return None
+        return git.Repo(path)
+
     def write(
         self,
         ticket: str,
@@ -62,9 +88,39 @@ class Superpowers(Tool):
         workspace: Workspace,
         environment: Environment,
     ) -> None:
-        namespace = os.path.join(self.path, ticket)
-        os.makedirs(os.path.join(namespace, "specs"), exist_ok=True)
-        os.makedirs(os.path.join(namespace, "plans"), exist_ok=True)
+        repo = self._shared_repo()
+        if repo is None:
+            return
+        # The docs branch matches the packages' ticket branch naming; the
+        # package argument does not affect the name.
+        branch = environment.get_default_branch(WORKTREE_NAME, ticket)
+        worktree_dir = os.path.join(directory, AGENT_SUBDIR, WORKTREE_NAME)
+        repo.git.worktree("prune")
+        if os.path.exists(worktree_dir):
+            logging.info(f"Superpowers docs worktree already exists at {worktree_dir}.")
+            return
+        logging.info(f"Creating superpowers docs worktree at {worktree_dir} on branch {branch}.")
+        os.makedirs(os.path.join(directory, AGENT_SUBDIR), exist_ok=True)
+        if branch in repo.heads:
+            # Existing branch (e.g. from an earlier workspace for this
+            # ticket): attach to it without moving the branch head.
+            repo.git.worktree("add", worktree_dir, branch)
+        else:
+            repo.git.worktree("add", "-b", branch, worktree_dir, BASE_BRANCH)
 
-    def eups_env_lines(self, ticket: str) -> Iterable[str]:
-        return (f"envSet(SUPERPOWERS_DIR, {self.path}/{ticket})",)
+    def remove(self, directory: str) -> None:
+        """Remove the ``.agent/superpowers-docs`` worktree from the repo."""
+        worktree_dir = os.path.join(directory, AGENT_SUBDIR, WORKTREE_NAME)
+        if not os.path.exists(worktree_dir):
+            return
+        repo = self._shared_repo()
+        if repo is None:
+            shutil.rmtree(worktree_dir, ignore_errors=True)
+            return
+        logging.info(f"Removing superpowers docs worktree at {worktree_dir}.")
+        try:
+            repo.git.worktree("remove", "--force", worktree_dir)
+        except git.GitCommandError:
+            logging.info(f"git worktree remove failed; removing {worktree_dir} directly.")
+            shutil.rmtree(worktree_dir, ignore_errors=True)
+        repo.git.worktree("prune")
