@@ -46,6 +46,27 @@ def _setup_logging(verbose: int) -> None:
     )
 
 
+def _workspace_mode(cwd: str) -> bool:
+    """Report whether ``cwd`` should be treated as a tkt workspace root.
+
+    Workspace mode is triggered by sandbox-managed ``.agent/`` state or
+    workspace metadata in ``tkt.json``; anything else is single-repo mode.
+    (``.agent`` alone is not sufficient: a shared-worktree workspace has no
+    per-package worktrees there.)
+    """
+    return os.path.isdir(os.path.join(cwd, ".agent")) or os.path.isfile(os.path.join(cwd, "tkt.json"))
+
+
+def _require_agent_worktrees(workspace: Workspace) -> None:
+    """Raise a usage error if ``workspace`` has no ``.agent`` worktrees."""
+    if workspace.shared_worktree:
+        raise click.UsageError(
+            f"Workspace {workspace.ticket} uses shared-worktree agent mode: the agent "
+            "works directly on your branches, so there are no .agent worktrees to "
+            "transfer or reset."
+        )
+
+
 def _classify_tools(
     workspace_tools: Iterable[str], default_tools: Iterable[str], get_tool: Any
 ) -> tuple[list[str], list[str], list[str]]:
@@ -161,6 +182,16 @@ def install_opencode_agent(*, dry_run: bool = False, verbose: int = 0) -> None:
     type=str,
     help="Remove a tool from the new workspace relative to the configured defaults.",
 )
+@click.option(
+    "--shared-worktree/--no-shared-worktree",
+    "shared_worktree",
+    default=None,
+    help=(
+        "Let the agent work directly in the human's worktrees and branches "
+        "instead of in .agent sandbox worktrees. Defaults to the environment's "
+        "'shared_worktree' setting from the environment config file."
+    ),
+)
 @click.option("-n", "--dry-run", is_flag=True)
 @click.option("-v", "--verbose", count=True)
 def new(
@@ -174,6 +205,7 @@ def new(
     environment: TextIO | None,
     add_tools: Iterable[str] = (),
     remove_tools: Iterable[str] = (),
+    shared_worktree: bool | None = None,
     dry_run: bool = False,
     verbose: int = 0,
 ) -> None:
@@ -188,6 +220,8 @@ def new(
             tools = (*tools, name)
     for name in remove_tools:
         tools = tuple(t for t in tools if t != name)
+    if shared_worktree is None:
+        shared_worktree = env.default_shared_worktree()
     Workspace.new(
         ticket=ticket,
         packages=packages,
@@ -197,6 +231,7 @@ def new(
         workspace_eups_product=workspace_eups_product,
         tools=tools,
         environment=env,
+        shared_worktree=shared_worktree,
         dry_run=dry_run,
     )
 
@@ -496,7 +531,7 @@ def sandbox_run(
     from .sandbox import Sandbox
 
     cwd = os.path.abspath(".")
-    if os.path.isdir(os.path.join(cwd, ".agent")):
+    if _workspace_mode(cwd):
         # Workspace mode: existing behavior.
         env = Environment.from_file(environment)
         workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
@@ -721,7 +756,7 @@ def mcp_server(
     if environment is None:
         raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
     cwd = os.path.abspath(".")
-    if os.path.isdir(os.path.join(cwd, ".agent")):
+    if _workspace_mode(cwd):
         # Workspace mode.
         env = Environment.from_file(environment)
         workspace = Workspace.from_existing(ticket=None, directory=directory, environment=env)
@@ -815,6 +850,7 @@ def pull_sandbox(
 
     env = Environment.from_file(environment)
     workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
+    _require_agent_worktrees(workspace)
     if abort:
         Pull.abort(workspace, dry_run=dry_run)
     elif finish:
@@ -863,6 +899,7 @@ def sandbox_reset(
 
     env = Environment.from_file(environment)
     workspace = Workspace.from_existing(ticket=ticket, directory=directory, environment=env)
+    _require_agent_worktrees(workspace)
     tool = env.get_tool("sandbox")
     if tool is None:
         raise click.UsageError("No 'sandbox' tool configured in the tkt environment.")

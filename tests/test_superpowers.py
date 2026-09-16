@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import git
 import pytest
@@ -110,8 +111,17 @@ def sp(shared):
     return Superpowers(path=str(shared.working_dir))
 
 
+def _ws(shared: bool = False):
+    """Stand-in ``Workspace`` exposing only the agent mode flag."""
+    return SimpleNamespace(shared_worktree=shared)
+
+
 def _worktree_dir(tmp_path):
     return tmp_path / ".agent" / "superpowers-docs"
+
+
+def _root_worktree_dir(tmp_path):
+    return tmp_path / "superpowers-docs"
 
 
 def _registered_worktrees(shared):
@@ -122,7 +132,7 @@ def _registered_worktrees(shared):
 
 def test_write_creates_worktree_on_ticket_branch(tmp_path, shared, sp):
     """``write`` creates a worktree of the shared repo on the ticket branch."""
-    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    sp.write("DM-1", str(tmp_path), [], workspace=_ws(), environment=_DocsEnv())
     wt = git.Repo(_worktree_dir(tmp_path))
     assert wt.active_branch.name == "tickets/DM-1"
     assert wt.head.commit == shared.head.commit
@@ -137,7 +147,7 @@ def test_write_attaches_existing_ticket_branch(tmp_path, shared, sp):
     (Path(shared.working_dir) / "later.md").write_text("later\n")
     shared.git.add("later.md")
     shared.git.commit("-m", "later main work")
-    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    sp.write("DM-1", str(tmp_path), [], workspace=_ws(), environment=_DocsEnv())
     wt = git.Repo(_worktree_dir(tmp_path))
     assert wt.active_branch.name == "tickets/DM-1"
     assert wt.head.commit == shared.heads["tickets/DM-1"].commit
@@ -146,33 +156,33 @@ def test_write_attaches_existing_ticket_branch(tmp_path, shared, sp):
 
 def test_write_is_idempotent(tmp_path, sp):
     """A second ``write`` must not disturb an existing worktree."""
-    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    sp.write("DM-1", str(tmp_path), [], workspace=_ws(), environment=_DocsEnv())
     wt_dir = _worktree_dir(tmp_path)
     wt = git.Repo(wt_dir)
     (wt_dir / "notes.md").write_text("agent work\n")
-    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    sp.write("DM-1", str(tmp_path), [], workspace=_ws(), environment=_DocsEnv())
     assert wt.active_branch.name == "tickets/DM-1"
     assert (wt_dir / "notes.md").read_text() == "agent work\n"
 
 
 def test_write_prunes_stale_registration(tmp_path, shared, sp):
     """Re-add a worktree whose directory was deleted behind git's back."""
-    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    sp.write("DM-1", str(tmp_path), [], workspace=_ws(), environment=_DocsEnv())
     shutil.rmtree(_worktree_dir(tmp_path))
-    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    sp.write("DM-1", str(tmp_path), [], workspace=_ws(), environment=_DocsEnv())
     assert git.Repo(_worktree_dir(tmp_path)).active_branch.name == "tickets/DM-1"
 
 
 def test_write_skips_missing_shared_repo(tmp_path, sp):
     """Skip (do not crash on) a nonexistent shared repo."""
     shutil.rmtree(sp.path)
-    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    sp.write("DM-1", str(tmp_path), [], workspace=_ws(), environment=_DocsEnv())
     assert not _worktree_dir(tmp_path).exists()
 
 
 def test_remove_removes_worktree(tmp_path, shared, sp):
     """``remove`` deregisters and deletes the docs worktree."""
-    sp.write("DM-1", str(tmp_path), [], workspace=object(), environment=_DocsEnv())
+    sp.write("DM-1", str(tmp_path), [], workspace=_ws(), environment=_DocsEnv())
     sp.remove(str(tmp_path))
     assert not _worktree_dir(tmp_path).exists()
     assert str(_worktree_dir(tmp_path)) not in _registered_worktrees(shared)
@@ -351,3 +361,23 @@ def test_update_decline_keeps_tool(tmp_path, monkeypatch):
     assert openspec.removed == []
     assert "openspec" not in ws.removed_tools
     assert ws.update_calls and ws.update_calls[-1]["tools"] == []
+
+
+def test_write_shared_mode_places_docs_at_root(tmp_path, shared, sp):
+    """In shared mode the docs worktree lives at the workspace root."""
+    sp.write("DM-1", str(tmp_path), [], workspace=_ws(True), environment=_DocsEnv())
+    wt = git.Repo(_root_worktree_dir(tmp_path))
+    assert wt.active_branch.name == "tickets/DM-1"
+    assert str(_root_worktree_dir(tmp_path)) in _registered_worktrees(shared)
+    assert not (tmp_path / ".agent").exists()
+
+
+def test_remove_handles_both_locations(tmp_path, shared, sp):
+    """``remove`` deregisters the worktree whether at root or under .agent."""
+    sp.write("DM-1", str(tmp_path), [], workspace=_ws(), environment=_DocsEnv())
+    sp.remove(str(tmp_path))
+    assert not _worktree_dir(tmp_path).exists()
+    sp.write("DM-2", str(tmp_path), [], workspace=_ws(True), environment=_DocsEnv())
+    sp.remove(str(tmp_path))
+    assert not _root_worktree_dir(tmp_path).exists()
+    assert not _worktree_dir(tmp_path).exists()

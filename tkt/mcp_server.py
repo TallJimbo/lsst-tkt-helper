@@ -661,7 +661,12 @@ class WarmSandbox:
             )
             lines.append(f"conda activate {conda_env}")
         if self._workspace is not None:
-            lines.append("setup -r .agent")
+            if getattr(self._workspace, "shared_worktree", False):
+                # No .agent copy in shared mode: set up the human's workspace
+                # product from its read-only ups/ directory.
+                lines.append(f"setup -r {shlex.quote(self._workspace.directory)}")
+            else:
+                lines.append("setup -r .agent")
         elif self._repo_dir is not None and os.path.isdir(os.path.join(self._repo_dir, "ups")):
             lines.append("setup -r .")
         return lines
@@ -876,7 +881,8 @@ def run_server(
         """Create or overwrite a file inside the tkt sandbox.
 
         Writes are confined by the sandbox mount model (``.agent/**`` in a
-        workspace, the whole repo in single-repo mode). Missing parent
+        default workspace, the whole workspace in a shared-worktree
+        workspace, the whole repo in single-repo mode).  Missing parent
         directories are created; ``content`` may contain arbitrary bytes.
         Returns a path-only confirmation (clickable). ``description`` is a
         per-call rationale for the human; it does not change behavior.

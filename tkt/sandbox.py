@@ -24,7 +24,7 @@
 
 from __future__ import annotations
 
-__all__ = ("Sandbox", "cleanup_stale_bridges")
+__all__ = ("Sandbox", "cleanup_stale_bridges", "render_agents_md")
 
 import ctypes
 import logging
@@ -69,6 +69,49 @@ _DEFAULT_PORTS = (_DEFAULT_PORT,)
 # from the host browser verbatim.  Overridable through the ``vc_port``
 # configuration entry.
 _DEFAULT_VC_PORT = 8081
+
+
+def render_agents_md(template: str, *, shared: bool, vc_port: int) -> str:
+    """Render the ``AGENTS.md.in`` template for one sandbox mode.
+
+    Supports conditional blocks delimited by marker lines
+    ``<!-- BEGIN shared -->`` ... ``<!-- END shared -->`` and
+    ``<!-- BEGIN worktree -->`` ... ``<!-- END worktree -->``: a block's
+    content is kept (with the markers stripped) only when the marker mode
+    matches the workspace's agent mode. Also substitutes ``{{vc_port}}``.
+
+    Raises
+    ------
+    ValueError
+        If a block is unterminated, mismatched, nested, or names an
+        unknown mode.
+    """
+    active = "shared" if shared else "worktree"
+    open_mode: str | None = None
+    out: list[str] = []
+    for line in template.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("<!-- BEGIN ") and stripped.endswith("-->"):
+            mode = stripped.removeprefix("<!-- BEGIN ").removesuffix("-->").strip()
+            if mode not in ("shared", "worktree"):
+                raise ValueError(f"AGENTS.md template: unknown block mode {mode!r}.")
+            if open_mode is not None:
+                raise ValueError(f"AGENTS.md template: block {mode!r} nested inside {open_mode!r}.")
+            open_mode = mode
+            continue
+        if stripped.startswith("<!-- END ") and stripped.endswith("-->"):
+            mode = stripped.removeprefix("<!-- END ").removesuffix("-->").strip()
+            if open_mode is None:
+                raise ValueError(f"AGENTS.md template: END {mode!r} without BEGIN.")
+            if mode != open_mode:
+                raise ValueError(f"AGENTS.md template: END {mode!r} closes block {open_mode!r}.")
+            open_mode = None
+            continue
+        if open_mode is None or open_mode == active:
+            out.append(line)
+    if open_mode is not None:
+        raise ValueError(f"AGENTS.md template: block {open_mode!r} is unterminated.")
+    return "".join(out).replace("{{vc_port}}", str(vc_port))
 
 
 def _normalize_ports(port: int | Sequence[int]) -> tuple[int, ...]:
@@ -282,11 +325,21 @@ class Sandbox(Tool):
         environment: Environment,
     ) -> None:
         packages = list(packages)
+        # Render the AGENTS.md boilerplate for this workspace's agent mode so
+        # the LLM agent has context about the sandbox setup.
+        with open(_AGENTS_MD_TEMPLATE, encoding="utf-8") as f:
+            template = f.read()
+        with open(os.path.join(directory, "AGENTS.md"), "w", encoding="utf-8") as f:
+            f.write(render_agents_md(template, shared=workspace.shared_worktree, vc_port=self._vc_port))
+        if workspace.shared_worktree:
+            # The agent works directly in the human's package worktrees on the
+            # human's branches, and EUPS sets up from the human's ups/: no
+            # .agent directory (no worktrees, no -agent branches, no ups
+            # copy) is created at all.
+            logging.info("Shared-worktree mode: no .agent directory created.")
+            return
         agent_dir = os.path.join(directory, AGENT_SUBDIR)
         os.makedirs(agent_dir, exist_ok=True)
-        # Install the AGENTS.md boilerplate into the agent directory so the
-        # LLM agent has context about the sandbox setup.
-        shutil.copy2(_AGENTS_MD_TEMPLATE, os.path.join(directory, "AGENTS.md"))
         for package in packages:
             package_dir = os.path.join(directory, package)
             agent_package_dir = os.path.join(agent_dir, package)
@@ -600,20 +653,29 @@ class Sandbox(Tool):
     def _workspace_mounts(self, workspace: Workspace) -> list[str]:
         """Build the mount list for a tkt workspace.
 
-        The agent directory is the only writable location in the workspace;
-        main workspace, per-package ``.git`` dirs are writable, and externals
-        are read-only.
+        In the default (worktree) mode the agent directory is the only
+        writable location in the workspace; main workspace and per-package
+        ``.git`` dirs are writable, and externals are read-only.
+
+        In shared-worktree mode the entire workspace is bind-mounted
+        read-write as a single mount: the agent edits and commits directly
+        on the human's branches, and everything under the workspace root
+        (package dirs, ``superpowers-docs``, ``ups/``) is covered.  There is
+        no ``.agent`` directory in this mode.  Externals remain read-only.
         """
         mounts: list[str] = []
-        mounts += ["--ro-bind", workspace.directory, workspace.directory]
-        agent_dir = os.path.join(workspace.directory, AGENT_SUBDIR)
-        mounts += ["--bind", agent_dir, agent_dir]
-        for package in workspace.packages:
-            package_dir = os.path.join(workspace.directory, package)
-            git_dir = os.path.join(package_dir, ".git")
-            if os.path.exists(package_dir):
-                mounts += ["--ro-bind", package_dir, package_dir]
-                mounts += ["--bind", git_dir, git_dir]
+        if workspace.shared_worktree:
+            mounts += ["--bind", workspace.directory, workspace.directory]
+        else:
+            mounts += ["--ro-bind", workspace.directory, workspace.directory]
+            agent_dir = os.path.join(workspace.directory, AGENT_SUBDIR)
+            mounts += ["--bind", agent_dir, agent_dir]
+            for package in workspace.packages:
+                package_dir = os.path.join(workspace.directory, package)
+                if os.path.exists(package_dir):
+                    git_dir = os.path.join(package_dir, ".git")
+                    mounts += ["--ro-bind", package_dir, package_dir]
+                    mounts += ["--bind", git_dir, git_dir]
         for external_path in workspace.externals.values():
             if os.path.exists(external_path):
                 mounts += ["--ro-bind", external_path, external_path]
@@ -642,7 +704,7 @@ class Sandbox(Tool):
     ) -> list[str]:
         home = os.path.expanduser("~")
         mounts = self._workspace_mounts(workspace)
-        inner = self._build_inner_script(shell=shell, command=command)
+        inner = self._build_inner_script(shell=shell, command=command, workspace=workspace)
         return self._build_common_argv(
             home=home,
             mounts=mounts,
@@ -807,6 +869,7 @@ class Sandbox(Tool):
         command: str | None = None,
         conda_env: str | None = None,
         repo_dir: str | None = None,
+        workspace: Workspace | None = None,
     ) -> str:
         lines: list[str] = []
         if conda_env is not None:
@@ -817,7 +880,15 @@ class Sandbox(Tool):
                 "|| source $(dirname $(dirname $(which conda)))/etc/profile.d/conda.sh"
             )
             lines.append(f"conda activate {conda_env}")
-        if repo_dir is None:
+        if workspace is not None:
+            # Workspace mode: in worktree mode set up the copied .agent
+            # metapackage; in shared-worktree mode there is no .agent, so set
+            # up the human's workspace product (ups/<product>.table) directly.
+            if workspace.shared_worktree:
+                lines += ["exec", f"setup -r {shlex.quote(workspace.directory)}"]
+            else:
+                lines += ["exec", "setup -r .agent"]
+        elif repo_dir is None:
             # in workspace mode, set up the .agent tree
             lines += ["exec", "setup -r .agent"]
         elif os.path.isdir(os.path.join(repo_dir, "ups")):

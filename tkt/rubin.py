@@ -48,6 +48,7 @@ class RubinEnvironment(Environment):
         externals: Mapping[str, str],
         tools: Mapping[str, Tool],
         default_tools: tuple[str, ...],
+        shared_worktree: bool = False,
     ):
         self._workspace_path = workspace_path
         with open(repos_yaml) as f:
@@ -57,6 +58,7 @@ class RubinEnvironment(Environment):
         self._tools = tools
         self._default_tag = default_tag
         self._default_tools = tuple(default_tools)
+        self._shared_worktree = bool(shared_worktree)
 
     @classmethod
     def from_json_data(cls, data: dict[str, Any]) -> Environment:
@@ -68,7 +70,12 @@ class RubinEnvironment(Environment):
             tools=cls.load_tools(data),
             default_tag=data.get("default_tag", "w_latest"),
             default_tools=tuple(data["default_tools"]),
+            shared_worktree=data.get("shared_worktree", False),
         )
+
+    def default_shared_worktree(self) -> bool:
+        """``tkt new`` default for shared-worktree agent mode (local.json)."""
+        return self._shared_worktree
 
     @property
     def default_metapackage(self) -> str:

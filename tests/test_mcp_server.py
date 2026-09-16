@@ -25,7 +25,9 @@
 from __future__ import annotations
 
 import base64
+import shlex
 import subprocess as sp
+from types import SimpleNamespace
 from unittest import mock
 
 from tkt.mcp_files import MAX_CONTENT_BYTES
@@ -715,3 +717,13 @@ def test_edit_tool_too_large_does_not_run():
     res = edit_tool(warm, file_path="f.py", old_string=big, new_string="b")
     assert "old_string too large" in res
     warm.run.assert_not_called()
+
+
+def test_warm_holder_setup_lines(tmp_path):
+    """Warm-holder EUPS setup follows the workspace's agent mode."""
+    shared = SimpleNamespace(shared_worktree=True, directory=str(tmp_path))
+    lines = WarmSandbox(None, workspace=shared, cwd=str(tmp_path))._setup_lines()
+    assert lines == [f"setup -r {shlex.quote(str(tmp_path))}"]
+    worktree = SimpleNamespace(shared_worktree=False, directory=str(tmp_path))
+    lines = WarmSandbox(None, workspace=worktree, cwd=str(tmp_path))._setup_lines()
+    assert lines == ["setup -r .agent"]

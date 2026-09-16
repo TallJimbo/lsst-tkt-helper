@@ -54,7 +54,17 @@ branch into a single commit and rebase it onto main.
   subclass. Reads `repos.yaml` for package origins.
 - **`tkt/sandbox.py`** — `Sandbox` tool: runs an LLM agent inside a `bwrap`
   sandbox with a read-only view of the human's worktree and a writable git
-  worktree on a separate branch.
+  worktree on a separate branch. Also exposes `render_agents_md`, which
+  renders `tkt/AGENTS.md.in` (mode-conditional `<!-- BEGIN shared|worktree -->`
+  blocks plus `{{vc_port}}`). Workspaces created with `tkt new
+  --shared-worktree` (persisted in `tkt.json`; default from `shared_worktree`
+  in `local.json`) create no `.agent` directory at all: the whole workspace
+  is bind-mounted read-write (a single `--bind` of the workspace root) so
+  the agent works directly on the human's branches, the sandbox sets up EUPS
+  from the human's `ups/` (`setup -r <workspace>`, not `setup -r .agent`),
+  the superpowers docs worktree lives at `<workspace>/superpowers-docs`
+  (`Superpowers.remove` handles either location), and
+  `pull-sandbox`/`sandbox-reset` refuse such workspaces.
 - **`tkt/pull.py`** — `Pull` helper: implements `tkt pull-sandbox`, transferring
   committed and/or uncommitted agent work from `.agent/<pkg>` worktrees onto
   human-workspace branches, with a resumable `--finish`/`--abort` lifecycle and a
@@ -64,7 +74,9 @@ branch into a single commit and rebase it onto main.
 - **`tkt/superpowers.py`** — `Superpowers` tool: attaches a git worktree of
   the shared docs repo (its `path`, e.g. `~/LSST/superpowers-docs`) at
   `<workspace>/.agent/superpowers-docs` on the ticket branch (no `-agent`
-  suffix, created from `main`). The agent writes specs/plans under
+  suffix, created from `main`; at `<workspace>/superpowers-docs` in a
+  shared-worktree workspace, which has no `.agent`). The agent writes
+  specs/plans under
   `<ticket>/specs|plans` there and commits; the human merges that branch into
   the shared repo's `main`. `tkt rm` deregisters the worktree via the tool's
   `remove` hook. No `SUPERPOWERS_DIR` env var anymore: `tkt/AGENTS.md.in`

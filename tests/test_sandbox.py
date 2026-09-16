@@ -30,11 +30,12 @@ import subprocess
 import time
 from pathlib import Path
 
+import click
 import git
 import pytest
 
 from tkt._workspace import Workspace
-from tkt.sandbox import Sandbox, _bridge_net_dir, cleanup_stale_bridges
+from tkt.sandbox import Sandbox, _bridge_net_dir, cleanup_stale_bridges, render_agents_md
 
 
 def _inner_of(argv):
@@ -373,3 +374,243 @@ def test_warm_holder_argv_single_repo(tmp_path):
     )
     assert "--bind" in argv
     assert str(tmp_path) in argv
+
+
+# ---------------------------------------------------------------------------
+# Shared-worktree agent mode
+# ---------------------------------------------------------------------------
+
+
+def _make_pkg_repo(tmp_path):
+    """Create <tmp_path>/pkg on branch tickets/X with one commit."""
+    repo_dir = tmp_path / "pkg"
+    repo_dir.mkdir()
+    repo = git.Repo.init(repo_dir)
+    repo.config_writer().set_value("user", "name", "test").release()
+    repo.config_writer().set_value("user", "email", "test@test").release()
+    (repo_dir / "file1.txt").write_text("file1\n")
+    repo.git.add("file1.txt")
+    repo.git.commit("-m", "base")
+    repo.git.checkout("-b", "tickets/X")
+    return repo_dir, repo
+
+
+@pytest.fixture
+def shared_workspace(tmp_path):
+    """Create a shared-worktree workspace (no .agent package worktrees)."""
+    repo_dir, _ = _make_pkg_repo(tmp_path)
+    (tmp_path / "ups").mkdir()
+    (tmp_path / "ups" / "x.table").write_text("envSet(TAB_TITLE, X)\n")
+    return Workspace(
+        ticket="X",
+        directory=str(tmp_path),
+        metapackage_name="m",
+        metapackage_tag="t",
+        packages={"pkg": "tickets/X"},
+        externals={},
+        workspace_eups_product="x",
+        tools=("sandbox",),
+        shared_worktree=True,
+    )
+
+
+def test_shared_write_skips_agent_worktrees(shared_workspace):
+    """Shared mode writes no .agent directory (no worktrees, no ups copy)."""
+    sandbox = Sandbox(command=[])
+    sandbox.write("X", shared_workspace.directory, ["pkg"], shared_workspace, None)
+    assert not os.path.exists(os.path.join(shared_workspace.directory, ".agent"))
+    # No -agent branch was created.
+    repo = git.Repo(os.path.join(shared_workspace.directory, "pkg"))
+    assert "tickets/X-agent" not in [b.name for b in repo.heads]
+    agents_md = Path(shared_workspace.directory, "AGENTS.md").read_text()
+    assert "<!-- BEGIN" not in agents_md
+    assert "work side by side" in agents_md
+
+
+def test_worktree_write_still_copies_ups(workspace):
+    """Default mode still creates the .agent worktree and ups copy."""
+    (Path(workspace.directory) / "ups").mkdir()
+    (Path(workspace.directory) / "ups" / "x.table").write_text("envSet(TAB_TITLE, X)\n")
+    sandbox = Sandbox(command=[])
+    sandbox.write("X", workspace.directory, ["pkg"], workspace, None)
+    assert os.path.exists(os.path.join(workspace.directory, ".agent", "ups", "x.table"))
+
+
+def test_inner_script_setup_lines(workspace, tmp_path):
+    """Worktree mode setups .agent; shared mode setups the human ups."""
+    tool = Sandbox(command=[])
+    inner = _inner_of(tool._build_bwrap_argv(workspace, shell=True))
+    assert "setup -r .agent" in inner
+    shared = Workspace(
+        ticket="X",
+        directory=str(tmp_path),
+        metapackage_name="m",
+        metapackage_tag="t",
+        packages={"pkg": "tickets/X"},
+        externals={},
+        workspace_eups_product="x",
+        tools=(),
+        shared_worktree=True,
+    )
+    inner = _inner_of(tool._build_bwrap_argv(shared, shell=True))
+    assert f"setup -r {tmp_path}" in inner
+    assert "setup -r .agent" not in inner
+
+
+def test_shared_mode_mounts_whole_workspace_readwrite(shared_workspace):
+    """Shared mode bind-mounts the entire workspace read-write."""
+    docs = os.path.join(shared_workspace.directory, "superpowers-docs")
+    os.makedirs(docs)
+    mounts = Sandbox(command=[])._workspace_mounts(shared_workspace)
+    pairs = list(zip(mounts[::3], mounts[1::3], mounts[2::3]))
+    assert ("--bind", shared_workspace.directory, shared_workspace.directory) in pairs
+    assert ("--ro-bind", shared_workspace.directory, shared_workspace.directory) not in pairs
+    # Everything else in the workspace (packages, superpowers-docs, ups/) is
+    # covered by the root bind and needs no bind of its own.
+    assert os.path.join(shared_workspace.directory, "pkg") not in mounts
+    assert docs not in mounts
+    # No .agent in shared mode: not even an rw bind for it.
+    assert os.path.join(shared_workspace.directory, ".agent") not in mounts
+
+
+def test_worktree_mode_mounts_unchanged(workspace):
+    """Default mode still ro-binds packages and rw-binds only .git."""
+    mounts = Sandbox(command=[])._workspace_mounts(workspace)
+    pairs = list(zip(mounts[::3], mounts[1::3], mounts[2::3]))
+    pkg = os.path.join(workspace.directory, "pkg")
+    assert ("--ro-bind", pkg, pkg) in pairs
+    assert ("--bind", os.path.join(pkg, ".git"), os.path.join(pkg, ".git")) in pairs
+
+
+def test_render_agents_md_block_selection():
+    """Verify mode blocks are kept/dropped and markers stripped."""
+    template = (
+        "header\n"
+        "<!-- BEGIN shared -->\nshared text\n<!-- END shared -->\n"
+        "<!-- BEGIN worktree -->\nworktree text\n<!-- END worktree -->\n"
+        "footer\n"
+    )
+    shared = render_agents_md(template, shared=True, vc_port=8081)
+    assert "shared text" in shared
+    assert "worktree text" not in shared
+    worktree = render_agents_md(template, shared=False, vc_port=8081)
+    assert "worktree text" in worktree
+    assert "shared text" not in worktree
+    for rendered in (shared, worktree):
+        assert "BEGIN" not in rendered
+        assert "END" not in rendered
+        assert "header" in rendered and "footer" in rendered
+
+
+def test_render_agents_md_vc_port():
+    """Verify the {{vc_port}} placeholder is substituted."""
+    rendered = render_agents_md("port {{vc_port}}\n", shared=False, vc_port=9999)
+    assert rendered == "port 9999\n"
+
+
+def test_render_agents_md_mismatched_block_raises():
+    """Verify unterminated, mismatched, and nested blocks raise."""
+    with pytest.raises(ValueError):
+        render_agents_md("<!-- BEGIN shared -->\nx\n", shared=True, vc_port=8081)
+    with pytest.raises(ValueError):
+        render_agents_md("<!-- BEGIN shared -->\nx\n<!-- END worktree -->\n", shared=True, vc_port=8081)
+    with pytest.raises(ValueError):
+        render_agents_md("<!-- END shared -->\n", shared=True, vc_port=8081)
+    with pytest.raises(ValueError):
+        render_agents_md(
+            "<!-- BEGIN shared -->\n<!-- BEGIN shared -->\nx\n<!-- END shared -->\n",
+            shared=True,
+            vc_port=8081,
+        )
+
+
+def test_real_template_renders_in_both_modes():
+    """Verify the shipped AGENTS.md.in renders cleanly in both modes."""
+    with open(os.path.join(os.path.dirname(__file__), "..", "tkt", "AGENTS.md.in"), encoding="utf-8") as f:
+        template = f.read()
+    shared = render_agents_md(template, shared=True, vc_port=9090)
+    worktree = render_agents_md(template, shared=False, vc_port=9090)
+    for rendered in (shared, worktree):
+        assert "<!-- BEGIN" not in rendered
+        assert "8081" not in rendered
+        assert "9090" in rendered
+    assert ".agent/<repo-name>/" in worktree
+    assert ".agent/<repo-name>/" not in shared
+    # Shared mode has no .agent directory at all: the rendered docs must not
+    # send the agent there.
+    assert ".agent" not in shared
+    assert "work side by side" in shared
+    assert "work side by side" not in worktree
+
+
+def test_shared_worktree_tkt_json_roundtrip(tmp_path):
+    """Persist shared_worktree to tkt.json; reads back, absent key is False."""
+    ws = Workspace(
+        ticket="X",
+        directory=str(tmp_path),
+        metapackage_name="m",
+        metapackage_tag="t",
+        packages={"pkg": "tickets/X"},
+        externals={},
+        workspace_eups_product="x",
+        tools=(),
+        shared_worktree=True,
+    )
+    ws._write_description()
+    assert Workspace.from_directory(str(tmp_path)).shared_worktree is True
+    import json as _json
+
+    data = _json.loads((tmp_path / "tkt.json").read_text())
+    del data["shared_worktree"]
+    (tmp_path / "tkt.json").write_text(_json.dumps(data))
+    assert Workspace.from_directory(str(tmp_path)).shared_worktree is False
+
+
+def test_rubin_env_shared_worktree_default(tmp_path):
+    """local.json can set the tkt new default for shared_worktree."""
+    from tkt.rubin import RubinEnvironment
+
+    repos_yaml = tmp_path / "repos.yaml"
+    repos_yaml.write_text("{}\n")
+    base = {
+        "workspace_path": str(tmp_path),
+        "repos_yaml": str(repos_yaml),
+        "default_tools": [],
+    }
+    assert RubinEnvironment.from_json_data(dict(base)).default_shared_worktree() is False
+    env = RubinEnvironment.from_json_data({**base, "shared_worktree": True})
+    assert env.default_shared_worktree() is True
+
+
+def test_require_agent_worktrees_guard(workspace, tmp_path):
+    """Verify the guard passes normal workspaces and rejects shared ones."""
+    from tkt._cli import _require_agent_worktrees
+
+    _require_agent_worktrees(workspace)  # normal mode: no raise
+    shared = Workspace(
+        ticket="X",
+        directory=str(tmp_path),
+        metapackage_name="m",
+        metapackage_tag="t",
+        packages={"pkg": "tickets/X"},
+        externals={},
+        workspace_eups_product="x",
+        tools=(),
+        shared_worktree=True,
+    )
+    with pytest.raises(click.UsageError):
+        _require_agent_worktrees(shared)
+
+
+def test_workspace_mode_detection(tmp_path):
+    """Verify .agent or tkt.json in cwd selects workspace mode."""
+    from tkt._cli import _workspace_mode
+
+    assert _workspace_mode(str(tmp_path)) is False
+    (tmp_path / ".agent").mkdir()
+    assert _workspace_mode(str(tmp_path)) is True
+    (tmp_path / ".agent").rmdir()
+    (tmp_path / "tkt.json").write_text("{}")
+    assert _workspace_mode(str(tmp_path)) is True
+    (tmp_path / "tkt.json").unlink()
+    assert _workspace_mode(str(tmp_path)) is False

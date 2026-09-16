@@ -1,19 +1,38 @@
 # AGENTS.md - LSST Science Pipelines Development
 
 This directory is a single-ticket workspace for LSST Science Pipelines
-development. Each subdirectory (e.g., `images/`) is a separate git repository
-with a worktree checked out in `.agent/<repo-name>/`.
+development.
+
+<!-- BEGIN worktree -->
+Each subdirectory (e.g., `images/`) is a separate git repository with an
+agent worktree checked out in `.agent/<repo-name>/`.
+<!-- END worktree -->
+<!-- BEGIN shared -->
+Each subdirectory (e.g., `images/`) is a separate git repository, checked
+out on the same ticket branch you and the human share.
+<!-- END shared -->
 
 Most LSST Science Pipelines are pure Python, but a few have C++ or Rust
 libraries (with Python bindings using `pybind11` or `pyo3`, respectively).
 
 ## Repository Layout
 
+<!-- BEGIN worktree -->
 - **Main ticket directory**: Read-only. Human developers may make changes here
   in parallel.
 - **`.agent/<repo-name>/`**: Your working directory. This is a git worktree of
   the main repository. All edits, tests, and commits should be made here.
 - **`.agent/ups/`**: EUPS product setup files. Do not modify.
+<!-- END worktree -->
+<!-- BEGIN shared -->
+- **Main ticket directory**: You and the human work side by side here.
+- **`<repo-name>/`**: Your working directory: a git checkout of the
+  same ticket branch the human uses. All edits, tests, and commits are made
+  here, directly on that branch.
+- **`superpowers-docs/`**: A git worktree of the shared superpowers docs
+  repo, on the ticket branch. Design specs and implementation plans go
+  here; commit doc work there.
+<!-- END shared -->
 
 You are operating in a sandbox with only the folders you need mounted.
 If a human refers to a file or directory you can't see, _stop and report this_.
@@ -24,11 +43,12 @@ general internet or DNS access. If a task genuinely requires network access,
 do not try to work around the restriction; instead ask the human to rerun the
 sandbox with `tkt sandbox-run --network`.
 
-The localhost port `8081` is bridged back to the host for the visual-companion
-server: anything you serve there is viewable in the human's browser at
-`http://localhost:8081/...` verbatim. If you offer a browser-based visual
-companion, bind it to `127.0.0.1:8081` and give the human the returned URL
-(do not try to auto-open a browser — there is no display in the sandbox).
+The localhost port `{{vc_port}}` is bridged back to the host for the
+visual-companion server: anything you serve there is viewable in the human's
+browser at `http://localhost:{{vc_port}}/...` verbatim. If you offer a
+browser-based visual companion, bind it to `127.0.0.1:{{vc_port}}` and give
+the human the returned URL (do not try to auto-open a browser — there is no
+display in the sandbox).
 
 All environment variables needed to build and import the packages in your
 working directory should all be set; do not try to use EUPS or load `.envrc`
@@ -36,30 +56,64 @@ files yourself.
 
 ## Finding Repositories
 
+<!-- BEGIN worktree -->
 Repositories relevant for the ticket appear as subdirectories of `.agent/`
 (excluding `ups/` and `superpowers-docs/`). Each corresponds to a git
 worktree of a main repository in the parent ticket directory.
+<!-- END worktree -->
+<!-- BEGIN shared -->
+Repositories relevant for the ticket appear as subdirectories of the
+workspace (excluding `superpowers-docs/`). Each is a checkout of the ticket
+branch you share with the human.
+<!-- END shared -->
 
 ## Superpowers docs
 
+<!-- BEGIN worktree -->
 `.agent/superpowers-docs/` is a git worktree of the shared docs repo, checked
-out on this ticket's main branch (e.g., `tickets/DM-XXXXX` — no `-agent`
-suffix). Design specs belong under `.agent/superpowers-docs/<ticket>/specs/`
-and implementation plans under `.agent/superpowers-docs/<ticket>/plans/`.
+out on this ticket's main branch (e.g., `tickets/DM-XXXXX`). Design specs
+belong under `.agent/superpowers-docs/<ticket>/specs/` and implementation
+plans under `.agent/superpowers-docs/<ticket>/plans/`.
+<!-- END worktree -->
+<!-- BEGIN shared -->
+`superpowers-docs/`, at the workspace root, is a git worktree of the shared
+docs repo, checked out on this ticket's main branch (e.g.,
+`tickets/DM-XXXXX`). Design specs belong under
+`superpowers-docs/<ticket>/specs/` and implementation plans under
+`superpowers-docs/<ticket>/plans/`.
+<!-- END shared -->
 Commit doc work there on the ticket branch: those commits are the durable
 artifact, and the human merges that branch into the shared repo's `main` when
-the ticket is done. (A repo may instead keep its superpowers docs in-repo
+the ticket is done. A repo may instead keep its superpowers docs in-repo
 under `docs/superpowers/` — follow the working repo's own AGENTS.md when it
-says otherwise.) Do superpowers doc work in the docs worktree or in-repo as
-appropriate; make _ALL_ code changes in `.agent/**`. Transient superpowers
-scratch (`.superpowers/`) lives under `.agent/<repo-name>/` and is git-ignored.
+says otherwise, and do doc work there rather than in the docs worktree.
+
+<!-- BEGIN worktree -->
+Make _ALL_ code changes in `.agent/**` — never in the main ticket directory.
+Transient superpowers scratch (`.superpowers/`) lives under
+`.agent/<repo-name>/` and is git-ignored.
+<!-- END worktree -->
+<!-- BEGIN shared -->
+Make _ALL_ code changes in the package directories — the human is working in
+them too. Transient superpowers scratch (`.superpowers/`) lives under
+`<repo-name>/` and is git-ignored.
+<!-- END shared -->
 
 ## Development Workflow
 
+<!-- BEGIN worktree -->
 1. **Work in `.agent/<repo-name>/`** — this is your writable worktree.
 
 2. **Run tests** using pytest from the `.agent/<repo-name>/` directory, just
    targeting the modified code. Use `scons` (see below) for final tests.
+<!-- END worktree -->
+<!-- BEGIN shared -->
+1. **Work in `<repo-name>/`** — the checkout you share with the human (see
+   "Working on the shared branch" below before you start).
+
+2. **Run tests** using pytest from the `<repo-name>/` directory, just
+   targeting the modified code. Use `scons` (see below) for final tests.
+<!-- END shared -->
 
 3. **Pre-commit hooks**: Most repositories use pre-commit hooks that
    automatically fix formatting, import order, and most style issues. Focus on
@@ -88,6 +142,18 @@ scratch (`.superpowers/`) lives under `.agent/<repo-name>/` and is git-ignored.
 6. **Multiple repositories**: When multiple repos are present, they share the
    same ticket branch. Coordinate changes across repos at the branch level as
    needed.
+
+<!-- BEGIN shared -->
+## Working on the shared branch
+
+- You and the human commit to the same branches as you work. Run `git status`
+  and `git log` before starting so you know what they have in flight.
+- Never rewrite history the human may have built on: no `--amend` or rebases
+  of existing commits — add a new commit instead.
+- There is no separate agent branch to fall back on. If you go badly wrong,
+  report the damage; do not discard the human's work with `git reset --hard`
+  or `git clean`.
+<!-- END shared -->
 
 ## Building with SCons
 

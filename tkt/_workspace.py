@@ -50,6 +50,7 @@ class Workspace:
         externals: dict[str, str],
         workspace_eups_product: str,
         tools: Iterable[str],
+        shared_worktree: bool = False,
     ):
         self.ticket = ticket
         self.metapackage_name = metapackage_name
@@ -59,6 +60,7 @@ class Workspace:
         self._externals = externals
         self._workspace_eups_product = workspace_eups_product
         self._tools = tuple(tools)
+        self._shared_worktree = bool(shared_worktree)
 
     @property
     def directory(self) -> str:
@@ -88,6 +90,16 @@ class Workspace:
         """Names of the `Tool` objects configured for this workspace."""
         return self._tools
 
+    @property
+    def shared_worktree(self) -> bool:
+        """Whether the agent works directly in the human's worktrees.
+
+        When ``True``, the sandbox gives the agent read-write access to the
+        package directories themselves (on the human's ticket branches)
+        instead of creating per-package worktrees under ``.agent/``.
+        """
+        return self._shared_worktree
+
     def remove_tools(self, tools: Iterable[str]) -> None:
         """Remove tool names from this workspace's configured set."""
         remove = set(tools)
@@ -113,6 +125,7 @@ class Workspace:
             metapackage_tag=metapackage_tag,
             workspace_eups_product=data["workspace_eups_product"],
             tools=data["tools"],
+            shared_worktree=data.get("shared_worktree", False),
         )
 
     @staticmethod
@@ -156,6 +169,7 @@ class Workspace:
         workspace_eups_product: str | None = None,
         environment: Environment,
         tools: Iterable[str] = (),
+        shared_worktree: bool = False,
         dry_run: bool = False,
     ) -> Workspace:
         packages, externals, environment = cls._handle_package_args(
@@ -182,6 +196,7 @@ class Workspace:
             metapackage_tag=tag,
             workspace_eups_product=workspace_eups_product,
             tools=tools,
+            shared_worktree=shared_worktree,
         )
         instance._write_new(environment, dry_run=dry_run)
         return instance
@@ -428,6 +443,7 @@ class Workspace:
                     "metapackage_tag": self.metapackage_tag,
                     "workspace_eups_product": self._workspace_eups_product,
                     "tools": list(self._tools),
+                    "shared_worktree": self._shared_worktree,
                 },
                 f,
                 indent=2,

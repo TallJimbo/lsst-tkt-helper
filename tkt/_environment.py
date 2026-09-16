@@ -117,6 +117,16 @@ class Environment(ABC):
     def default_workspace_eups_product(self) -> str:
         raise NotImplementedError()
 
+    def default_shared_worktree(self) -> bool:
+        """Return the ``tkt new`` default for the ``shared_worktree`` flag.
+
+        When true, new workspaces let the agent work directly in the human's
+        worktrees and branches instead of in ``.agent/`` sandbox worktrees.
+        Concrete (not abstract) so third-party subclasses don't break;
+        subclasses may back this with a configuration entry.
+        """
+        return False
+
     @abstractmethod
     def get_default_branch(self, package: str, ticket: str) -> str:
         raise NotImplementedError()
