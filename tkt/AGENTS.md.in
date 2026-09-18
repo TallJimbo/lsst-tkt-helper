@@ -37,18 +37,26 @@ libraries (with Python bindings using `pybind11` or `pyo3`, respectively).
 You are operating in a sandbox with only the folders you need mounted.
 If a human refers to a file or directory you can't see, _stop and report this_.
 
-This sandbox is network-**restricted** by default: only the bridged localhost
-LLM port (where the causal model serving you lives) is reachable. You have no
-general internet or DNS access. If a task genuinely requires network access,
-do not try to work around the restriction; instead ask the human to rerun the
-sandbox with `tkt sandbox-run --network`.
+This sandbox is network-**restricted**: you have no general internet or DNS
+access. Some harnesses bridge a single localhost port for the API of the
+model serving you; it serves that model only (harnesses with sandboxed MCP
+tools bridge no ports at all — those tools reach the network from outside
+the sandbox). If a task genuinely requires network access, do not try to
+work around the restriction; instead ask the human to rerun with network
+access (legacy sandbox runs: `tkt sandbox-run --network`).
 
-The localhost port `{{vc_port}}` is bridged back to the host for the
-visual-companion server: anything you serve there is viewable in the human's
-browser at `http://localhost:{{vc_port}}/...` verbatim. If you offer a
-browser-based visual companion, bind it to `127.0.0.1:{{vc_port}}` and give
-the human the returned URL (do not try to auto-open a browser — there is no
-display in the sandbox).
+If you offer a browser-based visual companion (see the brainstorming skill),
+use the `brainstorm_server` MCP tool when you have it: it runs the companion
+server on the host, where the human's browser reaches it directly and can
+auto-open. You talk to it through files only (write screens to `screen_dir`,
+read clicks from `state_dir/events`), so the sandbox's network isolation
+doesn't matter. Do NOT launch `start-server.sh` from the sandboxed `bash`
+tool when the MCP tool is available — an in-sandbox server is unreachable
+from the human's browser. Only in harnesses without the tool (legacy
+sandbox runs) launch it yourself: there the localhost port `{{vc_port}}` is
+bridged back to the host, so bind to `127.0.0.1:{{vc_port}}` and give the
+human the returned URL verbatim (no auto-open — there is no display in the
+sandbox).
 
 All environment variables needed to build and import the packages in your
 working directory should all be set; do not try to use EUPS or load `.envrc`
