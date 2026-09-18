@@ -25,6 +25,8 @@
 from __future__ import annotations
 
 import base64
+import json
+import os
 import shlex
 import subprocess as sp
 from types import SimpleNamespace
@@ -34,6 +36,7 @@ from tkt.mcp_files import MAX_CONTENT_BYTES
 from tkt.mcp_server import (
     _MAX_OUTPUT_CHARS,
     BashResult,
+    BrainstormManager,
     TodoItem,
     TodoStore,
     WarmSandbox,
@@ -727,3 +730,260 @@ def test_warm_holder_setup_lines(tmp_path):
     worktree = SimpleNamespace(shared_worktree=False, directory=str(tmp_path))
     lines = WarmSandbox(None, workspace=worktree, cwd=str(tmp_path))._setup_lines()
     assert lines == ["setup -r .agent"]
+
+
+# ========== BrainstormManager (host-side visual-companion server) ==========
+
+
+def _brainstorm_session(root, name, *, pid=None, stopped=False, info=None):
+    """Create a fake session dir laid out like start-server.sh does."""
+    base = root / ".superpowers" / "brainstorm" / name
+    state = base / "state"
+    content = base / "content"
+    state.mkdir(parents=True)
+    content.mkdir()
+    if info is None:
+        info = {
+            "type": "server-started",
+            "port": 52341,
+            "url": "http://localhost:52341/?key=secretkey",
+            "screen_dir": str(content),
+            "state_dir": str(state),
+        }
+    (state / "server-info").write_text(json.dumps(info) + "\n")
+    if pid is not None:
+        (state / "server.pid").write_text(str(pid) + "\n")
+    if stopped:
+        (state / "server-stopped").write_text("{}\n")
+    return state
+
+
+def test_brainstorm_rejects_project_outside_workspace(tmp_path):
+    """project_dir must resolve inside the workspace root."""
+    mgr = BrainstormManager(root=str(tmp_path))
+    try:
+        mgr.status("/etc")
+        raise AssertionError("expected ValueError for absolute path outside root")
+    except ValueError:
+        pass
+    outside = tmp_path.parent
+    try:
+        mgr.status(os.path.relpath(outside, tmp_path))
+        raise AssertionError("expected ValueError for relative path escaping root")
+    except ValueError:
+        pass
+
+
+def test_brainstorm_rejects_missing_project_dir(tmp_path):
+    """A nonexistent project_dir is rejected."""
+    mgr = BrainstormManager(root=str(tmp_path))
+    try:
+        mgr.status("does-not-exist")
+        raise AssertionError("expected ValueError for nonexistent dir")
+    except ValueError:
+        pass
+
+
+def test_brainstorm_start_reuses_live_server(tmp_path):
+    """start() returns the live session's info without relaunching."""
+    _brainstorm_session(tmp_path, "111-111", pid=os.getpid())
+    mgr = BrainstormManager(root=str(tmp_path))
+    with mock.patch("tkt.mcp_server.subprocess.run") as run:
+        info = mgr.start(".")
+    run.assert_not_called()
+    assert info["type"] == "server-running"
+    assert info["reused"] is True
+    assert info["url"].endswith("?key=secretkey")
+
+
+def test_brainstorm_start_launches_launcher(tmp_path):
+    """start() shells out to the launcher with owner pid and args."""
+    mgr = BrainstormManager(root=str(tmp_path))
+    started = {
+        "type": "server-started",
+        "port": 52999,
+        "url": "http://localhost:52999/?key=k2",
+        "screen_dir": str(tmp_path / ".superpowers" / "brainstorm" / "9" / "content"),
+        "state_dir": str(tmp_path / ".superpowers" / "brainstorm" / "9" / "state"),
+    }
+    completed = sp.CompletedProcess(args=[], returncode=0, stdout=json.dumps(started) + "\n", stderr="")
+    with (
+        mock.patch("tkt.mcp_server.subprocess.run", return_value=completed) as run,
+        mock.patch("tkt.mcp_server._find_brainstorm_script", return_value="/fake/start-server.sh"),
+    ):
+        info = mgr.start(".", port=52999, idle_timeout_minutes=30)
+    assert info == started
+    argv = run.call_args[0][0]
+    env = run.call_args.kwargs["env"]
+    assert argv[:2] == ["bash", "/fake/start-server.sh"]
+    assert argv[argv.index("--project-dir") + 1] == os.path.realpath(tmp_path)
+    assert argv[argv.index("--owner-pid") + 1] == str(os.getpid())
+    assert argv[argv.index("--idle-timeout-minutes") + 1] == "30"
+    assert "--open" in argv
+    assert env["BRAINSTORM_PORT"] == "52999"
+
+
+def test_brainstorm_start_without_port_clears_env_and_no_open(tmp_path):
+    """No port means no BRAINSTORM_PORT; open_browser=False drops --open."""
+    mgr = BrainstormManager(root=str(tmp_path))
+    completed = sp.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"type": "server-started", "state_dir": str(tmp_path)}) + "\n",
+        stderr="",
+    )
+    with (
+        mock.patch("tkt.mcp_server.subprocess.run", return_value=completed) as run,
+        mock.patch("tkt.mcp_server._find_brainstorm_script", return_value="/fake/start-server.sh"),
+        mock.patch.dict(os.environ, {"BRAINSTORM_PORT": "1234"}),
+    ):
+        mgr.start(".", open_browser=False)
+    argv = run.call_args[0][0]
+    env = run.call_args.kwargs["env"]
+    assert "--open" not in argv
+    assert "BRAINSTORM_PORT" not in env
+
+
+def test_brainstorm_start_error_passthrough(tmp_path):
+    """A launcher failure with no JSON raises RuntimeError with detail."""
+    mgr = BrainstormManager(root=str(tmp_path))
+    completed = sp.CompletedProcess(
+        args=[], returncode=1, stdout="", stderr='{"error": "Server failed to start"}\n'
+    )
+    with (
+        mock.patch("tkt.mcp_server.subprocess.run", return_value=completed),
+        mock.patch("tkt.mcp_server._find_brainstorm_script", return_value="/fake/start-server.sh"),
+    ):
+        try:
+            mgr.start(".")
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError as exc:
+            assert "Server failed to start" in str(exc)
+
+
+def test_brainstorm_start_returns_launcher_error_dict(tmp_path):
+    """A launcher error JSON dict is returned to the caller."""
+    mgr = BrainstormManager(root=str(tmp_path))
+    completed = sp.CompletedProcess(
+        args=[], returncode=1, stdout='{"error": "Server started but was killed. Retry"}\n', stderr=""
+    )
+    with (
+        mock.patch("tkt.mcp_server.subprocess.run", return_value=completed),
+        mock.patch("tkt.mcp_server._find_brainstorm_script", return_value="/fake/start-server.sh"),
+    ):
+        info = mgr.start(".")
+    assert "error" in info
+
+
+def test_brainstorm_status_picks_newest_session(tmp_path):
+    """Status uses the most recently started session dir."""
+    old = _brainstorm_session(
+        tmp_path,
+        "1-1",
+        pid=999999,
+        info={"type": "server-started", "port": 1111, "state_dir": "x"},
+    )
+    fresh = _brainstorm_session(
+        tmp_path,
+        "2-2",
+        pid=os.getpid(),
+        info={"type": "server-started", "port": 2222, "state_dir": "x"},
+    )
+    import time as _time
+
+    _time.sleep(0.01)
+    os.utime(old / "server-info", (0, 0))
+    os.utime(fresh / "server-info")
+    mgr = BrainstormManager(root=str(tmp_path))
+    info = mgr.status(".")
+    assert info["type"] == "server-running"
+    assert info["port"] == 2222
+
+
+def test_brainstorm_status_stopped_when_server_stopped_marker(tmp_path):
+    """The server-stopped marker wins over a live pid."""
+    _brainstorm_session(tmp_path, "1-1", pid=os.getpid(), stopped=True)
+    mgr = BrainstormManager(root=str(tmp_path))
+    assert mgr.status(".")["type"] == "server-stopped"
+
+
+def test_brainstorm_status_stopped_when_pid_dead(tmp_path):
+    """A dead pid reports as stopped, not running."""
+    # PID 0x7FFFFFFF is beyond any valid pid on Linux; kill(pid, 0) fails.
+    _brainstorm_session(tmp_path, "1-1", pid=0x7FFFFFFF)
+    mgr = BrainstormManager(root=str(tmp_path))
+    assert mgr.status(".")["type"] == "server-stopped"
+
+
+def test_brainstorm_status_not_running(tmp_path):
+    """No session files at all reports not-running."""
+    mgr = BrainstormManager(root=str(tmp_path))
+    assert mgr.status(".")["type"] == "not-running"
+
+
+def test_brainstorm_stop_terminates_live_server(tmp_path):
+    """Stop SIGTERMs the live server and reports stopped."""
+    import signal as signal_mod
+
+    state_dir = _brainstorm_session(tmp_path, "1-1", pid=os.getpid())
+    mgr = BrainstormManager(root=str(tmp_path))
+
+    calls = []
+    polls = {"n": 0}
+
+    def fake_kill(pid, sig):
+        calls.append((pid, sig))
+        if sig == signal_mod.SIGTERM:
+            # A real server writes the marker on graceful shutdown.
+            (state_dir / "server-stopped").write_text("{}\n")
+        elif sig == 0:
+            polls["n"] += 1
+            if polls["n"] > 1:
+                # First poll is the liveness pre-check; later ones are the
+                # post-SIGTERM wait: the process is gone.
+                raise OSError
+
+    with mock.patch("tkt.mcp_server.os.kill", side_effect=fake_kill):
+        info = mgr.stop(".")
+    assert (os.getpid(), signal_mod.SIGTERM) in calls  # after the liveness poll
+    assert info["type"] == "server-stopped"
+    assert info["port"] == 52341
+    # The dead session reports stopped, not running.
+    assert mgr.status(".")["type"] == "server-stopped"
+
+
+def test_brainstorm_stop_noop_when_not_running(tmp_path):
+    """Stop on a project without a server is a no-op."""
+    mgr = BrainstormManager(root=str(tmp_path))
+    assert mgr.stop(".")["type"] == "not-running"
+
+
+def test_find_brainstorm_script_prefers_bundled_submodule(monkeypatch):
+    """Default discovery finds the pinned submodule launcher."""
+    from tkt.mcp_server import _find_brainstorm_script
+
+    monkeypatch.delenv("TKT_BRAINSTORM_SCRIPT", raising=False)
+    script = _find_brainstorm_script()
+    assert script.endswith(
+        os.path.join("superpowers", "skills", "brainstorming", "scripts", "start-server.sh")
+    )
+    assert os.path.isfile(script)
+
+
+def test_find_brainstorm_script_env_override(tmp_path, monkeypatch):
+    """TKT_BRAINSTORM_SCRIPT overrides discovery."""
+    from tkt.mcp_server import _find_brainstorm_script
+
+    fake = tmp_path / "start-server.sh"
+    fake.write_text("#!/bin/bash\nexit 0\n")
+    monkeypatch.setenv("TKT_BRAINSTORM_SCRIPT", str(fake))
+    assert _find_brainstorm_script() == os.path.realpath(fake)
+
+
+def test_format_brainstorm_info_warns_about_key():
+    """Rendered output warns not to strip the ?key= from the URL."""
+    from tkt.mcp_server import _format_brainstorm_info
+
+    out = _format_brainstorm_info({"type": "server-started", "url": "http://x/?key=abc"})
+    assert "```json" in out
+    assert "?key=" in out  # explicit warning not to strip the session key

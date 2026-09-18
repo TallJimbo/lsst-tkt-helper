@@ -26,6 +26,7 @@ from __future__ import annotations
 
 __all__ = (
     "BashResult",
+    "BrainstormManager",
     "TodoItem",
     "TodoStore",
     "WarmSandbox",
@@ -50,10 +51,13 @@ __all__ = (
 )
 
 import base64
+import json
 import os
 import re
 import shlex
+import signal
 import subprocess
+import time
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -712,6 +716,262 @@ class WarmSandbox:
         )
 
 
+# Path of the visual-companion launcher inside this repo's pinned superpowers
+# submodule, and the fallback location installed by ``tkt install-zed-agent``.
+_BRAINSTORM_SCRIPT_RELPATH = os.path.join(
+    "superpowers", "skills", "brainstorming", "scripts", "start-server.sh"
+)
+_BRAINSTORM_SCRIPT_HOME_RELPATH = os.path.join(
+    ".agents", "skills", "brainstorming", "scripts", "start-server.sh"
+)
+# Wall-clock bound for the launcher script (it self-bounds to ~8 s waiting for
+# the server to start and prove it stays alive).
+_BRAINSTORM_START_TIMEOUT_S = 30
+
+
+def _find_brainstorm_script() -> str:
+    """Locate ``start-server.sh`` on the host, honoring the env override.
+
+    Raises:
+        FileNotFoundError: if no candidate launcher script exists.
+    """
+    override = os.environ.get("TKT_BRAINSTORM_SCRIPT")
+    candidates = (
+        [override]
+        if override
+        else [
+            os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), _BRAINSTORM_SCRIPT_RELPATH
+            ),
+            os.path.join(os.path.expanduser("~"), _BRAINSTORM_SCRIPT_HOME_RELPATH),
+        ]
+    )
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            return os.path.realpath(cand)
+    raise FileNotFoundError(
+        "brainstorm server launcher not found; tried: " + ", ".join(c for c in candidates if c)
+    )
+
+
+def _last_json_object(text: str) -> dict[str, Any] | None:
+    """Return the last JSON-object line in ``text``, or ``None``."""
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                return obj
+    return None
+
+
+class BrainstormManager:
+    """Own the visual-companion server as a host-side process.
+
+    The companion server talks to the agent purely through files — it serves
+    the newest HTML file the agent writes into ``screen_dir`` and records
+    browser clicks into ``state_dir/events`` — while only the human's browser
+    needs HTTP.  Running it on the host (outside the sandbox) therefore needs
+    no network bridge, is reachable from the human's browser verbatim, and
+    ``--open`` can auto-open the browser again.
+
+    Lifetime is anchored to this MCP server process: the launcher is given
+    ``--owner-pid`` of this process, so the companion server self-exits within
+    its watchdog interval if the Zed session (and hence this server) dies, and
+    otherwise after its idle timeout.  No teardown is required.
+    """
+
+    def __init__(self, *, root: str) -> None:
+        self._root = os.path.realpath(root)
+        self._sessions: dict[str, str] = {}  # real project dir -> state dir
+
+    @property
+    def root(self) -> str:
+        return self._root
+
+    def _resolve_project_dir(self, project_dir: str) -> str:
+        """Resolve ``project_dir`` and require it inside the workspace root."""
+        if os.path.isabs(project_dir):
+            resolved = os.path.realpath(project_dir)
+        else:
+            resolved = os.path.realpath(os.path.join(self._root, project_dir))
+        if resolved != self._root and not resolved.startswith(self._root + os.sep):
+            raise ValueError(
+                f"project_dir must be inside the workspace root ({self._root}), got {project_dir!r}."
+            )
+        if not os.path.isdir(resolved):
+            raise ValueError(f"project_dir does not exist: {project_dir!r}.")
+        return resolved
+
+    def _scan_state_dir(self, project: str) -> str | None:
+        """Return the newest session ``state`` dir under ``project``."""
+        base = os.path.join(project, ".superpowers", "brainstorm")
+        newest: str | None = None
+        newest_mtime = 0.0
+        try:
+            entries = list(os.scandir(base))
+        except OSError:
+            return None
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            state_dir = os.path.join(entry.path, "state")
+            info = os.path.join(state_dir, "server-info")
+            try:
+                mtime = os.path.getmtime(info)
+            except OSError:
+                continue
+            if mtime > newest_mtime:
+                newest, newest_mtime = state_dir, mtime
+        return newest
+
+    def _state_dir(self, project: str) -> str | None:
+        """Return the current session state dir for ``project``, if any."""
+        cached = self._sessions.get(project)
+        if cached is not None and os.path.isdir(cached):
+            return cached
+        found = self._scan_state_dir(project)
+        if found is not None:
+            self._sessions[project] = found
+        return found
+
+    @staticmethod
+    def _read_info(state_dir: str) -> dict[str, Any] | None:
+        """Read the server's ``server-info`` JSON, or ``None``."""
+        try:
+            with open(os.path.join(state_dir, "server-info"), encoding="utf-8") as f:
+                obj = _last_json_object(f.read())
+        except OSError:
+            return None
+        return obj
+
+    @staticmethod
+    def _read_pid(state_dir: str) -> int | None:
+        """Read the launcher's recorded server pid, or ``None``."""
+        try:
+            with open(os.path.join(state_dir, "server.pid"), encoding="utf-8") as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    def _is_alive(self, state_dir: str | None) -> bool:
+        """True when a live companion server exists for this session."""
+        if state_dir is None or not os.path.isdir(state_dir):
+            return False
+        if os.path.exists(os.path.join(state_dir, "server-stopped")):
+            return False
+        pid = self._read_pid(state_dir)
+        if pid is None:
+            return False
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+    def start(
+        self,
+        project_dir: str,
+        *,
+        port: int | None = None,
+        idle_timeout_minutes: int | None = None,
+        open_browser: bool = True,
+    ) -> dict[str, Any]:
+        """Start the companion server, or return the live session's info.
+
+        The launcher script does the backgrounding (``nohup``/``disown``) and
+        waits for the server's startup JSON, so this call returns once the
+        server is confirmed up (or failed).  A still-running server for this
+        project is reused rather than duplicated.
+        """
+        project = self._resolve_project_dir(project_dir)
+        state_dir = self._state_dir(project)
+        if self._is_alive(state_dir):
+            assert state_dir is not None
+            info = dict(self._read_info(state_dir) or {})
+            info["type"] = "server-running"
+            info["reused"] = True
+            return info
+        env = dict(os.environ)
+        if port is None:
+            env.pop("BRAINSTORM_PORT", None)  # let the script reuse/choose a port
+        else:
+            env["BRAINSTORM_PORT"] = str(int(port))
+        argv = ["bash", _find_brainstorm_script(), "--project-dir", project, "--owner-pid", str(os.getpid())]
+        if idle_timeout_minutes is not None:
+            argv += ["--idle-timeout-minutes", str(int(idle_timeout_minutes))]
+        if open_browser:
+            argv += ["--open"]
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=_BRAINSTORM_START_TIMEOUT_S, env=env, check=False
+        )
+        started = _last_json_object(proc.stdout)
+        if started is None:
+            detail = proc.stdout.strip() or proc.stderr.strip() or f"exit code {proc.returncode}"
+            raise RuntimeError(f"brainstorm server failed to start: {detail}")
+        if "error" in started:
+            return started
+        self._sessions[project] = str(started["state_dir"])
+        return started
+
+    def status(self, project_dir: str) -> dict[str, Any]:
+        """Report whether a companion server is live for ``project_dir``."""
+        project = self._resolve_project_dir(project_dir)
+        state_dir = self._state_dir(project)
+        if state_dir is None:
+            return {"type": "not-running", "project_dir": project}
+        info = dict(self._read_info(state_dir) or {})
+        info["type"] = "server-running" if self._is_alive(state_dir) else "server-stopped"
+        return info
+
+    def stop(self, project_dir: str) -> dict[str, Any]:
+        """Terminate the companion server for ``project_dir``, if any."""
+        project = self._resolve_project_dir(project_dir)
+        state_dir = self._state_dir(project)
+        if not self._is_alive(state_dir):
+            self._sessions.pop(project, None)
+            return {"type": "not-running", "project_dir": project}
+        assert state_dir is not None
+        pid = self._read_pid(state_dir)
+        info = self._read_info(state_dir) or {}
+        assert pid is not None  # guaranteed by _is_alive
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.1)
+        self._sessions.pop(project, None)
+        return {
+            "type": "server-stopped",
+            "port": info.get("port"),
+            "state_dir": state_dir,
+            "project_dir": project,
+        }
+
+
+def _format_brainstorm_info(info: dict[str, Any]) -> str:
+    """Render a BrainstormManager result dict as agent-facing markdown."""
+    body = "```json\n" + json.dumps(info, indent=2) + "\n```\n"
+    kind = info.get("type")
+    if kind in ("server-started", "server-running"):
+        return body + (
+            "Give the human the **complete** `url` verbatim, including the "
+            "`?key=…` query string (requests without the key are rejected). "
+            "Push a screen by writing an HTML file into `screen_dir`; the "
+            "human's clicks are recorded in `state_dir/events`. Check "
+            "`status` before referring to the URL again."
+        )
+    if kind == "not-running":
+        return body + "No companion server session exists for this project yet."
+    return body
+
+
 def run_server(
     sandbox,
     *,
@@ -925,6 +1185,64 @@ def run_server(
             new_string=new_string,
             replace_all=replace_all,
         )
+
+    brainstorm = BrainstormManager(root=cwd)
+
+    @mcp.tool()
+    def brainstorm_server(
+        action: str,
+        project_dir: str = ".",
+        port: int | None = None,
+        idle_timeout_minutes: int | None = None,
+        open_browser: bool = True,
+        description: str | None = None,  # present for human approvals of tool actions
+    ) -> str:
+        """Manage the brainstorming visual-companion server on the host.
+
+        The companion server runs outside the sandbox, where the human's
+        browser reaches it directly (no network bridge needed) and can
+        auto-open.  You interact with it only through files: write HTML
+        screens into ``screen_dir`` and read the human's clicks from
+        ``state_dir/events``.  Prefer this tool over launching
+        ``start-server.sh`` from ``bash``: the sandbox is network-isolated
+        (an in-sandbox server's URL is unreachable) and detached processes
+        there are fragile.  See the brainstorming skill's visual companion
+        guide for the screen-writing conventions.
+
+        Args:
+            action: One of "start", "status", or "stop".
+            project_dir: Writable project root for session files, inside the
+                workspace (relative paths resolve against the project root);
+                screens and events live under
+                ``<project_dir>/.superpowers/brainstorm/``.
+            port: Fixed host port for "start"; by default a random high port
+                is chosen and then reused across restarts of the same
+                project.
+            idle_timeout_minutes: "start" only; auto-shutdown after this many
+                idle minutes (server default 240).
+            open_browser: "start" only; auto-open the human's browser on the
+                first pushed screen (default True; only ever opens once, and
+                not if a tab is already connected).
+            description: Optional human-readable rationale for this call.
+        """
+        action = action.strip().lower()
+        try:
+            if action == "start":
+                info = brainstorm.start(
+                    project_dir,
+                    port=port,
+                    idle_timeout_minutes=idle_timeout_minutes,
+                    open_browser=open_browser,
+                )
+            elif action == "status":
+                info = brainstorm.status(project_dir)
+            elif action == "stop":
+                info = brainstorm.stop(project_dir)
+            else:
+                return f"brainstorm_server: unknown action {action!r}; use 'start', 'status', or 'stop'."
+        except (ValueError, RuntimeError, FileNotFoundError, OSError) as exc:
+            return f"brainstorm_server failed: {exc}"
+        return _format_brainstorm_info(info)
 
     todo_store = TodoStore()
 
