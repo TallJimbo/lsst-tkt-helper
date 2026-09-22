@@ -50,6 +50,7 @@
           "~/LSST/install",
           "~/LSST/tkt2",
           "~/LSST/repos",
+          "~/LSST/testdata",
           "~/.opencode",
           "~/.gitconfig",
           "~/.gitignore-global",
