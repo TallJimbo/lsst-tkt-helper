@@ -23,6 +23,39 @@ propose code changes, and keep the bookkeeping tidy.
 - Verify line numbers against the PR head before citing them; review-thread
   anchors are often stale relative to the current code. Resolve real paths
   (including subpackages and subdirectories) rather than guessing them.
+- Look for an existing ledger at the repo root matching
+  `pr-response-<owner>-<repo>-PR<number>.md`. If one exists and its first
+  line names this PR, read it and resume from the first unsettled item
+  rather than restarting the categorization.
+
+## Ledger
+
+Conversation memory does not survive compaction. Track progress in a
+markdown ledger file, not only in todos.
+
+- Ledger path: `pr-response-<owner>-<repo>-PR<number>.md` at the root of
+  the repo holding the PR branch — plain sight, not a hidden directory.
+  It is scratch; mention once that a global gitignore of
+  `pr-response-*.md` keeps it out of `git status`.
+- Create it with its identity as the first line:
+  `# PR-response ledger — PR: <url> — branch: <branch name>`. Name the
+  branch, not a SHA; rebasing churns SHAs.
+- Append one line per event; never rewrite history, so a partial ledger
+  is always valid:
+  - after categorizing: `- cat: A1 verified ("Refactor parser") | N2 trivial typo`
+  - after each `ask_user` decision:
+    `- N1: decision=fix-now → fixup! "Add sort to results" (7c1d9e2, targets "Refactor parser")`
+  - after each batch: `- batch addressed: presented, human confirmed`
+- Identify commits by subject first, hash second. Rebases churn hashes;
+  `fixup! <subject>` subjects survive by construction. On recovery,
+  resolve subjects with `git log --grep` and treat recorded hashes as
+  hints only; if a subject resolves to zero or multiple commits, ask
+  the human rather than guessing.
+- After compaction, trust the ledger and `git log` over your own
+  recollection. Items with verdict/decision lines are settled — do not
+  re-categorize or re-walk them; resume at the first unsettled item.
+- A ledger whose first line names a different PR is another PR's
+  progress: leave it in place and start your own, fresh.
 
 ## Categorize first
 
@@ -40,7 +73,8 @@ it: `A1, A2, ...` (addressed), `N1, N2, ...` (needs work).
   walk-through rather than a separate batch.
 
 Present the full categorized list before acting on anything; the human may
-re-bucket items.
+re-bucket items. Ledger the final verdicts once settled (one `cat:` line is
+enough).
 
 ## Presentation
 
@@ -68,7 +102,8 @@ One at a time, each as its own `### <label>. <short topic>` section: quote
 the comment, give context (linked), your analysis, and a proposed change —
 or a case for disagreeing. You never draft PR replies. The human decides
 per comment: fix now / defer / explain only / disagree. Make code changes
-only on an explicit go-ahead, gathered via `ask_user`.
+only on an explicit go-ahead, gathered via `ask_user`. Ledger each decision
+as soon as it is made.
 
 ## Batches
 
@@ -77,13 +112,15 @@ rationale` table row — what already covers it (commit or linked lines).
 Tables are presented progressively (with pauses) rather than saved for the
 end; finish the walk-through with a final confirmation pass so the human
 can post one response per batch on a settled list. Compact rows, not draft
-prose.
+prose. Ledger each batch as `presented` and append a `human confirmed`
+line once the confirmation pass settles it.
 
 ## Landing code changes
 
 - Small changes: one `fixup! <subject>` commit per comment, targeted at the
   branch commit that introduced the code being fixed (ask if ambiguous).
-  Run a quick lint/tests check before committing each fixup.
+  Run a quick lint/tests check before committing each fixup. Ledger the
+  fixup with subject first and hash second, naming the target by subject.
 - Larger changes: discuss first, land as ordinary commits.
 - Never run a destructive rebase (e.g. `rebase --autosquash`) unsolicited;
   remind the human that the fixups are waiting instead.
