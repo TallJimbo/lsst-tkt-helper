@@ -102,8 +102,8 @@ def cli() -> None:
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
     required=False,
 )
-@click.option("-n", "--dry-run", is_flag=True)
-@click.option("-v", "--verbose", count=True)
+@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def fix_openspec(directory: str | None, *, dry_run: bool = False, verbose: int = 0) -> None:
     _setup_logging(verbose)
     if directory is None:
@@ -124,9 +124,9 @@ def fix_openspec(directory: str | None, *, dry_run: bool = False, verbose: int =
         "entries under ~/.agents/skills."
     ),
 )
-@click.option("-n", "--dry-run", is_flag=True)
+@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
 @click.option("--yes", "yes", is_flag=True, help="Remove stale entries without prompting.")
-@click.option("-v", "--verbose", count=True)
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def install_zed_agent(*, dry_run: bool = False, yes: bool = False, verbose: int = 0) -> None:
     _setup_logging(verbose)
     from .install import install_zed_agent as _install_zed
@@ -141,8 +141,8 @@ def install_zed_agent(*, dry_run: bool = False, yes: bool = False, verbose: int 
         "Symlink the OpenCode harness agents dir into ~/.config/opencode/agents, replacing any stale symlink."
     ),
 )
-@click.option("-n", "--dry-run", is_flag=True)
-@click.option("-v", "--verbose", count=True)
+@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def install_opencode_agent(*, dry_run: bool = False, verbose: int = 0) -> None:
     _setup_logging(verbose)
     from .install import install_opencode_agent as _install_opencode
@@ -157,14 +157,19 @@ def install_opencode_agent(*, dry_run: bool = False, verbose: int = 0) -> None:
     "-d",
     "--directory",
     type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
+    help="Where to create the workspace (default: environment workspace root, plus the ticket).",
 )
-@click.option("-t", "--tag", type=str)
-@click.option("--metapackage")
-@click.option("--workspace-eups-product")
+@click.option("-t", "--tag", type=str, help="EUPS base tag (default: the environment's default tag).")
+@click.option("--metapackage", help="EUPS base metapackage (default: the environment's default metapackage).")
+@click.option(
+    "--workspace-eups-product",
+    help="Name of the workspace's own EUPS product (default: the environment's default).",
+)
 @click.option(
     "--environment",
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
+    help="Environment configuration file (default: the file named by $TKT_ENVIRONMENT).",
 )
 @click.option(
     "--add-tool",
@@ -192,8 +197,8 @@ def install_opencode_agent(*, dry_run: bool = False, verbose: int = 0) -> None:
         "'shared_worktree' setting from the environment config file."
     ),
 )
-@click.option("-n", "--dry-run", is_flag=True)
-@click.option("-v", "--verbose", count=True)
+@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def new(
     ticket: str,
     packages: Iterable[str],
@@ -242,15 +247,20 @@ def new(
     "-d",
     "--directory",
     type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
+    help="Workspace directory (default: detected from the current directory).",
 )
-@click.option("--ticket")
+@click.option(
+    "--ticket",
+    help="Ticket identifying the workspace (default: taken from the workspace directory).",
+)
 @click.option(
     "--environment",
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
+    help="Environment configuration file (default: the file named by $TKT_ENVIRONMENT).",
 )
-@click.option("-n", "--dry-run", is_flag=True)
-@click.option("-v", "--verbose", count=True)
+@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def update(
     packages: Iterable[str],
     *,
@@ -302,17 +312,22 @@ def update(
     "-d",
     "--directory",
     type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
+    help="Workspace directory (default: detected from the current directory).",
 )
-@click.option("--ticket")
+@click.option(
+    "--ticket",
+    help="Ticket identifying the workspace (default: taken from the workspace directory).",
+)
 @click.option(
     "--environment",
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
+    help="Environment configuration file (default: the file named by $TKT_ENVIRONMENT).",
 )
-@click.option("-t", "--tag", type=str)
-@click.option("--metapackage")
-@click.option("-n", "--dry-run", is_flag=True)
-@click.option("-v", "--verbose", count=True)
+@click.option("-t", "--tag", type=str, help="New EUPS base tag (default: leave unchanged).")
+@click.option("--metapackage", help="New EUPS base metapackage (default: leave unchanged).")
+@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def upgrade_metapackage(
     *,
     ticket: str | None,
@@ -343,13 +358,15 @@ def upgrade_metapackage(
     "-d",
     "--directory",
     type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
+    help="Workspace directory (default: detected from the current directory).",
 )
 @click.option(
     "--environment",
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
+    help="Environment configuration file (default: the file named by $TKT_ENVIRONMENT).",
 )
-@click.option("-v", "--verbose", count=True)
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def rm(
     *,
     ticket: str | None,
@@ -383,16 +400,21 @@ def rm(
     "-d",
     "--directory",
     type=click.Path(exists=True, file_okay=False, writable=True, resolve_path=True),
+    help="Workspace directory (default: detected from the current directory).",
 )
-@click.option("--ticket")
+@click.option(
+    "--ticket",
+    help="Ticket identifying the workspace (default: taken from the workspace directory).",
+)
 @click.option(
     "--environment",
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
+    help="Environment configuration file (default: the file named by $TKT_ENVIRONMENT).",
 )
 @click.option("-f", "--force", is_flag=True, help="Skip the setup and unsaved-work checks.")
-@click.option("-n", "--dry-run", is_flag=True)
-@click.option("-v", "--verbose", count=True)
+@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def rm_package(
     packages: Iterable[str],
     *,
@@ -434,8 +456,9 @@ def rm_package(
     "-d",
     "--directory",
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Workspace directory (default: detected from the current directory).",
 )
-@click.option("-v", "--verbose", count=True)
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def rm_sh(
     packages: Iterable[str],
     *,
@@ -474,12 +497,17 @@ def rm_sh(
     "-d",
     "--directory",
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Workspace or repository directory (default: detected from the current directory).",
 )
-@click.option("--ticket")
+@click.option(
+    "--ticket",
+    help="Ticket identifying the workspace (default: taken from the workspace directory).",
+)
 @click.option(
     "--environment",
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
+    help="Environment configuration file (default: the file named by $TKT_ENVIRONMENT).",
 )
 @click.option(
     "--shell",
@@ -511,7 +539,7 @@ def rm_sh(
         "tool's configured 'network' value is used."
     ),
 )
-@click.option("-v", "--verbose", count=True)
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def sandbox_run(
     *,
     ticket: str | None,
@@ -569,10 +597,19 @@ def sandbox_run(
 )
 @click.option("--listen", type=int, default=8090, help="Local listen port (default 8090).")
 @click.option("--upstream", required=True, help="Upstream scheme://host:port with no path.")
-@click.option("--traces-dir", type=click.Path())
+@click.option(
+    "--traces-dir",
+    type=click.Path(),
+    help="Directory for trace files (default: $TKT_TRACES_DIR or ~/.tkt/traces).",
+)
 @click.option("--ssh-host", default=None, help="Run an interactive ssh session to this host.")
-@click.option("--environment", envvar="TKT_ENVIRONMENT", type=click.File())
-@click.option("-v", "--verbose", count=True)
+@click.option(
+    "--environment",
+    envvar="TKT_ENVIRONMENT",
+    type=click.File(),
+    help="Environment config file providing proxy rewrite rules (default: $TKT_ENVIRONMENT).",
+)
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def trace_proxy(
     *,
     listen: int,
@@ -612,8 +649,12 @@ def trace_proxy(
     "trace-log",
     help="Retroactively segment, label, list, show, pin, and prune captured model traffic.",
 )
-@click.option("--traces-dir", type=click.Path())
-@click.option("-v", "--verbose", count=True)
+@click.option(
+    "--traces-dir",
+    type=click.Path(),
+    help="Directory for trace files (default: $TKT_TRACES_DIR or ~/.tkt/traces).",
+)
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 @click.pass_context
 def trace_log(ctx: click.Context, *, traces_dir: str | None, verbose: int) -> None:
     _setup_logging(verbose)
@@ -627,8 +668,18 @@ def trace_log(ctx: click.Context, *, traces_dir: str | None, verbose: int) -> No
 
 
 @trace_log.command("segment")
-@click.option("--horizon-days", type=int, default=30)
-@click.option("--keep", type=int, default=20)
+@click.option(
+    "--horizon-days",
+    type=int,
+    default=30,
+    help="Prune unpinned sessions older than this many days (default 30).",
+)
+@click.option(
+    "--keep",
+    type=int,
+    default=20,
+    help="Prune all but the newest N sessions (default 20).",
+)
 @click.pass_context
 def trace_log_segment(ctx: click.Context, *, horizon_days: int, keep: int) -> None:
     from .tracelog import iter_records, prune, segment, write_session_files
@@ -689,7 +740,7 @@ def trace_log_list(ctx: click.Context) -> None:
 
 @trace_log.command("show")
 @click.argument("session_id")
-@click.option("--raw", is_flag=True)
+@click.option("--raw", is_flag=True, help="Print all exchanges as one compact JSON array.")
 @click.pass_context
 def trace_log_show(ctx: click.Context, *, session_id: str, raw: bool) -> None:
     from .tracelog import show_session
@@ -734,14 +785,21 @@ def trace_log_unpin(ctx: click.Context, *, session_id: str) -> None:
     "--environment",
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
+    help="Environment configuration file (default: the file named by $TKT_ENVIRONMENT).",
 )
 @click.option(
     "-d",
     "--directory",
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Workspace directory (default: detected from the current directory).",
 )
-@click.option("--conda-env", type=str, default=None)
-@click.option("-v", "--verbose", count=True)
+@click.option(
+    "--conda-env",
+    type=str,
+    default=None,
+    help="Activate this conda environment inside the sandbox before anything else.",
+)
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def mcp_server(
     *,
     environment: TextIO | None,
@@ -790,12 +848,17 @@ def mcp_server(
     "-d",
     "--directory",
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Workspace directory (default: detected from the current directory).",
 )
-@click.option("--ticket")
+@click.option(
+    "--ticket",
+    help="Ticket identifying the workspace (default: taken from the workspace directory).",
+)
 @click.option(
     "--environment",
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
+    help="Environment configuration file (default: the file named by $TKT_ENVIRONMENT).",
 )
 @click.option(
     "-s",
@@ -821,8 +884,8 @@ def mcp_server(
     is_flag=True,
     help="Cancel an in-progress pull-sandbox sync across all packages.",
 )
-@click.option("-n", "--dry-run", is_flag=True)
-@click.option("-v", "--verbose", count=True)
+@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def pull_sandbox(
     *,
     ticket: str | None,
@@ -877,14 +940,19 @@ def pull_sandbox(
     "-d",
     "--directory",
     type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    help="Workspace directory (default: detected from the current directory).",
 )
-@click.option("--ticket")
+@click.option(
+    "--ticket",
+    help="Ticket identifying the workspace (default: taken from the workspace directory).",
+)
 @click.option(
     "--environment",
     envvar="TKT_ENVIRONMENT",
     type=click.File(),
+    help="Environment configuration file (default: the file named by $TKT_ENVIRONMENT).",
 )
-@click.option("-v", "--verbose", count=True)
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def sandbox_reset(
     *,
     ticket: str | None,
@@ -919,8 +987,8 @@ def sandbox_reset(
         "so live sandboxes are never touched. Use -n to preview."
     ),
 )
-@click.option("-n", "--dry-run", is_flag=True)
-@click.option("-v", "--verbose", count=True)
+@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def sandbox_cleanup(*, dry_run: bool = False, verbose: int = 0) -> None:
     _setup_logging(verbose)
     from .sandbox import cleanup_stale_bridges
@@ -959,9 +1027,15 @@ def sandbox_cleanup(*, dry_run: bool = False, verbose: int = 0) -> None:
     show_default=True,
     help="Provider key in the emitted settings block; also names its API key env var.",
 )
-@click.option("--timeout", type=float, default=30.0, show_default=True)
+@click.option(
+    "--timeout",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Seconds to wait for each probe request.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Print the machine-readable report only.")
-@click.option("-v", "--verbose", count=True)
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def probe_llm(
     model: str,
     *,
