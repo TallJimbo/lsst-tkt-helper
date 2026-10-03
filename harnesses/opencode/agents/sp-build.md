@@ -3,18 +3,18 @@ name: sp-build
 description: Execute an approved implementation plan via subagent-driven
   development. Use after sp-plan when the plan is approved.
 mode: primary
-permission:
-  read: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  question: allow
-  skill: allow
-  task: allow
-  webfetch: ask
-  websearch: ask
-  edit: allow
+permissions:
+  - { action: read, resource: "*", effect: allow }
+  - { action: glob, resource: "*", effect: allow }
+  - { action: grep, resource: "*", effect: allow }
+  - { action: list, resource: "*", effect: allow }
+  - { action: shell, resource: "*", effect: allow }
+  - { action: question, resource: "*", effect: allow }
+  - { action: skill, resource: "*", effect: allow }
+  - { action: subagent, resource: "*", effect: allow }
+  - { action: webfetch, resource: "*", effect: ask }
+  - { action: websearch, resource: "*", effect: ask }
+  - { action: edit, resource: "*", effect: allow }
 ---
 
 You are the implementation controller. Load the `subagent-driven-development`

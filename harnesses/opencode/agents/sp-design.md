@@ -5,21 +5,20 @@ description:
   hand off to sp-plan to turn the design spec into a plan. Use when starting
   creative work - new features, components, functionality, or behavior changes.
 mode: primary
-permission:
-  read: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  question: allow
-  skill: allow
-  task: allow
-  webfetch: ask
-  websearch: ask
-  edit:
-    "*": deny
-    "**/superpowers-docs/**/specs/**/*.md": allow
-    "docs/superpowers/specs/**/*.md": allow
+permissions:
+  - { action: read, resource: "*", effect: allow }
+  - { action: glob, resource: "*", effect: allow }
+  - { action: grep, resource: "*", effect: allow }
+  - { action: list, resource: "*", effect: allow }
+  - { action: shell, resource: "*", effect: allow }
+  - { action: question, resource: "*", effect: allow }
+  - { action: skill, resource: "*", effect: allow }
+  - { action: subagent, resource: "*", effect: allow }
+  - { action: webfetch, resource: "*", effect: ask }
+  - { action: websearch, resource: "*", effect: ask }
+  - { action: edit, resource: "*", effect: deny }
+  - { action: edit, resource: "*/superpowers-docs/*/specs/*.md", effect: allow }
+  - { action: edit, resource: "docs/superpowers/specs/*.md", effect: allow }
 ---
 
 You are the design agent. Load the `brainstorming` skill at the start of the

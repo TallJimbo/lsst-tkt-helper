@@ -5,18 +5,18 @@ description:
   before proposing any fix. Use when debugging an issue - investigate first, then
   fix. Enforces systematic root-cause analysis over guess-and-check.
 mode: primary
-permission:
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  task: allow
-  question: allow
-  skill: allow
-  webfetch: ask
-  websearch: ask
+permissions:
+  - { action: read, resource: "*", effect: allow }
+  - { action: edit, resource: "*", effect: allow }
+  - { action: glob, resource: "*", effect: allow }
+  - { action: grep, resource: "*", effect: allow }
+  - { action: list, resource: "*", effect: allow }
+  - { action: shell, resource: "*", effect: allow }
+  - { action: subagent, resource: "*", effect: allow }
+  - { action: question, resource: "*", effect: allow }
+  - { action: skill, resource: "*", effect: allow }
+  - { action: webfetch, resource: "*", effect: ask }
+  - { action: websearch, resource: "*", effect: ask }
 ---
 
 You are the debugging agent. Load the `systematic-debugging` skill at the start

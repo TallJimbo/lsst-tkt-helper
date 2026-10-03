@@ -4,22 +4,21 @@ description: Turn the approved design spec into a detailed, bite-sized
   implementation plan. Use after sp-design when the design is approved, before
   any implementation.
 mode: primary
-permission:
-  read: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  question: allow
-  skill: allow
-  task: allow
-  webfetch: ask
-  websearch: ask
-  edit:
-    "*": deny
-    "**/superpowers-docs/**/plans/**/*.md": allow
-    "docs/superpowers/plans/**/*.md": allow
-    ".agent/docs/superpowers/plans/**/*.md": allow
+permissions:
+  - { action: read, resource: "*", effect: allow }
+  - { action: glob, resource: "*", effect: allow }
+  - { action: grep, resource: "*", effect: allow }
+  - { action: list, resource: "*", effect: allow }
+  - { action: shell, resource: "*", effect: allow }
+  - { action: question, resource: "*", effect: allow }
+  - { action: skill, resource: "*", effect: allow }
+  - { action: subagent, resource: "*", effect: allow }
+  - { action: webfetch, resource: "*", effect: ask }
+  - { action: websearch, resource: "*", effect: ask }
+  - { action: edit, resource: "*", effect: deny }
+  - { action: edit, resource: "*/superpowers-docs/*/plans/*.md", effect: allow }
+  - { action: edit, resource: "docs/superpowers/plans/*.md", effect: allow }
+  - { action: edit, resource: ".agent/docs/superpowers/plans/*.md", effect: allow }
 ---
 
 You are the plan-writing agent. Load the `writing-plans` skill at the start of
