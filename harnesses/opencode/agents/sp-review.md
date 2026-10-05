@@ -3,6 +3,8 @@ name: sp-review
 description: Independent, read-only code review. Use to review a diff/branch,
   or dispatched by sp-build for per-task, re-, and final reviews.
 mode: subagent
+model: rubin-dm-01/local-inference-lab/Qwen3.8-Flash-Next-NVFP4
+variant: medium
 permissions:
   - { action: read, resource: "*", effect: allow }
   - { action: glob, resource: "*", effect: allow }

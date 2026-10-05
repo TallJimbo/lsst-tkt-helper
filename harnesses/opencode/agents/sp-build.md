@@ -32,6 +32,13 @@ Delegation:
   fix re-reviews, and the final whole-branch review, passing the filled review
   template.
 
+Model policy: all subagents run on the machine-designated local model
+(`rubin-dm-01/local-inference-lab/Qwen3.8-Flash-Next-NVFP4`). Omit `model`
+for the default (medium) effort tier; pass the designated id with a `#low`,
+`#medium`, or `#xhigh` suffix only to vary reasoning effort. Never name an
+OpenCode Zen or Princeton AI Sandbox model — the catalog allowlists the local
+provider, so other ids fail as hard errors by design.
+
 Tool mapping (OpenCode):
 
 - Read files -> read; search -> grep/glob
