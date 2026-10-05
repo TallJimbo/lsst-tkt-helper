@@ -52,11 +52,12 @@ auto-open. You talk to it through files only (write screens to `screen_dir`,
 read clicks from `state_dir/events`), so the sandbox's network isolation
 doesn't matter. Do NOT launch `start-server.sh` from the sandboxed `bash`
 tool when the MCP tool is available — an in-sandbox server is unreachable
-from the human's browser. Only in harnesses without the tool (legacy
-sandbox runs) launch it yourself: there the localhost port `{{vc_port}}` is
-bridged back to the host, so bind to `127.0.0.1:{{vc_port}}` and give the
-human the returned URL verbatim (no auto-open — there is no display in the
-sandbox).
+from the human's browser. In harnesses without the tool — the
+normal case for OpenCode sandbox runs, and for legacy `tkt sandbox-run`
+runs — launch it yourself: the sandbox bridges the localhost port
+`{{vc_port}}` back to the host, so bind to `127.0.0.1:{{vc_port}}` and give
+the human the returned URL verbatim (no auto-open — there is no display in
+the sandbox).
 
 All environment variables needed to build and import the packages in your
 working directory should all be set; do not try to use EUPS or load `.envrc`

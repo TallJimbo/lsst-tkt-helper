@@ -1,17 +1,19 @@
 ---
-name: zed-reviewer
+name: reviewing-code
 description: Use when the human asks you to review their code or review somebody else's pull request; read-only, findings walked through in batches.
 ---
 
 # Reviewing code or a pull request
 
 You are the primary agent acting as a reviewer. You never modify files and
-never dispatch subagents. The human drives the walk-through with `ask_user`.
+never dispatch subagents. The human drives the walk-through with your
+harness's structured-question tool (Zed: `ask_user` with `allow_free_text:
+true`; OpenCode: `question`).
 
 ## Mode
 
-Pick the mode from how the human invoked you; confirm with `ask_user`
-(`allow_free_text: true`) if ambiguous:
+Pick the mode from how the human invoked you; confirm with the question tool
+(free text allowed) if ambiguous:
 
 - **Code review** — the human's own work: a branch vs. its base, a commit
   range, uncommitted changes, or named files.
@@ -25,13 +27,23 @@ Pin the scope before reviewing anything, and state it back in one line
 - Code review: resolve the exact diff — `git merge-base` against the base
   branch for branch reviews, `BASE_SHA..HEAD_SHA` for ranges, the working
   tree for uncommitted changes.
-- PR review: check that read-only GitHub MCP tools are available. If they
-  are not, STOP and ask the human — this is probably an oversight. Do not
-  infer review content from branch names or local diffs. Fetch the PR
-  description, the base..head diff, and the existing review threads;
-  findings already covered by posted comments are out of scope. Verify
-  line numbers against the PR head before citing them — review-thread
+- PR review: check that GitHub read tools are available (see "GitHub access"
+  below). If they are not, STOP and ask the human — this is probably an
+  oversight. Do not infer review content from branch names or local diffs.
+  Fetch the PR description, the base..head diff, and the existing review
+  threads; findings already covered by posted comments are out of scope.
+  Verify line numbers against the PR head before citing them — review-thread
   anchors go stale relative to the current code.
+
+## GitHub access
+
+- **Zed:** verify read-only GitHub MCP tools are available; STOP and ask the
+  human if they are absent.
+- **OpenCode:** GitHub tools appear only for the agents the user has
+  allow-listed (`code-review`, `pr-responder`); STOP and ask if absent. The
+  remote GitHub MCP server is unreachable inside a network-restricted tkt
+  sandbox — run PR reviews in a host OpenCode session (or `tkt sandbox-run
+  --network`).
 
 ## Review discipline
 
@@ -51,9 +63,9 @@ Present findings in batches, not one message:
   (`Severity | Finding | File:line`).
 - Order by severity (Critical first), then walk the remainder by file or
   theme.
-- Pause after each batch with `ask_user` so the human can dispute a
+- Pause after each batch with the question tool so the human can dispute a
   finding, re-prioritize, or skip a category before you continue.
 - The review is the deliverable: you make no edits, post no GitHub
   comments, and draft no replies. If the human wants fixes, hand off to
-  the normal design/build flow — or `zed-pr-responder` when the fixes
-  respond to PR review comments.
+  the normal design/build flow — or `responding-to-pr-review` when the
+  fixes respond to PR review comments.

@@ -43,6 +43,18 @@ def _inner_of(argv):
     return argv[argv.index("--") + 3]
 
 
+def _find_slice(argv, needle):
+    """Return the start index of contiguous ``needle`` within ``argv``.
+
+    Raises ``AssertionError`` if the slice is not present.
+    """
+    needle = list(needle)
+    for i in range(len(argv) - len(needle) + 1):
+        if argv[i : i + len(needle)] == needle:
+            return i
+    raise AssertionError(f"Slice {needle!r} not found in argv.")
+
+
 @pytest.fixture
 def workspace(tmp_path):
     """Create a workspace with a main clone and an agent worktree for ``pkg``.
@@ -374,6 +386,73 @@ def test_warm_holder_argv_single_repo(tmp_path):
     )
     assert "--bind" in argv
     assert str(tmp_path) in argv
+
+
+# ---------------------------------------------------------------------------
+# OpenCode background-service credential masking
+# ---------------------------------------------------------------------------
+
+
+def _xdg_config_home(tmp_path, monkeypatch, *, with_service):
+    """Point XDG_CONFIG_HOME at a tmp dir, with or without service.json.
+
+    Returns the service.json path (whether or not it was created).
+    """
+    config_home = tmp_path / "xdg-config"
+    service_json = os.path.join(str(config_home), "opencode", "service.json")
+    if with_service:
+        os.makedirs(os.path.dirname(service_json))
+        Path(service_json).write_text('{"password": "s3cret"}\n')
+    else:
+        config_home.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    return service_json
+
+
+def test_service_config_masked_in_common_argv(workspace, tmp_path, monkeypatch):
+    """The service credential file is masked after all mounts."""
+    service_json = _xdg_config_home(tmp_path, monkeypatch, with_service=True)
+    ro_dir = tmp_path / "ro-mount"
+    rw_dir = tmp_path / "rw-mount"
+    ro_dir.mkdir()
+    rw_dir.mkdir()
+    sandbox = Sandbox(command=[], mounts_ro=[str(ro_dir)], mounts_rw=[str(rw_dir)])
+    argv = sandbox._build_bwrap_argv(workspace, shell=False, network=True)
+    mask_idx = _find_slice(argv, ["--ro-bind", "/dev/null", service_json])
+    # The /dev/null overlay is mounted after every (try) mount so nothing
+    # later can re-expose the file...
+    for flag in ("--ro-bind-try", "--bind-try"):
+        for i in (j for j, token in enumerate(argv) if token == flag):
+            assert i < mask_idx
+    # ...and before the namespace/cleanup block.
+    assert mask_idx < argv.index("--unshare-user")
+
+
+def test_service_config_mask_skipped_when_absent(workspace, sandbox, tmp_path, monkeypatch):
+    """No /dev/null overlay is added when the host has no service.json."""
+    _xdg_config_home(tmp_path, monkeypatch, with_service=False)
+    argv = sandbox._build_bwrap_argv(workspace, shell=False, network=True)
+    assert "/dev/null" not in argv
+
+
+def test_unsetenv_precedes_configured_setenv(workspace, tmp_path, monkeypatch):
+    """Service-password vars are unset before the configured --setenv."""
+    _xdg_config_home(tmp_path, monkeypatch, with_service=False)
+    sandbox = Sandbox(command=[], env={"OPENCODE_PASSWORD": "x"})
+    argv = sandbox._build_bwrap_argv(workspace, shell=False, network=True)
+    unset_idx = _find_slice(argv, ["--unsetenv", "OPENCODE_PASSWORD"])
+    _find_slice(argv, ["--unsetenv", "OPENCODE_SERVER_PASSWORD"])
+    set_idx = _find_slice(argv, ["--setenv", "OPENCODE_PASSWORD", "x"])
+    assert unset_idx < set_idx
+
+
+def test_warm_holder_argv_masks_service_config(workspace, tmp_path, monkeypatch):
+    """Warm-holder sandboxes mask the service credential file too."""
+    service_json = _xdg_config_home(tmp_path, monkeypatch, with_service=True)
+    tool = Sandbox(command=["opencode", "acp"])
+    argv = tool.warm_holder_argv(workspace=workspace, inner="true")
+    mask_idx = _find_slice(argv, ["--ro-bind", "/dev/null", service_json])
+    assert mask_idx < argv.index("--unshare-user")
 
 
 # ---------------------------------------------------------------------------

@@ -75,6 +75,35 @@ def _clean_stale_links(
             os.remove(path)
 
 
+# Skill source roots linked into ~/.agents/skills, in precedence order:
+# an earlier source wins on a name collision (warned about).
+_SKILL_SOURCES: tuple[tuple[str, ...], ...] = (
+    ("harnesses", "zed", "skills"),
+    ("harnesses", "shared", "skills"),
+    ("superpowers", "skills"),
+)
+
+
+def _link_skill_dirs(skills_src: str, skills_dst: str, managed: set[str], *, dry_run: bool) -> None:
+    """Symlink each skill dir (containing ``SKILL.md``) under ``skills_src``
+    into ``skills_dst``.
+
+    Names already in ``managed`` (linked from an earlier source) are skipped
+    with a warning. ``managed`` is updated in place.
+    """
+    if not os.path.isdir(skills_src):
+        return
+    for name in sorted(os.listdir(skills_src)):
+        src = os.path.join(skills_src, name)
+        if not os.path.isdir(src) or not os.path.isfile(os.path.join(src, "SKILL.md")):
+            continue
+        if name in managed:
+            logging.warning(f"Skill {name} in {skills_src} is shadowed by an earlier source; skipping")
+            continue
+        managed.add(name)
+        _ensure_link(os.path.join(skills_dst, name), src, dry_run=dry_run)
+
+
 def install_zed_agent(
     repo_root: str | None = None,
     home: str | None = None,
@@ -85,7 +114,8 @@ def install_zed_agent(
     """Symlink the Zed harness skills and rules into the user's Zed config.
 
     Creates ``~/.agents/skills/<name>`` for each skill (directory containing
-    ``SKILL.md``) in ``harnesses/zed/skills`` and ``superpowers/skills`` and
+    ``SKILL.md``) in ``harnesses/zed/skills``, ``harnesses/shared/skills`` and
+    ``superpowers/skills`` (earlier sources win on name collisions) and
     ``~/.config/zed/AGENTS.md`` -> ``harnesses/zed/rules.md``. Warns about
     (and, when confirmed, removes) stale symlinks under ``~/.agents/skills``
     that this command no longer manages.
@@ -93,28 +123,14 @@ def install_zed_agent(
     repo_root = repo_root or _repo_root()
     home = home or os.path.expanduser("~")
     confirm = confirm or (lambda msg: False)
-    skills_src = os.path.join(repo_root, "harnesses", "zed", "skills")
     skills_dst = os.path.join(home, ".agents", "skills")
     zed_cfg = os.path.join(home, ".config", "zed")
     if not dry_run:
         os.makedirs(skills_dst, exist_ok=True)
         os.makedirs(zed_cfg, exist_ok=True)
     managed: set[str] = set()
-    if os.path.isdir(skills_src):
-        for name in sorted(os.listdir(skills_src)):
-            src = os.path.join(skills_src, name)
-            if not os.path.isdir(src):
-                continue
-            managed.add(name)
-            _ensure_link(os.path.join(skills_dst, name), src, dry_run=dry_run)
-    superpowers_src = os.path.join(repo_root, "superpowers", "skills")
-    if os.path.isdir(superpowers_src):
-        for name in sorted(os.listdir(superpowers_src)):
-            src = os.path.join(superpowers_src, name)
-            if not os.path.isdir(src) or not os.path.isfile(os.path.join(src, "SKILL.md")):
-                continue
-            managed.add(name)
-            _ensure_link(os.path.join(skills_dst, name), src, dry_run=dry_run)
+    for parts in _SKILL_SOURCES:
+        _link_skill_dirs(os.path.join(repo_root, *parts), skills_dst, managed, dry_run=dry_run)
     _ensure_link(
         os.path.join(zed_cfg, "AGENTS.md"),
         os.path.join(repo_root, "harnesses", "zed", "rules.md"),

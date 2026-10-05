@@ -70,6 +70,12 @@ _DEFAULT_PORTS = (_DEFAULT_PORT,)
 # configuration entry.
 _DEFAULT_VC_PORT = 8081
 
+# Environment variables that carry the OpenCode background-service password
+# (v2 reads OPENCODE_PASSWORD / OPENCODE_SERVER_PASSWORD).  A host-exported
+# value must not leak into the sandbox, where the agent could use it to
+# drive the host's background service.
+_UNSET_ENV = ("OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD")
+
 
 def render_agents_md(template: str, *, shared: bool, vc_port: int) -> str:
     """Render the ``AGENTS.md.in`` template for one sandbox mode.
@@ -132,6 +138,16 @@ def _normalize_ports(port: int | Sequence[int]) -> tuple[int, ...]:
     if not result:
         raise ValueError("'port' must include at least one port.")
     return tuple(result)
+
+
+def _opencode_service_config_path() -> str:
+    """Return the host path to OpenCode's background-service config file.
+
+    Mirrors OpenCode's own resolution: ``$XDG_CONFIG_HOME/opencode/
+    service.json``, defaulting to ``~/.config``.
+    """
+    config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(config_home, "opencode", "service.json")
 
 
 def _set_pdeathsig() -> None:
@@ -842,6 +858,20 @@ class Sandbox(Tool):
             expanded = os.path.expanduser(path)
             rw_paths.add(expanded)
             argv += ["--bind-try", expanded, expanded]
+        # Mask the background-service credential file (which holds the host
+        # service password) from the agent.  The /dev/null overlay is the
+        # last mount so nothing can re-expose it; an empty read makes v2
+        # treat the service config as absent.  Skipping when the file does
+        # not exist is safe: the file is host-side and cannot appear in the
+        # read-only config mount mid-run.
+        service_json = _opencode_service_config_path()
+        if os.path.isfile(service_json):
+            argv += ["--ro-bind", "/dev/null", service_json]
+        # Credential hygiene: never inherit the host's service password.
+        # Emitted before the configured --setenv block so local.json `env`
+        # can deliberately override.
+        for name in _UNSET_ENV:
+            argv += ["--unsetenv", name]
         # Extra environment variables from configuration.
         for name, value in self._env.items():
             argv += ["--setenv", name, value]

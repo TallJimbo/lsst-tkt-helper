@@ -22,18 +22,26 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+import logging
 import os
 
 from tkt.install import install_opencode_agent, install_zed_agent
 
-ZED_SKILLS = ("zed-primary-agent", "zed-explorer", "zed-implementer", "zed-reviewer")
+ZED_SKILLS = ("zed-primary-agent", "zed-explorer", "zed-implementer")
 SUPERPOWERS_SKILLS = ("sp-one", "sp-two")
+SHARED_SKILLS = ("shared-one",)
 
 
 def _make_repo(root: str) -> None:
     skills = os.path.join(root, "harnesses", "zed", "skills")
     for name in ZED_SKILLS:
         d = os.path.join(skills, name)
+        os.makedirs(d)
+        with open(os.path.join(d, "SKILL.md"), "w") as f:
+            f.write(f"# {name}\n")
+    shared = os.path.join(root, "harnesses", "shared", "skills")
+    for name in SHARED_SKILLS:
+        d = os.path.join(shared, name)
         os.makedirs(d)
         with open(os.path.join(d, "SKILL.md"), "w") as f:
             f.write(f"# {name}\n")
@@ -157,3 +165,58 @@ def test_install_opencode_agent_repoints_symlink(tmp_path):
     install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
     assert os.path.islink(dst)
     assert os.readlink(dst) == os.path.join(str(tmp_path / "repo"), "harnesses", "opencode", "agents")
+
+
+def test_install_zed_agent_links_shared_skills(tmp_path):
+    """Verify shared skills are linked from harnesses/shared/skills."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    install_zed_agent(repo_root=str(tmp_path / "repo"), home=home)
+    for name in SHARED_SKILLS:
+        link = os.path.join(home, ".agents", "skills", name)
+        assert os.path.islink(link), link
+        assert os.readlink(link) == os.path.join(
+            str(tmp_path / "repo"),
+            "harnesses",
+            "shared",
+            "skills",
+            name,
+        )
+
+
+def test_install_zed_agent_shared_collision_prefers_earlier_source(tmp_path, caplog):
+    """A name in two sources links from the earlier source; later is
+    skipped.
+    """
+    _make_repo(str(tmp_path / "repo"))
+    dup = os.path.join(str(tmp_path / "repo"), "harnesses", "shared", "skills", "zed-explorer")
+    os.makedirs(dup)
+    with open(os.path.join(dup, "SKILL.md"), "w") as f:
+        f.write("# dup\n")
+    home = str(tmp_path / "home")
+    with caplog.at_level(logging.WARNING):
+        install_zed_agent(repo_root=str(tmp_path / "repo"), home=home)
+    link = os.path.join(home, ".agents", "skills", "zed-explorer")
+    assert os.readlink(link) == os.path.join(
+        str(tmp_path / "repo"), "harnesses", "zed", "skills", "zed-explorer"
+    )
+    assert any("zed-explorer" in record.getMessage() for record in caplog.records)
+
+
+def test_install_zed_agent_shared_beats_superpowers(tmp_path, caplog):
+    """A name in both shared and superpowers links from shared; later is
+    skipped with a warning.
+    """
+    _make_repo(str(tmp_path / "repo"))
+    dup = os.path.join(str(tmp_path / "repo"), "harnesses", "shared", "skills", "sp-one")
+    os.makedirs(dup)
+    with open(os.path.join(dup, "SKILL.md"), "w") as f:
+        f.write("# dup\n")
+    home = str(tmp_path / "home")
+    with caplog.at_level(logging.WARNING):
+        install_zed_agent(repo_root=str(tmp_path / "repo"), home=home)
+    link = os.path.join(home, ".agents", "skills", "sp-one")
+    assert os.readlink(link) == os.path.join(
+        str(tmp_path / "repo"), "harnesses", "shared", "skills", "sp-one"
+    )
+    assert any("sp-one" in record.getMessage() for record in caplog.records)

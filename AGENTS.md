@@ -91,9 +91,15 @@ branch into a single commit and rebase it onto main.
 - **`tkt/utils.py`** — JSON read/write helpers (uses `json5` for reading to
   allow trailing commas).
 - **`harnesses/opencode/agents/`** — Custom OpenCode workflow agents
-  `sp-design`, `sp-plan`, `sp-build`, `sp-debug`, `sp-review`;
-  `~/.config/opencode/agents/` is a symlink to it (via `tkt
+  `sp-design`, `sp-plan`, `sp-build`, `sp-debug`, `sp-review`, plus the
+  standalone (non-superpowers) primary agents `code-review` and
+  `pr-responder`; `~/.config/opencode/agents/` is a symlink to it (via `tkt
 install-opencode-agent`).
+- **`harnesses/shared/skills/`** — tkt-authored, cross-harness per-phase
+  skills (`reviewing-code`, `responding-to-pr-review`): the place for new
+  shared workflows. The `superpowers/` submodule holds only modifications to
+  upstream-shipped skills. Linked into `~/.agents/skills` by `tkt
+install-zed-agent` and registered via the `skills` array in opencode.jsonc.
 - **`harnesses/zed/`** — Zed harness: `rules.md` (role-scoped dispatch table,
   symlinked to `~/.config/zed/AGENTS.md`) and `skills/<name>/` (Zed-only skills,
   symlinked to `~/.agents/skills/<name>`); see `harnesses/README.md` for

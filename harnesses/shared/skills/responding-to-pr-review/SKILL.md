@@ -1,6 +1,6 @@
 ---
-name: zed-pr-responder
-description: Use to work through PR review comments — categorize them, propose and land small fixes as fixup! commits, and produce batched responses for the human to post.
+name: responding-to-pr-review
+description: Use to work through PR review comments - categorize them, propose and land small fixes as fixup! commits, and produce batched responses for the human to post.
 ---
 
 # Responding to a PR review
@@ -12,9 +12,9 @@ propose code changes, and keep the bookkeeping tidy.
 ## Setup
 
 - Establish the PR from the dispatch prompt or by asking.
-- Check that read-only GitHub MCP tools are available. If they are not, STOP
-  and ask the human — this is probably an oversight. Do not try to infer
-  review content from branch names or local diffs.
+- Check that GitHub read tools are available (see "GitHub access" below). If
+  they are not, STOP and ask the human — this is probably an oversight. Do not
+  try to infer review content from branch names or local diffs.
 - Fetch all review comments and threads, then note the environment: the
   human's PR checkout (work directly in it) or a tkt sandbox branch (land
   work on the sandbox branch; it crosses over via `tkt pull-sandbox`).
@@ -27,6 +27,22 @@ propose code changes, and keep the bookkeeping tidy.
   `pr-response-<owner>-<repo>-PR<number>.md`. If one exists and its first
   line names this PR, read it and resume from the first unsettled item
   rather than restarting the categorization.
+
+## GitHub access
+
+- **Zed:** verify read-only GitHub MCP tools are available; STOP and ask the
+  human if they are absent.
+- **OpenCode:** GitHub tools appear only for the agents the user has
+  allow-listed (`code-review`, `pr-responder`); STOP and ask if absent. The
+  remote GitHub MCP server is unreachable inside a network-restricted tkt
+  sandbox — run the PR flows in a host OpenCode session (or `tkt
+  sandbox-run --network`).
+
+## Question tool
+
+Use your harness's structured-question tool for every decision point (Zed:
+`ask_user` with `allow_free_text: true`; OpenCode: `question`, which always
+allows a typed answer).
 
 ## Ledger
 
@@ -43,14 +59,14 @@ markdown ledger file, not only in todos.
 - Append one line per event; never rewrite history, so a partial ledger
   is always valid:
   - after categorizing: `- cat: A1 verified ("Refactor parser") | N2 trivial typo`
-  - after each `ask_user` decision:
+  - after each decision:
     `- N1: decision=fix-now → fixup! "Add sort to results" (7c1d9e2, targets "Refactor parser")`
   - after each batch: `- batch addressed: presented, human confirmed`
 - Identify commits by subject first, hash second. Rebases churn hashes;
   `fixup! <subject>` subjects survive by construction. On recovery,
   resolve subjects with `git log --grep` and treat recorded hashes as
-  hints only; if a subject resolves to zero or multiple commits, ask
-  the human rather than guessing.
+  hints only; if a subject resolves to zero or multiple commits, ask the
+  human rather than guessing.
 - After compaction, trust the ledger and `git log` over your own
   recollection. Items with verdict/decision lines are settled — do not
   re-categorize or re-walk them; resume at the first unsettled item.
@@ -83,18 +99,18 @@ enough).
 - Pause after each bulk category and after each needs-work item rather than
   delivering everything in one message; the human decides before you move
   on.
-- Use `ask_user` for multiple-choice questions about how to resolve or
-  proceed (e.g. fix now / defer / explain only / disagree, or choosing
+- Use the question tool for multiple-choice questions about how to resolve
+  or proceed (e.g. fix now / defer / explain only / disagree, or choosing
   between two proposed options).
 - Reference source as [`file.py:LINE`](/absolute/path/to/file.py:LINE):
   display text is the short `file.py:line`, the target is an **absolute**
   path. Workspace-relative links do not resolve inside a multi-repo tkt
-  workspace; only the absolute form links reliably. Point targets at the
-  human's own checkout (the `.agent/<repo>/...` paths without the `.agent`
-  prefix when in a sandbox), and at the `.agent/...` worktree when the
-  content exists only there (e.g. a fixup you landed that has not been
-  pulled over). Ranges do not link; use a single representative line or one
-  reference per line.
+  workspace, and no harness auto-links bare paths — only the explicit
+  absolute link is reliable. Point targets at the human's own checkout
+  (the `.agent/<repo>/...` paths without the `.agent` prefix when in a
+  sandbox), and at the `.agent/...` worktree when the content exists only
+  there (e.g. a fixup you landed that has not been pulled over). Ranges do
+  not link; use a single representative line or one reference per line.
 
 ## Walk through the "needs work" comments
 
@@ -102,8 +118,8 @@ One at a time, each as its own `### <label>. <short topic>` section: quote
 the comment, give context (linked), your analysis, and a proposed change —
 or a case for disagreeing. You never draft PR replies. The human decides
 per comment: fix now / defer / explain only / disagree. Make code changes
-only on an explicit go-ahead, gathered via `ask_user`. Ledger each decision
-as soon as it is made.
+only on an explicit go-ahead, gathered via the question tool. Ledger each
+decision as soon as it is made.
 
 ## Batches
 
