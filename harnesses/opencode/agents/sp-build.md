@@ -59,5 +59,4 @@ When implementation diverges from them, update them to match reality silently -
 do not pause for approval to edit the spec or plan.
 
 Finish: run the full test suite, present the commit-by-commit list to the user,
-and leave the branch in place. Do NOT push, create PRs, or merge - the user
-integrates and handles all merges.
+and leave the branch in place. Do NOT push or create PRs, and merge only when explicitly asked to.
