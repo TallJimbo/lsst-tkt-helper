@@ -43,8 +43,8 @@ branch into a single commit and rebase it onto main.
 - **`tkt/__init__.py`** — Public API exports: `cli`, `Environment`,
   `Workspace`.
 - **`tkt/_cli.py`** — Click-based CLI commands: `new`, `update`,
-  `upgrade-metapackage`, `rm`, `rm-package`, `agent-run` (as `sandbox-run`),
-  `sandbox-reset`, `pull-sandbox`.
+  `upgrade-metapackage`, `rm`, `rm-package`, `fix-openspec`, `direnv`,
+  `agent-run` (as `sandbox-run`), `sandbox-reset`, `pull-sandbox`.
 - **`tkt/_environment.py`** — Abstract base classes `Environment` and `Tool`.
   `Environment` is subclassed per observatory (e.g. `RubinEnvironment`); `Tool`
   is subclassed per integration (e.g. `Zed`, `Pyright`, `Sandbox`).
@@ -69,6 +69,12 @@ branch into a single commit and rebase it onto main.
   committed and/or uncommitted agent work from `.agent/<pkg>` worktrees onto
   human-workspace branches, with a resumable `--finish`/`--abort` lifecycle and a
   per-workspace ledger.
+- **`tkt/direnv.py`** — `DirEnv` tool: captures the conda/EUPS environment
+  the configured `scripts` plus `setup -r .` produce in a mostly-pristine
+  subprocess, writes it to the workspace's `.envrc` as `export` lines, and
+  runs `direnv allow`. The capture lives in `DirEnv.write_envrc`, so
+  `tkt direnv [DIR]` also works directly on a plain EUPS product clone (any
+  directory with an `ups/` subdirectory), not just a tkt workspace.
 - **`tkt/zed.py`** — `Zed` tool: writes Zed editor configuration into the
   workspace.
 - **`tkt/superpowers.py`** — `Superpowers` tool: attaches a git worktree of

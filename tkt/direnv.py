@@ -96,14 +96,50 @@ class DirEnv(Tool):
         workspace: Workspace,
         environment: Environment,
     ) -> None:
-        del packages, workspace  # unused
+        """Write the workspace's ``.envrc`` via :meth:`write_envrc`."""
+        del ticket, packages, workspace  # unused
+        self.write_envrc(directory, environment.shell)
+
+    def write_envrc(self, directory: str, shell: str, *, dry_run: bool = False) -> int:
+        """Capture the conda/EUPS environment and write it to ``.envrc``.
+
+        Works on any EUPS product checkout (a directory with an ``ups/``
+        subdirectory), not just a tkt workspace.
+
+        Parameters
+        ----------
+        directory
+            Root of the EUPS product checkout to capture (and write to).
+        shell
+            Path to the shell that runs the capture subprocess.
+        dry_run
+            If ``True``, run the guards and the capture subprocess but write
+            nothing and run no ``direnv allow``.
+
+        Returns
+        -------
+        int
+            The number of ``export`` lines the capture produced (``0`` when
+            the capture produced nothing and any existing ``.envrc`` is left
+            untouched).
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``directory`` has no ``ups/`` subdirectory, or if a configured
+            capture script does not exist.
+        RuntimeError
+            If the capture subprocess exits with a nonzero status.
+        """
+        if not os.path.isdir(os.path.join(directory, "ups")):
+            raise FileNotFoundError(f"{directory} is not an EUPS product (no ups/ directory).")
         for script in self._scripts:
             if not os.path.isfile(script):
                 raise FileNotFoundError(f"Configured direnv script {script} does not exist.")
         pristine = self._pristine_env()
         command = self._build_command(directory)
         result = subprocess.run(
-            [environment.shell, "-c", command],
+            [shell, "-c", command],
             env=pristine,
             cwd=directory,
             capture_output=True,
@@ -115,10 +151,13 @@ class DirEnv(Tool):
         captured = self._parse_env(result.stdout)
         envrc_lines = self._envrc_lines(captured)
         if not envrc_lines:
-            return
+            return 0
+        if dry_run:
+            return len(envrc_lines)
         with open(os.path.join(directory, ".envrc"), "w") as f:
             f.write("\n".join(envrc_lines) + "\n")
         subprocess.run(["direnv", "allow", directory])
+        return len(envrc_lines)
 
     def _build_command(self, directory: str) -> str:
         lines = [f"cd {shlex.quote(directory)}"]

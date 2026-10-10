@@ -117,6 +117,54 @@ def fix_openspec(directory: str | None, *, dry_run: bool = False, verbose: int =
 
 
 @cli.command(
+    "direnv",
+    help=(
+        "Write a .envrc for an EUPS product directory by capturing the "
+        "conda/EUPS environment that the configured direnv scripts plus "
+        "`setup -r .` produce. Works on a bare product clone as well as a "
+        "tkt workspace; DIR defaults to the current directory. The written "
+        ".envrc contains the full captured environment; keep it out of "
+        "version control (e.g. gitignore it)."
+    ),
+)
+@click.argument(
+    "directory",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    required=False,
+)
+@click.option(
+    "--environment",
+    envvar="TKT_ENVIRONMENT",
+    type=click.File(),
+    help="Environment configuration file (default: the file named by $TKT_ENVIRONMENT).",
+)
+@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
+def direnv(
+    directory: str | None, *, environment: TextIO | None, dry_run: bool = False, verbose: int = 0
+) -> None:
+    _setup_logging(verbose)
+    if environment is None:
+        raise click.UsageError("No --environment and TKT_ENVIRONMENT not set.")
+    from .direnv import DirEnv
+
+    env = Environment.from_file(environment)
+    tool = env.get_tool("direnv")
+    if tool is None:
+        raise click.UsageError("No 'direnv' tool configured in the tkt environment.")
+    if not isinstance(tool, DirEnv):
+        raise click.UsageError(f"Configured 'direnv' tool is {type(tool).__name__}, not tkt.direnv.DirEnv.")
+    target = directory if directory is not None else os.path.abspath(os.curdir)
+    count = tool.write_envrc(target, env.shell, dry_run=dry_run)
+    if count == 0:
+        logging.warning("Capture produced no export lines; .envrc was not written.")
+    elif dry_run:
+        click.echo(f"would write .envrc with {count} export line(s)")
+    else:
+        click.echo(f"wrote .envrc with {count} export line(s)")
+
+
+@cli.command(
     "install-zed-agent",
     help=(
         "Symlink the Zed harness skills into ~/.agents/skills and rules.md into "
