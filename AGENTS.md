@@ -58,7 +58,7 @@ branch into a single commit and rebase it onto main.
   renders `tkt/AGENTS.md.in` (mode-conditional `<!-- BEGIN shared|worktree -->`
   blocks plus `{{vc_port}}`). Workspaces created with `tkt new
   --shared-worktree` (persisted in `tkt.json`; default from `shared_worktree`
-  in `local.json`) create no `.agent` directory at all: the whole workspace
+  in `local.jsonc`) create no `.agent` directory at all: the whole workspace
   is bind-mounted read-write (a single `--bind` of the workspace root) so
   the agent works directly on the human's branches, the sandbox sets up EUPS
   from the human's `ups/` (`setup -r <workspace>`, not `setup -r .agent`),
@@ -117,7 +117,7 @@ install-zed-agent` and registered via the `skills` array in opencode.jsonc.
 
 ## Configuration
 
-- **`local.json`**: User-specific environment configuration (workspace path, `repos.yaml` location, externals, and tool definitions). This file is committed to the repository.
+- **`local.jsonc`**: User-specific environment configuration (workspace path, `repos.yaml` location, externals, and tool definitions). This file is committed to the repository. It is parsed with json5, so `//` comments are allowed.
 - **`pyproject.toml`**: Ruff and mypy configuration.
 - **`pyrightconfig.json`**: Pyright configuration for IDE use (see above).
 - **`ups/tkt.table`**: EUPS table file that prepends `bin/` to `PATH` and the package root to `PYTHONPATH`.

@@ -442,7 +442,7 @@ def test_run_with_ssh_forwards_rewrite_rules(monkeypatch) -> None:
 
 def test_trace_proxy_reads_rewrite_rules_from_env(tmp_path, monkeypatch) -> None:
     """trace-proxy reads rewrite rules from the environment config."""
-    env_file = tmp_path / "local.json"
+    env_file = tmp_path / "local.jsonc"
     env_file.write_text(
         json.dumps(
             {"proxy": {"rewrite": [{"client": "zed", "params": {"temperature": None, "top_p": 0.95}}]}}

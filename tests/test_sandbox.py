@@ -646,7 +646,7 @@ def test_shared_worktree_tkt_json_roundtrip(tmp_path):
 
 
 def test_rubin_env_shared_worktree_default(tmp_path):
-    """local.json can set the tkt new default for shared_worktree."""
+    """local.jsonc can set the tkt new default for shared_worktree."""
     from tkt.rubin import RubinEnvironment
 
     repos_yaml = tmp_path / "repos.yaml"

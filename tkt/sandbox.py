@@ -868,7 +868,7 @@ class Sandbox(Tool):
         if os.path.isfile(service_json):
             argv += ["--ro-bind", "/dev/null", service_json]
         # Credential hygiene: never inherit the host's service password.
-        # Emitted before the configured --setenv block so local.json `env`
+        # Emitted before the configured --setenv block so local.jsonc `env`
         # can deliberately override.
         for name in _UNSET_ENV:
             argv += ["--unsetenv", name]

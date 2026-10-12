@@ -74,7 +74,7 @@ class RubinEnvironment(Environment):
         )
 
     def default_shared_worktree(self) -> bool:
-        """``tkt new`` default for shared-worktree agent mode (local.json)."""
+        """``tkt new`` default for shared-worktree agent mode (local.jsonc)."""
         return self._shared_worktree
 
     @property
