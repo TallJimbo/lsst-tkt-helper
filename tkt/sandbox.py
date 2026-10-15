@@ -27,12 +27,15 @@ from __future__ import annotations
 __all__ = ("Sandbox", "cleanup_stale_bridges", "render_agents_md")
 
 import ctypes
+import filecmp
+import json
 import logging
 import os
 import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Iterable, Sequence
@@ -42,7 +45,9 @@ from typing import Any
 import git
 
 from ._environment import Environment, Tool
+from ._sessionmanagers import sweep_session_registry
 from ._workspace import Workspace
+from .install import wake_plugin_dest, wake_plugin_source
 
 # Subdirectory of the workspace where the agent's writable state lives.
 AGENT_SUBDIR = ".agent"
@@ -63,12 +68,55 @@ _DEFAULT_PORT = 8080
 # Sequence of default ports bridged into restricted sandboxes (see above).
 _DEFAULT_PORTS = (_DEFAULT_PORT,)
 
-# Default host port bridged into restricted sandboxes for the visual-companion
-# server.  The same port number is used on the host and inside the sandbox, so
-# the URL the companion reports (http://localhost:<port>/...) is reachable
-# from the host browser verbatim.  Overridable through the ``vc_port``
-# configuration entry.
-_DEFAULT_VC_PORT = 8081
+# Name of the per-launch MCP session-server socket inside the bridge net dir.
+# The host listener (a socat in _start_bridge) spawns `tkt.session_server`
+# per connection; the sandbox reaches it through the bind-mounted net dir.
+SESSION_SOCKET_NAME = "session.sock"
+
+
+def session_server_command(workspace: str) -> list[str]:
+    """Host-side command the session listener spawns per MCP connection."""
+    return [sys.executable, "-m", "tkt.session_server", "--workspace", workspace]
+
+
+def session_mcp_config(net_dir: str) -> dict[str, Any]:
+    """OpenCode config (OPENCODE_CONFIG_CONTENT) wiring the session socket.
+
+    Only the ``mcp`` block goes through this channel: the ``plugin`` array
+    in env config is NOT honored by the installed OpenCode (its entries are
+    npm package specs), so the wake plugin is delivered as a real copied
+    file in ``~/.config/opencode/plugin/`` instead (see tkt.install).
+    """
+    sock = os.path.join(net_dir, SESSION_SOCKET_NAME)
+    return {
+        "mcp": {
+            "tkt-session": {
+                "type": "local",
+                "command": ["socat", "-", f"UNIX-CONNECT:{sock}"],
+            }
+        }
+    }
+
+
+def _warn_if_wake_plugin_stale() -> None:
+    """Warn (non-fatally) when the host wake-plugin copy is missing or stale.
+
+    The wake plugin must be a real copy in ``~/.config/opencode/plugin/``
+    (the installed OpenCode's plugin loader skips symlinks and the
+    env-config ``plugin`` array is dead); without it, Plannotator feedback
+    never wakes the agent.
+    """
+    try:
+        dst = wake_plugin_dest()
+        if not os.path.isfile(dst) or not filecmp.cmp(wake_plugin_source(), dst, shallow=False):
+            logging.warning(
+                f"Wake plugin copy {dst} is missing or stale in the host OpenCode config: "
+                "restricted launches cannot deliver Plannotator feedback without it. "
+                "Fix with `tkt install-opencode-agent`."
+            )
+    except OSError as exc:
+        logging.warning(f"Could not check the wake plugin copy ({exc}); run `tkt install-opencode-agent`.")
+
 
 # Environment variables that carry the OpenCode background-service password
 # (v2 reads OPENCODE_PASSWORD / OPENCODE_SERVER_PASSWORD).  A host-exported
@@ -77,14 +125,14 @@ _DEFAULT_VC_PORT = 8081
 _UNSET_ENV = ("OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD")
 
 
-def render_agents_md(template: str, *, shared: bool, vc_port: int) -> str:
+def render_agents_md(template: str, *, shared: bool) -> str:
     """Render the ``AGENTS.md.in`` template for one sandbox mode.
 
     Supports conditional blocks delimited by marker lines
     ``<!-- BEGIN shared -->`` ... ``<!-- END shared -->`` and
     ``<!-- BEGIN worktree -->`` ... ``<!-- END worktree -->``: a block's
     content is kept (with the markers stripped) only when the marker mode
-    matches the workspace's agent mode. Also substitutes ``{{vc_port}}``.
+    matches the workspace's agent mode.
 
     Raises
     ------
@@ -117,7 +165,7 @@ def render_agents_md(template: str, *, shared: bool, vc_port: int) -> str:
             out.append(line)
     if open_mode is not None:
         raise ValueError(f"AGENTS.md template: block {open_mode!r} is unterminated.")
-    return "".join(out).replace("{{vc_port}}", str(vc_port))
+    return "".join(out)
 
 
 def _normalize_ports(port: int | Sequence[int]) -> tuple[int, ...]:
@@ -274,13 +322,6 @@ class Sandbox(Tool):
         Default :data:`_DEFAULT_PORT`. Each port maps to the same port on the
         host's loopback (the ssh tunnel's listen port).  Only used when
         ``network`` is ``False``.
-    vc_port
-        Host port (default :data:`_DEFAULT_VC_PORT`) bridged into the sandbox's
-        isolated network namespace for the visual-companion server, in the
-        reverse direction (host browser -> in-sandbox server).  The same port
-        number is used on the host and inside the sandbox so the companion's
-        reported URL is reachable from the host browser verbatim.  Only used
-        when ``network`` is ``False``.
     """
 
     def __init__(
@@ -292,7 +333,6 @@ class Sandbox(Tool):
         env: dict[str, str] | None = None,
         network: bool = False,
         port: int | Sequence[int] = _DEFAULT_PORT,
-        vc_port: int = _DEFAULT_VC_PORT,
     ):
         self._command = tuple(command)
         self._mounts_ro = tuple(mounts_ro)
@@ -300,7 +340,6 @@ class Sandbox(Tool):
         self._env = dict(env) if env is not None else {}
         self._network = bool(network)
         self._ports = _normalize_ports(port)
-        self._vc_port = int(vc_port)
 
     @classmethod
     def from_json_data(cls, data: dict[str, Any]) -> Tool:
@@ -317,9 +356,6 @@ class Sandbox(Tool):
         if not isinstance(network, bool):
             raise ValueError(f"'network' must be a boolean, got {network!r}.")
         port = data.pop("port", _DEFAULT_PORT)
-        vc_port = data.pop("vc_port", _DEFAULT_VC_PORT)
-        if isinstance(vc_port, bool) or not isinstance(vc_port, int):
-            raise ValueError(f"'vc_port' must be an integer, got {vc_port!r}.")
         if data:
             raise ValueError(f"Unexpected entries in sandbox configuration: {data}.")
         return cls(
@@ -329,7 +365,6 @@ class Sandbox(Tool):
             env=env,
             network=network,
             port=port,
-            vc_port=vc_port,
         )
 
     def write(
@@ -346,7 +381,7 @@ class Sandbox(Tool):
         with open(_AGENTS_MD_TEMPLATE, encoding="utf-8") as f:
             template = f.read()
         with open(os.path.join(directory, "AGENTS.md"), "w", encoding="utf-8") as f:
-            f.write(render_agents_md(template, shared=workspace.shared_worktree, vc_port=self._vc_port))
+            f.write(render_agents_md(template, shared=workspace.shared_worktree))
         if workspace.shared_worktree:
             # The agent works directly in the human's package worktrees on the
             # human's branches, and EUPS sets up from the human's ups/: no
@@ -377,6 +412,12 @@ class Sandbox(Tool):
             if os.path.exists(ups_dst):
                 shutil.rmtree(ups_dst)
             shutil.copytree(ups_src, ups_dst)
+
+    def remove(self, directory: str) -> None:
+        """Kill session servers for this workspace (``tkt rm`` hook)."""
+        from ._sessionmanagers import cleanup_workspace_sessions
+
+        cleanup_workspace_sessions(directory)
 
     def _add_agent_worktree(self, package_dir: str, agent_package_dir: str, ticket: str) -> None:
         repo = git.Repo(package_dir)
@@ -474,8 +515,9 @@ class Sandbox(Tool):
             argv = self._build_bwrap_argv(workspace, shell=shell, command=command, network=True)
             logging.debug("exec: %s", shlex.join(argv))
             os.execvp(argv[0], argv)
-        # Restricted mode: bridge the LLM port back to the host.
-        net_dir, procs = self._start_bridge()
+        # Restricted mode: bridge the LLM ports and the session socket back
+        # to the host.
+        net_dir, procs = self._start_bridge(workspace.directory)
         try:
             argv = self._build_bwrap_argv(
                 workspace,
@@ -484,7 +526,6 @@ class Sandbox(Tool):
                 network=False,
                 net_dir=net_dir,
                 ports=self._ports,
-                vc_port=self._vc_port,
             )
             logging.debug("exec: %s", shlex.join(argv))
             rc = subprocess.Popen(argv).wait()
@@ -532,7 +573,7 @@ class Sandbox(Tool):
             )
             logging.debug("exec: %s", shlex.join(argv))
             os.execvp(argv[0], argv)
-        net_dir, procs = self._start_bridge()
+        net_dir, procs = self._start_bridge(repo_dir)
         try:
             argv = self._build_single_repo_argv(
                 repo_dir,
@@ -542,7 +583,6 @@ class Sandbox(Tool):
                 network=False,
                 net_dir=net_dir,
                 ports=self._ports,
-                vc_port=self._vc_port,
             )
             logging.debug("exec: %s", shlex.join(argv))
             rc = subprocess.Popen(argv).wait()
@@ -550,7 +590,7 @@ class Sandbox(Tool):
             self._stop_bridge(net_dir, procs)
         raise SystemExit(rc)
 
-    def _start_bridge(self) -> tuple[str, list[subprocess.Popen[Any]]]:
+    def _start_bridge(self, workspace: str) -> tuple[str, list[subprocess.Popen[Any]]]:
         """Start the host-side bridges for a restricted sandbox.
 
         Creates a private directory for the shared unix sockets under the
@@ -559,20 +599,22 @@ class Sandbox(Tool):
         - One ``llm-<port>.sock`` per bridged ``port`` accepts connections on
           the unix socket (visible inside the sandbox via a read-write bind
           mount) and forwards them to the host's localhost ``<port>`` (where
-          an ssh port-forward exposes the LLM).  Direction: sandbox -> host.
-          ``vc.sock`` accepts connections on the host's localhost ``vc_port``
-          and forwards them to the unix socket (read by an in-sandbox socat
-          that hands them to the visual-companion server).  Direction: host ->
-          sandbox.
+          an ssh port-forward exposes the LLM).
+        - ``session.sock`` accepts connections on the unix socket and spawns
+          one host-side ``tkt.session_server`` per connection (via socat's
+          ``fork``), giving the agent the session tools on the host, where
+          the human's browser can reach the servers they start.
 
         Returns the socket directory and the list of host ``socat``
         subprocesses.
         """
+        try:
+            sweep_session_registry()
+        except Exception:  # sweep is hygiene, never fatal (incl. corrupt entries)
+            logging.debug("session registry sweep failed", exc_info=True)
         state_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "tkt")
         os.makedirs(state_dir, exist_ok=True)
         net_dir = tempfile.mkdtemp(prefix="net-", dir=state_dir)
-        vc_sock = os.path.join(net_dir, "vc.sock")
-        vc_log = os.path.join(net_dir, "host-vc-socat.log")
         procs: list[subprocess.Popen[Any]] = []
         sock_paths: list[str] = []
         try:
@@ -594,18 +636,15 @@ class Sandbox(Tool):
                             preexec_fn=_set_pdeathsig,
                         )
                     )
-            # The visual-companion forwarder listens on TCP and, per accepted
-            # connection, lazily connects to vc.sock.  vc.sock is created by an
-            # in-sandbox socat (UNIX-LISTEN) after bwrap launches, so there is
-            # no startup race here: the host listener binds immediately and
-            # only needs vc.sock once a browser connection arrives.
-            with open(vc_log, "w", encoding="utf-8") as f:
+            session_sock = os.path.join(net_dir, SESSION_SOCKET_NAME)
+            session_log = os.path.join(net_dir, "host-session-socat.log")
+            with open(session_log, "w", encoding="utf-8") as f:
                 procs.append(
                     subprocess.Popen(
                         [
                             "socat",
-                            f"TCP-LISTEN:{self._vc_port},fork,reuseaddr",
-                            f"UNIX-CONNECT:{vc_sock}",
+                            f"UNIX-LISTEN:{session_sock},fork",
+                            "SYSTEM:" + shlex.join(session_server_command(workspace)),
                         ],
                         stdout=f,
                         stderr=subprocess.STDOUT,
@@ -613,8 +652,10 @@ class Sandbox(Tool):
                         preexec_fn=_set_pdeathsig,
                     )
                 )
-            # Wait for all LLM listeners to create their sockets before the
-            # sandbox's socats try to connect, so there is no startup race.
+            # Wait for all listeners (LLM and session) to create their sockets
+            # before the sandbox's socats and MCP clients try to connect, so
+            # there is no startup race.
+            sock_paths.append(session_sock)
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 if all(os.path.exists(s) for s in sock_paths):
@@ -624,7 +665,9 @@ class Sandbox(Tool):
                 time.sleep(0.05)
             if any(p.poll() is not None for p in procs):
                 detail = ""
-                logs = [os.path.join(net_dir, f"host-llm-{p}.log") for p in self._ports] + [vc_log]
+                logs = [os.path.join(net_dir, f"host-llm-{p}.log") for p in self._ports] + [
+                    os.path.join(net_dir, "host-session-socat.log")
+                ]
                 try:
                     for lp in logs:
                         if os.path.exists(lp):
@@ -640,7 +683,11 @@ class Sandbox(Tool):
                 missing = ", ".join(s for s in sock_paths if not os.path.exists(s))
                 raise RuntimeError(f"host socat did not create socket(s) {missing}")
         except BaseException:
-            shutil.rmtree(net_dir, ignore_errors=True)
+            # Tear down any socats we already spawned (LLM listeners and the
+            # session listener) along with the socket dir, rather than
+            # orphaning them until pdeathsig; _stop_bridge's rmtree is
+            # ignore_errors, so this also covers net dirs already removed.
+            self._stop_bridge(net_dir, procs)
             raise
         return net_dir, procs
 
@@ -716,7 +763,6 @@ class Sandbox(Tool):
         network: bool = True,
         net_dir: str | None = None,
         ports: Sequence[int] = _DEFAULT_PORTS,
-        vc_port: int = _DEFAULT_VC_PORT,
     ) -> list[str]:
         home = os.path.expanduser("~")
         mounts = self._workspace_mounts(workspace)
@@ -728,7 +774,6 @@ class Sandbox(Tool):
             network=network,
             net_dir=net_dir,
             ports=ports,
-            vc_port=vc_port,
         )
 
     def _build_single_repo_argv(
@@ -741,7 +786,6 @@ class Sandbox(Tool):
         network: bool = True,
         net_dir: str | None = None,
         ports: Sequence[int] = _DEFAULT_PORTS,
-        vc_port: int = _DEFAULT_VC_PORT,
     ) -> list[str]:
         home = os.path.expanduser("~")
         mounts = self._single_repo_mounts(repo_dir)
@@ -753,7 +797,6 @@ class Sandbox(Tool):
             network=network,
             net_dir=net_dir,
             ports=ports,
-            vc_port=vc_port,
         )
 
     def warm_holder_argv(
@@ -795,7 +838,6 @@ class Sandbox(Tool):
         network: bool = True,
         net_dir: str | None = None,
         ports: Sequence[int] = _DEFAULT_PORTS,
-        vc_port: int = _DEFAULT_VC_PORT,
         bridge_llm: bool = True,
     ) -> list[str]:
         argv: list[str] = [
@@ -827,9 +869,8 @@ class Sandbox(Tool):
             # Share the bridge socket directory read-write with the sandbox.
             argv += ["--bind", net_dir, net_dir]
             # Start one in-sandbox socat per bridged port so the agent's
-            # localhost:<port> reaches the host bridge, plus one for the host's
-            # localhost:<vc_port> companion server.  Background them (the inner
-            # script ends with `exec`), and redirect logs into the shared
+            # localhost:<port> reaches the host bridge.  Background them (the
+            # inner script ends with `exec`), and redirect logs into the shared
             # net_dir.
             for p in ports:
                 sock_path = shlex.quote(os.path.join(net_dir, f"llm-{p}.sock"))
@@ -838,12 +879,6 @@ class Sandbox(Tool):
                     f"socat TCP4-LISTEN:{p},fork,reuseaddr "
                     f"UNIX-CONNECT:{sock_path} >{log_path} 2>&1 &\n" + inner
                 )
-            vc_sock_path = shlex.quote(os.path.join(net_dir, "vc.sock"))
-            vc_log_path = shlex.quote(os.path.join(net_dir, "sandbox-vc-socat.log"))
-            inner = (
-                f"socat UNIX-LISTEN:{vc_sock_path},fork "
-                f"TCP4:127.0.0.1:{vc_port} >{vc_log_path} 2>&1 &\n" + inner
-            )
         # Track destinations already mounted read-write (from the mode-specific
         # mounts and the configured rw mounts) so we can avoid re-mounting them
         # read-only, which would override the rw mount and make it read-only.
@@ -875,6 +910,18 @@ class Sandbox(Tool):
         # Extra environment variables from configuration.
         for name, value in self._env.items():
             argv += ["--setenv", name, value]
+        # Session-server bridge env.  Emitted after the configured --setenv
+        # block: tkt owns the session channel; local.jsonc must not clobber it.
+        # (net_dir is validated non-None in the bridge mount block above.)
+        if not network and bridge_llm and net_dir is not None:
+            argv += ["--setenv", "TKT_SESSION_SOCKET", os.path.join(net_dir, SESSION_SOCKET_NAME)]
+            argv += ["--setenv", "OPENCODE_CONFIG_CONTENT", json.dumps(session_mcp_config(net_dir))]
+            # The wake plugin reaches the sandbox only via the host config
+            # dir's plugin autoload (a copied real file); warn when that
+            # copy is missing or stale so feedback delivery does not fail
+            # silently.  Non-fatal: the session MCP tools still work without
+            # the wake layer.
+            _warn_if_wake_plugin_stale()
         # Namespaces and cleanup.  Network access is isolated by default: only
         # the bridged localhost port is reachable from the agent.  When full
         # network access is requested we deliberately omit --unshare-net so the

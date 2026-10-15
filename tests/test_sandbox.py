@@ -24,8 +24,11 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -35,7 +38,14 @@ import git
 import pytest
 
 from tkt._workspace import Workspace
-from tkt.sandbox import Sandbox, _bridge_net_dir, cleanup_stale_bridges, render_agents_md
+from tkt.sandbox import (
+    SESSION_SOCKET_NAME,
+    Sandbox,
+    _bridge_net_dir,
+    cleanup_stale_bridges,
+    render_agents_md,
+    session_mcp_config,
+)
 
 
 def _inner_of(argv):
@@ -164,7 +174,7 @@ def test_reset_skips_package_without_agent_worktree(workspace, sandbox):
 
 
 def test_restricted_argv_isolates_network_and_bridges(workspace, sandbox, tmp_path):
-    """Restricted mode isolates net and bridges the port and companion port."""
+    """Restricted mode isolates net and bridges the LLM port."""
     net_dir = tmp_path / "net"
     net_dir.mkdir()
     argv = sandbox._build_bwrap_argv(
@@ -175,9 +185,8 @@ def test_restricted_argv_isolates_network_and_bridges(workspace, sandbox, tmp_pa
     inner = _inner_of(argv)
     assert "socat TCP4-LISTEN:8080,fork,reuseaddr UNIX-CONNECT:" in inner
     assert f"{net_dir}/llm-8080.sock" in inner
-    # Reverse bridge: host -> sandbox for the visual companion.
-    assert f"socat UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:8081" in inner
-    assert f"{net_dir}/vc.sock" in inner
+    # The host -> sandbox reverse bridge is gone (session sockets replaced it).
+    assert "vc.sock" not in inner
 
 
 def test_multiple_ports_emit_one_socat_each(workspace, sandbox, tmp_path):
@@ -214,7 +223,6 @@ def test_single_repo_network_modes(tmp_path, sandbox):
     assert ("--bind", str(net_dir), str(net_dir)) in [
         tuple(restricted[i : i + 3]) for i in range(len(restricted) - 2)
     ]
-    assert f"socat UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:8081" in _inner_of(restricted)
     full = sandbox._build_single_repo_argv(str(tmp_path), shell=False, network=True)
     assert "--unshare-net" not in full
     assert "llm.sock" not in full
@@ -232,7 +240,6 @@ def test_bridge_port_default_and_override(workspace, tmp_path):
         default._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), ports=(8080,))
     )
     assert "TCP4-LISTEN:8080" in inner
-    assert f"UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:8081" in inner
 
     custom = Sandbox.from_json_data({"command": [], "port": 9999})
     assert custom._ports == (9999,)
@@ -242,21 +249,181 @@ def test_bridge_port_default_and_override(workspace, tmp_path):
     assert "TCP4-LISTEN:9999" in inner
 
 
-def test_vc_port_default_and_override(workspace, tmp_path):
-    """The companion port defaults to 8081 and can be overridden via config."""
-    net_dir = tmp_path / "net"
+def test_from_json_rejects_vc_port(tmp_path):
+    """The removed vc_port configuration entry is now rejected."""
+    with pytest.raises(ValueError, match="Unexpected entries"):
+        Sandbox.from_json_data({"command": [], "vc_port": 9090})
+
+
+def test_start_bridge_session_listener(workspace, tmp_path, monkeypatch):
+    """The bridge spawns a session listener; session.sock exists and serves
+    the spawn command over the socket.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    sandbox = Sandbox(command=[], port=18089)
+    net_dir, procs = sandbox._start_bridge(str(tmp_path / "ws"))
+    try:
+        sock = os.path.join(net_dir, SESSION_SOCKET_NAME)
+        assert os.path.exists(sock)
+        # No host-side TCP-LISTEN survives anywhere in the bridge.
+        for p in procs:
+            with open(f"/proc/{p.pid}/cmdline", "rb") as f:
+                assert b"TCP-LISTEN" not in f.read()
+        # The socket actually SERVES the session server (socat fork SYSTEM):
+        # a real MCP initialize handshake must name us back.
+        init = (
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+            '{"protocolVersion":"2024-11-05","capabilities":{},'
+            '"clientInfo":{"name":"probe","version":"0"}}}\n'
+        )
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.settimeout(10.0)
+        try:
+            conn.connect(sock)
+            conn.sendall(init.encode())
+            reply = b""
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and b"tkt-session" not in reply:
+                try:
+                    chunk = conn.recv(65536)
+                except TimeoutError:
+                    break
+                if not chunk:
+                    break
+                reply += chunk
+        finally:
+            conn.close()
+        assert b"tkt-session" in reply
+    finally:
+        sandbox._stop_bridge(net_dir, procs)
+    assert not os.path.exists(net_dir)
+
+
+def test_common_argv_injects_session_env(workspace, tmp_path, monkeypatch):
+    """The session socket env vars are injected after the configured env."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    net_dir = tmp_path / "net-x"
     net_dir.mkdir()
-
-    default = Sandbox(command=[])
-    inner = _inner_of(default._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir)))
-    assert f"UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:8081" in inner
-
-    custom = Sandbox.from_json_data({"command": [], "vc_port": 9090})
-    assert custom._vc_port == 9090
-    inner = _inner_of(
-        custom._build_bwrap_argv(workspace, shell=False, network=False, net_dir=str(net_dir), vc_port=9090)
+    argv = Sandbox(command=[], env={"FOO": "bar"})._build_common_argv(
+        home=str(tmp_path),
+        mounts=[],
+        inner="exec true",
+        network=False,
+        net_dir=str(net_dir),
+        ports=(18089,),
     )
-    assert f"UNIX-LISTEN:{net_dir}/vc.sock,fork TCP4:127.0.0.1:9090" in inner
+    assert "--unsetenv" in argv
+    i = argv.index("TKT_SESSION_SOCKET")
+    assert argv[i + 1] == str(net_dir / "session.sock")
+    j = argv.index("OPENCODE_CONFIG_CONTENT")
+    cfg = json.loads(argv[j + 1])
+    assert cfg["mcp"]["tkt-session"]["type"] == "local"
+    assert cfg["mcp"]["tkt-session"]["command"][-1].endswith("session.sock")
+    # the env-config plugin channel is dead in the installed OpenCode: no
+    # `plugin` key
+    assert "plugin" not in cfg
+    # ours come after configured env so local.jsonc cannot clobber them
+    assert argv.index("FOO") < argv.index("TKT_SESSION_SOCKET")
+    joined = " ".join(argv)
+    assert "TCP-LISTEN" not in joined  # in-sandbox vc socat is gone, too
+
+
+def test_session_mcp_config_has_no_plugin_key():
+    """The env-config plugin array is dead in the installed OpenCode: config
+    is mcp-only.
+    """
+    cfg = session_mcp_config("/x/net-1")
+    assert set(cfg) == {"mcp"}
+
+
+def _wake_restricted_argv(tmp_path, monkeypatch, *, network=False):
+    """Build a common argv restricted to the session bridge (or full net)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    net_dir = tmp_path / "net-wake"
+    net_dir.mkdir()
+    return Sandbox(command=[])._build_common_argv(
+        home=str(tmp_path),
+        mounts=[],
+        inner="exec true",
+        network=network,
+        net_dir=str(net_dir) if network is False else None,
+        ports=(18089,),
+    )
+
+
+def _fake_wake_paths(tmp_path, monkeypatch):
+    """Point the wake-plugin source/dest resolution at tmp files."""
+    src = tmp_path / "repo-wake.js"
+    src.write_text("// wake\n")
+    dst = tmp_path / "cfg" / "plugin" / "plannotator-wake.js"
+    monkeypatch.setattr("tkt.sandbox.wake_plugin_source", lambda repo_root=None: str(src))
+    monkeypatch.setattr("tkt.sandbox.wake_plugin_dest", lambda home=None: str(dst))
+    return src, dst
+
+
+def test_wake_plugin_warning_when_host_copy_missing(tmp_path, monkeypatch, caplog):
+    """A missing host plugin copy warns (naming the fix) but does not raise."""
+    _fake_wake_paths(tmp_path, monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        _wake_restricted_argv(tmp_path, monkeypatch)
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("install-opencode-agent" in m for m in msgs)
+
+
+def test_wake_plugin_warning_when_host_copy_stale(tmp_path, monkeypatch, caplog):
+    """A bytewise-differing host plugin copy warns with the fix command."""
+    src, dst = _fake_wake_paths(tmp_path, monkeypatch)
+    dst.parent.mkdir(parents=True)
+    dst.write_text("// old stale copy\n")
+    with caplog.at_level(logging.WARNING):
+        _wake_restricted_argv(tmp_path, monkeypatch)
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("install-opencode-agent" in m for m in msgs)
+
+
+def test_wake_plugin_no_warning_when_host_copy_matches(tmp_path, monkeypatch, caplog):
+    """An up-to-date host plugin copy (even a symlink) launches silently."""
+    src, dst = _fake_wake_paths(tmp_path, monkeypatch)
+    dst.parent.mkdir(parents=True)
+    dst.write_bytes(src.read_bytes())
+    with caplog.at_level(logging.WARNING):
+        _wake_restricted_argv(tmp_path, monkeypatch)
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any("wake plugin" in m.lower() for m in msgs)
+
+
+def test_wake_plugin_no_check_for_full_network_run(tmp_path, monkeypatch, caplog):
+    """Full-network launches do not check the plugin: it only matters for
+    the restricted session bridge.
+    """
+    _fake_wake_paths(tmp_path, monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        _wake_restricted_argv(tmp_path, monkeypatch, network=True)
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any("wake plugin" in m.lower() for m in msgs)
+
+
+def test_inner_script_has_no_vc_socat(workspace, tmp_path, monkeypatch):
+    """The in-sandbox reverse-bridge socat is gone from the inner script."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    net_dir = tmp_path / "net-y"
+    net_dir.mkdir()
+    argv = Sandbox(command=[])._build_common_argv(
+        home=str(tmp_path),
+        mounts=[],
+        inner="exec true",
+        network=False,
+        net_dir=str(net_dir),
+        ports=(18089,),
+    )
+    inner = argv[-1]
+    assert "vc.sock" not in inner and "UNIX-LISTEN" not in inner
+
+
+def test_remove_cleans_workspace_sessions(tmp_path, monkeypatch):
+    """Sandbox.remove is a no-op (no raise) when the registry is empty."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    Sandbox(command=[]).remove(str(tmp_path / "ws"))  # no registry -> no-op, no raise
 
 
 def test_from_json_data_accepts_network_flag():
@@ -271,10 +438,6 @@ def test_from_json_data_accepts_network_flag():
         Sandbox.from_json_data({"command": [], "port": "8080"})
     with pytest.raises(ValueError):
         Sandbox.from_json_data({"command": [], "port": True})
-    with pytest.raises(ValueError):
-        Sandbox.from_json_data({"command": [], "vc_port": "8081"})
-    with pytest.raises(ValueError):
-        Sandbox.from_json_data({"command": [], "vc_port": True})
 
 
 def test_from_json_data_accepts_list_or_int_port():
@@ -293,14 +456,15 @@ def test_from_json_data_accepts_list_or_int_port():
 def test_bridge_lifecycle(tmp_path, monkeypatch):
     """The host-side bridges start one socat per port and tear down cleanly."""
     monkeypatch.setenv("HOME", str(tmp_path))  # state dir lands under tmp_path
-    sandbox = Sandbox(command=[], port=[18089, 18088], vc_port=18090)
+    sandbox = Sandbox(command=[], port=[18089, 18088])
 
-    net_dir, procs = sandbox._start_bridge()
+    net_dir, procs = sandbox._start_bridge(str(tmp_path / "ws"))
     try:
         assert os.path.isdir(net_dir)
         assert os.path.exists(os.path.join(net_dir, "llm-18089.sock"))
         assert os.path.exists(os.path.join(net_dir, "llm-18088.sock"))
-        assert len(procs) == 3  # one socat per LLM port + one for vc
+        assert os.path.exists(os.path.join(net_dir, SESSION_SOCKET_NAME))
+        assert len(procs) == 3  # one socat per LLM port + the session listener
         assert all(proc.poll() is None for proc in procs)  # all socats alive
     finally:
         sandbox._stop_bridge(net_dir, procs)
@@ -334,7 +498,7 @@ def test_cleanup_stale_bridges_dry_run():
     state_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "tkt")
 
     # A live bridge keeps its net dir, so it must not be flagged.
-    net_dir, procs = Sandbox(command=[], port=18089, vc_port=18090)._start_bridge()
+    net_dir, procs = Sandbox(command=[], port=18089)._start_bridge(os.devnull)
     assert os.path.isdir(net_dir)
 
     # A stale socat: bind into a net dir, then remove the dir (the socat
@@ -569,10 +733,10 @@ def test_render_agents_md_block_selection():
         "<!-- BEGIN worktree -->\nworktree text\n<!-- END worktree -->\n"
         "footer\n"
     )
-    shared = render_agents_md(template, shared=True, vc_port=8081)
+    shared = render_agents_md(template, shared=True)
     assert "shared text" in shared
     assert "worktree text" not in shared
-    worktree = render_agents_md(template, shared=False, vc_port=8081)
+    worktree = render_agents_md(template, shared=False)
     assert "worktree text" in worktree
     assert "shared text" not in worktree
     for rendered in (shared, worktree):
@@ -581,25 +745,29 @@ def test_render_agents_md_block_selection():
         assert "header" in rendered and "footer" in rendered
 
 
-def test_render_agents_md_vc_port():
-    """Verify the {{vc_port}} placeholder is substituted."""
-    rendered = render_agents_md("port {{vc_port}}\n", shared=False, vc_port=9999)
-    assert rendered == "port 9999\n"
+def test_render_agents_md_no_vc_port_guidance() -> None:
+    """Verify rendered AGENTS.md has host-session guidance, no vc_port."""
+    from tkt.sandbox import _AGENTS_MD_TEMPLATE, render_agents_md
+
+    with open(_AGENTS_MD_TEMPLATE, encoding="utf-8") as f:
+        out = render_agents_md(f.read(), shared=False)
+    assert "{{vc_port}}" not in out and "vc_port" not in out
+    assert "start-server.sh" in out  # the prohibition sentence references it to forbid it
+    assert "brainstorm_server" in out and "plannotator" in out
 
 
 def test_render_agents_md_mismatched_block_raises():
     """Verify unterminated, mismatched, and nested blocks raise."""
     with pytest.raises(ValueError):
-        render_agents_md("<!-- BEGIN shared -->\nx\n", shared=True, vc_port=8081)
+        render_agents_md("<!-- BEGIN shared -->\nx\n", shared=True)
     with pytest.raises(ValueError):
-        render_agents_md("<!-- BEGIN shared -->\nx\n<!-- END worktree -->\n", shared=True, vc_port=8081)
+        render_agents_md("<!-- BEGIN shared -->\nx\n<!-- END worktree -->\n", shared=True)
     with pytest.raises(ValueError):
-        render_agents_md("<!-- END shared -->\n", shared=True, vc_port=8081)
+        render_agents_md("<!-- END shared -->\n", shared=True)
     with pytest.raises(ValueError):
         render_agents_md(
             "<!-- BEGIN shared -->\n<!-- BEGIN shared -->\nx\n<!-- END shared -->\n",
             shared=True,
-            vc_port=8081,
         )
 
 
@@ -607,12 +775,11 @@ def test_real_template_renders_in_both_modes():
     """Verify the shipped AGENTS.md.in renders cleanly in both modes."""
     with open(os.path.join(os.path.dirname(__file__), "..", "tkt", "AGENTS.md.in"), encoding="utf-8") as f:
         template = f.read()
-    shared = render_agents_md(template, shared=True, vc_port=9090)
-    worktree = render_agents_md(template, shared=False, vc_port=9090)
+    shared = render_agents_md(template, shared=True)
+    worktree = render_agents_md(template, shared=False)
     for rendered in (shared, worktree):
         assert "<!-- BEGIN" not in rendered
         assert "8081" not in rendered
-        assert "9090" in rendered
     assert ".agent/<repo-name>/" in worktree
     assert ".agent/<repo-name>/" not in shared
     # Shared mode has no .agent directory at all: the rendered docs must not

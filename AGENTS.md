@@ -56,7 +56,10 @@ branch into a single commit and rebase it onto main.
   sandbox with a read-only view of the human's worktree and a writable git
   worktree on a separate branch. Also exposes `render_agents_md`, which
   renders `tkt/AGENTS.md.in` (mode-conditional `<!-- BEGIN shared|worktree -->`
-  blocks plus `{{vc_port}}`). Workspaces created with `tkt new
+  blocks). Restricted runs bridge a per-launch unix socket
+  (`net-*/session.sock`) to a host-side MCP session server hosting the
+  companion and Plannotator tools; there is no sandbox-to-host TCP bridge.
+  Workspaces created with `tkt new
   --shared-worktree` (persisted in `tkt.json`; default from `shared_worktree`
   in `local.jsonc`) create no `.agent` directory at all: the whole workspace
   is bind-mounted read-write (a single `--bind` of the workspace root) so
@@ -130,6 +133,11 @@ are exposed to OpenCode through a directory symlink, `~/.config/opencode/agents`
 skills they use come from the `superpowers/` submodule;
 `~/.config/opencode/opencode.jsonc` points its `skills.paths` at
 `superpowers/skills`. Neither lives at `~/.config/opencode/superpowers` anymore.
+`tkt install-opencode-agent` additionally copies the wake plugin
+(`harnesses/opencode/plugin/plannotator-wake.js`) into
+`~/.config/opencode/plugin/` as a real file (the installed OpenCode's plugin
+autoload skips symlinks), and restricted sandbox launches warn (non-fatally)
+when that copy is missing or stale.
 
 ## Zed integration
 

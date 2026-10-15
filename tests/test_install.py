@@ -57,6 +57,10 @@ def _make_repo(root: str) -> None:
     os.makedirs(os.path.join(root, "harnesses", "opencode", "agents"))
     with open(os.path.join(root, "harnesses", "opencode", "agents", "sp-build.md"), "w") as f:
         f.write("# sp-build\n")
+    plugin_dir = os.path.join(root, "harnesses", "opencode", "plugin")
+    os.makedirs(plugin_dir, exist_ok=True)
+    with open(os.path.join(plugin_dir, "plannotator-wake.js"), "w") as f:
+        f.write("// wake plugin v1\n")
 
 
 def test_install_zed_agent_creates_symlinks(tmp_path):
@@ -165,6 +169,79 @@ def test_install_opencode_agent_repoints_symlink(tmp_path):
     install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
     assert os.path.islink(dst)
     assert os.readlink(dst) == os.path.join(str(tmp_path / "repo"), "harnesses", "opencode", "agents")
+
+
+def _wake_dst(home: str) -> str:
+    return os.path.join(home, ".config", "opencode", "plugin", "plannotator-wake.js")
+
+
+def test_install_opencode_agent_copies_wake_plugin(tmp_path):
+    """Verify the wake plugin is copied (real file) into the config dir."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    dst = _wake_dst(home)
+    assert os.path.isfile(dst)
+    assert not os.path.islink(dst)
+    with open(dst) as f:
+        assert f.read() == "// wake plugin v1\n"
+
+
+def test_install_opencode_agent_wake_plugin_idempotent(tmp_path, caplog):
+    """Verify a second run leaves an identical copy untouched and says so."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    dst = _wake_dst(home)
+    before = os.stat(dst).st_mtime_ns
+    with caplog.at_level(logging.INFO):
+        install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    assert os.stat(dst).st_mtime_ns == before
+    assert any("up to date" in record.getMessage() for record in caplog.records)
+
+
+def test_install_opencode_agent_wake_plugin_replaces_stale(tmp_path, caplog):
+    """Verify a differing (stale) copy is replaced with the repo source."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    os.makedirs(os.path.dirname(_wake_dst(home)))
+    with open(_wake_dst(home), "w") as f:
+        f.write("// stale old version\n")
+    with caplog.at_level(logging.WARNING):
+        install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    with open(_wake_dst(home)) as f:
+        assert f.read() == "// wake plugin v1\n"
+    assert any("stale" in record.getMessage().lower() for record in caplog.records)
+
+
+def test_install_opencode_agent_wake_plugin_replaces_symlink(tmp_path, caplog):
+    """Verify a user-made symlink is replaced by a real file (the loader
+    skips symlinks).
+    """
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    os.makedirs(os.path.dirname(_wake_dst(home)))
+    elsewhere = str(tmp_path / "elsewhere.js")
+    with open(elsewhere, "w") as f:
+        f.write("// somewhere else\n")
+    os.symlink(elsewhere, _wake_dst(home))
+    with caplog.at_level(logging.WARNING):
+        install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    dst = _wake_dst(home)
+    assert os.path.isfile(dst)
+    assert not os.path.islink(dst)
+    with open(dst) as f:
+        assert f.read() == "// wake plugin v1\n"
+    assert any("symlink" in record.getMessage().lower() for record in caplog.records)
+
+
+def test_install_opencode_agent_wake_plugin_dry_run_writes_nothing(tmp_path):
+    """Verify dry run does not create the plugin dir or copy the file."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home, dry_run=True)
+    assert not os.path.lexists(_wake_dst(home))
+    assert not os.path.exists(os.path.join(home, ".config", "opencode", "plugin"))
 
 
 def test_install_zed_agent_links_shared_skills(tmp_path):

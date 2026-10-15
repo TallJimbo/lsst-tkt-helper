@@ -881,6 +881,16 @@ def mcp_server(
         run_server(sandbox, cwd=repo_dir, repo_dir=repo_dir, conda_env=conda_env)
 
 
+@cli.command("session-server", help="Run the stdio MCP server exposing host session tools.", hidden=True)
+@click.option("--workspace", required=True, type=click.Path(exists=True, file_okay=False, resolve_path=True))
+@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
+def session_server(*, workspace: str, verbose: int = 0) -> None:
+    _setup_logging(verbose)
+    from .session_server import run_session_server
+
+    run_session_server(workspace)
+
+
 @cli.command(
     "pull-sandbox",
     help=(
@@ -1029,21 +1039,29 @@ def sandbox_reset(
 @cli.command(
     "sandbox-cleanup",
     help=(
-        "Kill orphaned bridge socats left behind by sandbox sessions that "
-        "shut down uncleanly. A bridge socat is stale when the shared net-* "
-        "directory it references no longer exists (removed on clean shutdown), "
-        "so live sandboxes are never touched. Use -n to preview."
+        "Kill orphaned bridge socats and stale session-server registrations "
+        "left behind by sandbox sessions that shut down uncleanly. A bridge "
+        "socat is stale when the shared net-* directory it references no "
+        "longer exists (removed on clean shutdown), so live sandboxes are "
+        "never touched. Use -n to preview."
     ),
 )
 @click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
 @click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def sandbox_cleanup(*, dry_run: bool = False, verbose: int = 0) -> None:
     _setup_logging(verbose)
+    from ._sessionmanagers import sweep_session_registry
     from .sandbox import cleanup_stale_bridges
 
     killed, dirs = cleanup_stale_bridges(dry_run=dry_run)
     verb = "would kill" if dry_run else "killed"
-    click.echo(f"done: {verb} {killed} stale bridge socat(s)")
+    if dry_run:
+        # A preview must not mutate the session registry; sweeping is not
+        # previewable (it prunes entries in place), so we just leave it alone.
+        click.echo(f"done: {verb} {killed} stale bridge socat(s); session registry left untouched (dry run)")
+    else:
+        swept = sweep_session_registry()
+        click.echo(f"done: {verb} {killed} stale bridge socat(s); swept {swept} session registration(s)")
     for net in dirs:
         logging.info(f"  {net}")
 

@@ -45,19 +45,19 @@ the sandbox). If a task genuinely requires network access, do not try to
 work around the restriction; instead ask the human to rerun with network
 access (legacy sandbox runs: `tkt sandbox-run --network`).
 
-If you offer a browser-based visual companion (see the brainstorming skill),
-use the `brainstorm_server` MCP tool when you have it: it runs the companion
-server on the host, where the human's browser reaches it directly and can
-auto-open. You talk to it through files only (write screens to `screen_dir`,
-read clicks from `state_dir/events`), so the sandbox's network isolation
-doesn't matter. Do NOT launch `start-server.sh` from the sandboxed `bash`
-tool when the MCP tool is available — an in-sandbox server is unreachable
-from the human's browser. In harnesses without the tool — the
-normal case for OpenCode sandbox runs, and for legacy `tkt sandbox-run`
-runs — launch it yourself: the sandbox bridges the localhost port
-`{{vc_port}}` back to the host, so bind to `127.0.0.1:{{vc_port}}` and give
-the human the returned URL verbatim (no auto-open — there is no display in
-the sandbox).
+If you offer a browser-based visual companion (see the brainstorming skill) or
+Plannotator reviews, use the `brainstorm_server` / `plannotator` MCP tools: they
+run the session servers on the *host*, where the human's browser reaches them
+directly. Hand the human any URL the tool returns **verbatim** and end your
+turn — feedback arrives later as `Plannotator:`-prefixed messages or when you
+ask the `plannotator` tool for the session `result`. If you offer the Plannotator
+Inbox / guided reviews, use the `plannotator_inbox` tool (`guide_brief` then
+`guide_submit` to author a guided review — ask your human to request it rather
+than clicking the web-UI button). Never launch `start-server.sh` or the
+`plannotator` CLI yourself: an in-sandbox server is unreachable by design, and
+the host tools own session lifecycles (attach-or-start, no duplicates). If a
+session tool is missing from your toolset, stop and report it instead of
+improvising.
 
 All environment variables needed to build and import the packages in your
 working directory should all be set; do not try to use EUPS or load `.envrc`
