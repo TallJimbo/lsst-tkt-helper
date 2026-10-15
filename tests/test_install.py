@@ -25,7 +25,14 @@
 import logging
 import os
 
-from tkt.install import install_opencode_agent, install_zed_agent
+from tkt.install import (
+    install_opencode_agent,
+    install_zed_agent,
+    plugin_dest,
+    plugin_source,
+    wake_plugin_dest,
+    wake_plugin_source,
+)
 
 ZED_SKILLS = ("zed-primary-agent", "zed-explorer", "zed-implementer")
 SUPERPOWERS_SKILLS = ("sp-one", "sp-two")
@@ -61,6 +68,12 @@ def _make_repo(root: str) -> None:
     os.makedirs(plugin_dir, exist_ok=True)
     with open(os.path.join(plugin_dir, "plannotator-wake.js"), "w") as f:
         f.write("// wake plugin v1\n")
+    bell_dir = os.path.join(plugin_dir, "zed-bell")
+    os.makedirs(bell_dir)
+    with open(os.path.join(bell_dir, "index.js"), "w") as f:
+        f.write("// zed bell server half v1\n")
+    with open(os.path.join(bell_dir, "tui.js"), "w") as f:
+        f.write("// zed bell tui half v1\n")
 
 
 def test_install_zed_agent_creates_symlinks(tmp_path):
@@ -171,8 +184,39 @@ def test_install_opencode_agent_repoints_symlink(tmp_path):
     assert os.readlink(dst) == os.path.join(str(tmp_path / "repo"), "harnesses", "opencode", "agents")
 
 
+def _plugin_dst(home: str, name: str = "plannotator-wake.js") -> str:
+    return os.path.join(home, ".config", "opencode", "plugin", name)
+
+
 def _wake_dst(home: str) -> str:
-    return os.path.join(home, ".config", "opencode", "plugin", "plannotator-wake.js")
+    return _plugin_dst(home)
+
+
+def test_install_opencode_agent_copies_plugins(tmp_path):
+    """Verify both autoloaded plugins are copied (real files, not symlinks)
+    into the config dir: the wake single file and the zed-bell directory
+    plugin with both of its entrypoint files byte-exact.
+    """
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    dst = _plugin_dst(home, "plannotator-wake.js")
+    assert os.path.isfile(dst)
+    assert not os.path.islink(dst)
+    with open(dst) as f:
+        assert f.read() == "// wake plugin v1\n"
+    bell = _plugin_dst(home, "zed-bell")
+    assert os.path.isdir(bell)
+    assert not os.path.islink(bell)
+    for name, contents in (
+        ("index.js", "// zed bell server half v1\n"),
+        ("tui.js", "// zed bell tui half v1\n"),
+    ):
+        entry = os.path.join(bell, name)
+        assert os.path.isfile(entry)
+        assert not os.path.islink(entry)
+        with open(entry) as f:
+            assert f.read() == contents
 
 
 def test_install_opencode_agent_copies_wake_plugin(tmp_path):
@@ -187,17 +231,43 @@ def test_install_opencode_agent_copies_wake_plugin(tmp_path):
         assert f.read() == "// wake plugin v1\n"
 
 
-def test_install_opencode_agent_wake_plugin_idempotent(tmp_path, caplog):
-    """Verify a second run leaves an identical copy untouched and says so."""
+def test_wake_plugin_helpers_still_resolve(tmp_path):
+    """Verify wake_plugin_source/dest (imported by sandbox.py) still
+    resolve, and match the generic plugin helpers.
+    """
+    repo = str(tmp_path / "repo")
+    home = str(tmp_path / "home")
+    assert wake_plugin_source(repo) == plugin_source("plannotator-wake.js", repo)
+    assert wake_plugin_dest(home) == plugin_dest("plannotator-wake.js", home)
+    assert wake_plugin_source(repo).endswith(
+        os.path.join("harnesses", "opencode", "plugin", "plannotator-wake.js")
+    )
+    assert wake_plugin_dest(home).endswith(
+        os.path.join(".config", "opencode", "plugin", "plannotator-wake.js")
+    )
+
+
+def test_install_opencode_agent_plugins_idempotent(tmp_path, caplog):
+    """Verify a second run leaves identical copies (file and directory
+    plugin) untouched and says so.
+    """
     _make_repo(str(tmp_path / "repo"))
     home = str(tmp_path / "home")
     install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
-    dst = _wake_dst(home)
-    before = os.stat(dst).st_mtime_ns
+    bell = _plugin_dst(home, "zed-bell")
+    files = [
+        _plugin_dst(home, "plannotator-wake.js"),
+        os.path.join(bell, "index.js"),
+        os.path.join(bell, "tui.js"),
+    ]
+    before = [os.stat(f).st_mtime_ns for f in files]
     with caplog.at_level(logging.INFO):
         install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
-    assert os.stat(dst).st_mtime_ns == before
-    assert any("up to date" in record.getMessage() for record in caplog.records)
+    assert [os.stat(f).st_mtime_ns for f in files] == before
+    for dst in (_plugin_dst(home, "plannotator-wake.js"), bell):
+        assert any(
+            "up to date" in record.getMessage() and dst in record.getMessage() for record in caplog.records
+        )
 
 
 def test_install_opencode_agent_wake_plugin_replaces_stale(tmp_path, caplog):
@@ -212,6 +282,50 @@ def test_install_opencode_agent_wake_plugin_replaces_stale(tmp_path, caplog):
     with open(_wake_dst(home)) as f:
         assert f.read() == "// wake plugin v1\n"
     assert any("stale" in record.getMessage().lower() for record in caplog.records)
+
+
+def test_install_opencode_agent_zed_bell_replaces_stale_directory(tmp_path, caplog):
+    """Verify a stale installed zed-bell directory (differing bytes plus a
+    stray extra file) is replaced so the copy ends byte-equal to the source
+    tree.
+    """
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    bell = _plugin_dst(home, "zed-bell")
+    os.makedirs(bell)
+    with open(os.path.join(bell, "index.js"), "w") as f:
+        f.write("// stale old server half\n")
+    with open(os.path.join(bell, "tui.js"), "w") as f:
+        f.write("// zed bell tui half v1\n")
+    with open(os.path.join(bell, "stray.js"), "w") as f:
+        f.write("// not part of the plugin\n")
+    with caplog.at_level(logging.WARNING):
+        install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    assert sorted(os.listdir(bell)) == ["index.js", "tui.js"]
+    with open(os.path.join(bell, "index.js")) as f:
+        assert f.read() == "// zed bell server half v1\n"
+    with open(os.path.join(bell, "tui.js")) as f:
+        assert f.read() == "// zed bell tui half v1\n"
+    assert not os.path.lexists(os.path.join(bell, "stray.js"))
+    assert any("stale" in record.getMessage().lower() for record in caplog.records)
+
+
+def test_install_opencode_agent_removes_legacy_zed_bell_file(tmp_path, caplog):
+    """Verify the legacy single-file zed-bell.js (Task-1 artifact) is
+    removed from the host plugin dir, so it cannot keep loading.
+    """
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    legacy = _plugin_dst(home, "zed-bell.js")
+    os.makedirs(os.path.dirname(legacy))
+    with open(legacy, "w") as f:
+        f.write("// legacy single-file bell\n")
+    with caplog.at_level(logging.WARNING):
+        install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    assert not os.path.lexists(legacy)
+    assert any("legacy" in record.getMessage().lower() for record in caplog.records)
+    # The directory plugin itself still installs.
+    assert os.path.isfile(os.path.join(_plugin_dst(home, "zed-bell"), "tui.js"))
 
 
 def test_install_opencode_agent_wake_plugin_replaces_symlink(tmp_path, caplog):
@@ -235,13 +349,20 @@ def test_install_opencode_agent_wake_plugin_replaces_symlink(tmp_path, caplog):
     assert any("symlink" in record.getMessage().lower() for record in caplog.records)
 
 
-def test_install_opencode_agent_wake_plugin_dry_run_writes_nothing(tmp_path):
-    """Verify dry run does not create the plugin dir or copy the file."""
+def test_install_opencode_agent_plugins_dry_run_writes_nothing(tmp_path):
+    """Verify dry run does not create the plugin dir, copy the plugins, or
+    remove a legacy single file.
+    """
     _make_repo(str(tmp_path / "repo"))
     home = str(tmp_path / "home")
+    legacy = _plugin_dst(home, "zed-bell.js")
+    os.makedirs(os.path.dirname(legacy))
+    with open(legacy, "w") as f:
+        f.write("// legacy single-file bell\n")
     install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home, dry_run=True)
-    assert not os.path.lexists(_wake_dst(home))
-    assert not os.path.exists(os.path.join(home, ".config", "opencode", "plugin"))
+    assert not os.path.lexists(_plugin_dst(home, "plannotator-wake.js"))
+    assert not os.path.lexists(_plugin_dst(home, "zed-bell"))
+    assert os.path.isfile(legacy)
 
 
 def test_install_zed_agent_links_shared_skills(tmp_path):

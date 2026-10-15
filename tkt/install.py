@@ -26,32 +26,60 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import tempfile
 from collections.abc import Callable
 
 __all__ = ("install_opencode_agent", "install_zed_agent")
 
-# File name of the OpenCode wake plugin (see wake_plugin_source/dest).
-WAKE_PLUGIN_NAME = "plannotator-wake.js"
+# Names of the OpenCode plugins that ``install_opencode_agent`` copies into
+# ``~/.config/opencode/plugin/`` for the global plugin autoload (see
+# plugin_source/dest).  A name may be a single ``.js`` file or a directory
+# plugin (e.g. ``zed-bell``, with an ``index.js`` server half and a ``tui.js``
+# TUI half); the source's type on disk decides which is installed.
+PLUGIN_NAMES: tuple[str, ...] = ("plannotator-wake.js", "zed-bell")
+
+# tkt-owned plugin artifacts from older installs that live in the host plugin
+# dir but must be *removed* on install (they would otherwise keep loading
+# alongside their replacements).
+LEGACY_PLUGIN_NAMES: tuple[str, ...] = ("zed-bell.js",)
 
 
 def _repo_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def wake_plugin_source(repo_root: str | None = None) -> str:
-    """Repo path of the OpenCode wake plugin source file."""
-    return os.path.join(repo_root or _repo_root(), "harnesses", "opencode", "plugin", WAKE_PLUGIN_NAME)
+def plugin_source(name: str, repo_root: str | None = None) -> str:
+    """Repo path of the OpenCode plugin source ``name`` (a single ``.js``
+    file or a directory plugin).
+    """
+    return os.path.join(repo_root or _repo_root(), "harnesses", "opencode", "plugin", name)
 
 
-def wake_plugin_dest(home: str | None = None) -> str:
-    """Host copy path OpenCode autoloads from ``~/.config/opencode/plugin/``.
+def plugin_dest(name: str, home: str | None = None) -> str:
+    """Host copy path OpenCode autoloads from ``~/.config/opencode/plugin/``
+    for the plugin ``name``.
 
     The installed OpenCode's plugin loader picks up only real files here (it
     silently skips symlinks), which is why delivery is a copy rather than a
     symlink.
     """
-    return os.path.join(home or os.path.expanduser("~"), ".config", "opencode", "plugin", WAKE_PLUGIN_NAME)
+    return os.path.join(home or os.path.expanduser("~"), ".config", "opencode", "plugin", name)
+
+
+def wake_plugin_source(repo_root: str | None = None) -> str:
+    """Repo path of the OpenCode wake plugin source file."""
+    return plugin_source("plannotator-wake.js", repo_root)
+
+
+def wake_plugin_dest(home: str | None = None) -> str:
+    """Host copy path of the OpenCode wake plugin.
+
+    The installed OpenCode's plugin loader picks up only real files under
+    ``~/.config/opencode/plugin/`` (it silently skips symlinks), which is why
+    delivery is a copy rather than a symlink.
+    """
+    return plugin_dest("plannotator-wake.js", home)
 
 
 def _ensure_link(link: str, target: str, *, dry_run: bool) -> None:
@@ -123,18 +151,22 @@ def _link_skill_dirs(skills_src: str, skills_dst: str, managed: set[str], *, dry
         _ensure_link(os.path.join(skills_dst, name), src, dry_run=dry_run)
 
 
-def _install_wake_plugin(repo_root: str, home: str, *, dry_run: bool) -> None:
-    """Copy the wake plugin into the host OpenCode config plugin dir.
+def _install_plugin(name: str, repo_root: str, home: str, *, dry_run: bool) -> None:
+    """Copy the OpenCode plugin ``name`` into the host config plugin dir.
 
-    The installed OpenCode's plugin loader autoloads real files from
-    ``~/.config/opencode/plugin/`` and silently skips symlinks, so this must
-    be a copy.  Idempotent: an identical copy is left untouched; a stale one
-    -- or a user-made symlink, which the loader would skip -- is replaced
-    with the real file via an atomic write (mkstemp in the target dir +
-    ``os.replace``).
+    The installed OpenCode's plugin loader autoloads real files and
+    directories from ``~/.config/opencode/plugin/`` and silently skips
+    symlinks, so this must be a copy.  ``name`` is a directory plugin if the
+    repo source is a directory, else a single file.  Idempotent: an identical
+    copy is left untouched; a stale one -- or a user-made symlink, which the
+    loader would skip -- is replaced so the installed copy ends up
+    byte-equal to the source.
     """
-    src = wake_plugin_source(repo_root)
-    dst = wake_plugin_dest(home)
+    src = plugin_source(name, repo_root)
+    dst = plugin_dest(name, home)
+    if os.path.isdir(src):
+        _install_plugin_dir(src, dst, dry_run=dry_run)
+        return
     with open(src, "rb") as f:
         data = f.read()
     if os.path.islink(dst):
@@ -144,7 +176,7 @@ def _install_wake_plugin(repo_root: str, home: str, *, dry_run: bool) -> None:
             if f.read() == data:
                 logging.info(f"OK: {dst} up to date")
                 return
-        logging.warning(f"Replacing stale wake plugin copy {dst} (differs from {src})")
+        logging.warning(f"Replacing stale plugin copy {dst} (differs from {src})")
     verb = "Would install" if dry_run else "Installing"
     logging.info(f"{verb} {dst}")
     if dry_run:
@@ -160,6 +192,55 @@ def _install_wake_plugin(repo_root: str, home: str, *, dry_run: bool) -> None:
         if os.path.lexists(tmp):
             os.unlink(tmp)
         raise
+
+
+def _plugin_tree(path: str) -> dict[str, bytes]:
+    """Map each file under directory ``path`` (relative path) to its bytes."""
+    files: dict[str, bytes] = {}
+    for root, _dirs, names in os.walk(path):
+        for name in names:
+            full = os.path.join(root, name)
+            with open(full, "rb") as f:
+                files[os.path.relpath(full, path)] = f.read()
+    return files
+
+
+def _install_plugin_dir(src: str, dst: str, *, dry_run: bool) -> None:
+    """Copy the directory plugin ``src`` to ``dst``, byte-equal to the source
+    tree (stale extra files in ``dst`` are removed).
+
+    The swap stages the fresh copy in a temp dir outside the autoload dir
+    (every subdirectory of ``~/.config/opencode/plugin/`` is a plugin
+    candidate the loader would otherwise notice) and renames it into place.
+    """
+    if os.path.islink(dst):
+        logging.warning(f"Replacing symlink {dst}: the OpenCode plugin loader skips symlinks")
+    elif os.path.isdir(dst):
+        if _plugin_tree(src) == _plugin_tree(dst):
+            logging.info(f"OK: {dst} up to date")
+            return
+        logging.warning(f"Replacing stale plugin copy {dst} (differs from {src})")
+    elif os.path.lexists(dst):
+        logging.warning(f"Replacing non-directory entry {dst} with the directory plugin")
+    verb = "Would install" if dry_run else "Installing"
+    logging.info(f"{verb} {dst}")
+    if dry_run:
+        return
+    dst_dir = os.path.dirname(dst)
+    os.makedirs(dst_dir, exist_ok=True)
+    # Stage one level above the autoload dir so the transient directory is
+    # never discovered as a plugin; both are under ~/.config, so the rename
+    # stays on one filesystem.
+    tmp = tempfile.mkdtemp(dir=os.path.dirname(dst_dir))
+    try:
+        shutil.copytree(src, os.path.join(tmp, "plugin"))
+        if os.path.islink(dst) or os.path.isfile(dst):
+            os.remove(dst)
+        elif os.path.isdir(dst):
+            os.rename(dst, os.path.join(tmp, "stale"))
+        os.rename(os.path.join(tmp, "plugin"), dst)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def install_zed_agent(
@@ -206,10 +287,12 @@ def install_opencode_agent(
     """Symlink the OpenCode harness agents dir into the user's OpenCode config.
 
     Makes ``~/.config/opencode/agents`` a symlink to
-    ``harnesses/opencode/agents``, replacing any stale symlink, and copies
-    the wake plugin into ``~/.config/opencode/plugin/`` for the global
-    plugin autoload (a real file: the installed OpenCode's loader skips
-    symlinks).
+    ``harnesses/opencode/agents``, replacing any stale symlink, copies the
+    autoloaded plugins (wake + zed-bell) into
+    ``~/.config/opencode/plugin/`` for the global plugin autoload (real
+    files or directories: the installed OpenCode's loader skips symlinks),
+    and removes legacy single-file plugin copies that a newer plugin form
+    supersedes (LEGACY_PLUGIN_NAMES).
     """
     repo_root = repo_root or _repo_root()
     home = home or os.path.expanduser("~")
@@ -218,4 +301,11 @@ def install_opencode_agent(
     if not dry_run:
         os.makedirs(dst_dir, exist_ok=True)
     _ensure_link(os.path.join(dst_dir, "agents"), src, dry_run=dry_run)
-    _install_wake_plugin(repo_root, home, dry_run=dry_run)
+    for name in LEGACY_PLUGIN_NAMES:
+        legacy = plugin_dest(name, home)
+        if os.path.lexists(legacy):
+            logging.warning(f"Removing legacy plugin copy {legacy} (superseded by a newer plugin form)")
+            if not dry_run:
+                os.remove(legacy)
+    for name in PLUGIN_NAMES:
+        _install_plugin(name, repo_root, home, dry_run=dry_run)

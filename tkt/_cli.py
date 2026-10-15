@@ -186,7 +186,9 @@ def install_zed_agent(*, dry_run: bool = False, yes: bool = False, verbose: int 
 @cli.command(
     "install-opencode-agent",
     help=(
-        "Symlink the OpenCode harness agents dir into ~/.config/opencode/agents, replacing any stale symlink."
+        "Symlink the OpenCode harness agents dir into ~/.config/opencode/agents, "
+        "replacing any stale symlink, and copy the autoloaded plugins "
+        "(wake + zed-bell) into ~/.config/opencode/plugin/."
     ),
 )
 @click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")

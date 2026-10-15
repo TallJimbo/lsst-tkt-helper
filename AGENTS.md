@@ -133,11 +133,14 @@ are exposed to OpenCode through a directory symlink, `~/.config/opencode/agents`
 skills they use come from the `superpowers/` submodule;
 `~/.config/opencode/opencode.jsonc` points its `skills.paths` at
 `superpowers/skills`. Neither lives at `~/.config/opencode/superpowers` anymore.
-`tkt install-opencode-agent` additionally copies the wake plugin
-(`harnesses/opencode/plugin/plannotator-wake.js`) into
-`~/.config/opencode/plugin/` as a real file (the installed OpenCode's plugin
-autoload skips symlinks), and restricted sandbox launches warn (non-fatally)
-when that copy is missing or stale.
+`tkt install-opencode-agent` additionally copies the autoloaded plugins
+(`harnesses/opencode/plugin/plannotator-wake.js` and the
+`harnesses/opencode/plugin/zed-bell/` directory plugin, whose `index.js`
+server half is a no-op and whose `tui.js` half rings the terminal bell in the
+TUI process, where stdout is the pty) into
+`~/.config/opencode/plugin/` as real files or directories (the installed
+OpenCode's plugin autoload skips symlinks); restricted sandbox launches warn
+(non-fatally) when the wake copy is missing or stale.
 
 ## Zed integration
 
