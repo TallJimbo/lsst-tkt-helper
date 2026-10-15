@@ -40,6 +40,7 @@ import pytest
 from tkt._sessionmanagers import (
     PlannotatorManager,
     _status_ts,
+    _write_entry,
     cleanup_workspace_sessions,
     session_registry_dir,
     sweep_session_registry,
@@ -879,3 +880,115 @@ def test_status_sorts_iso_started_at_newest_first(fake_cli):
         str(fake_cli / "host-b.md"),
         str(fake_cli / "host-a.md"),
     ]
+
+
+# ========== result(): target-derived Plannotator project directory ==========
+#
+# The real Plannotator CLI keys its feedback store by a TARGET-derived
+# project label (a package dir in a multi-package workspace lands under
+# feedback/<package>/records/, sessions report project:<package>), NOT by
+# tkt's workspace name. Single-repo workspaces make the two coincide.
+
+
+def _touch_project_record(tmp_path, project_name, name, *, text="Reviewer wanted X changed.", age=0.0):
+    rec_dir = tmp_path / "plannotator-data" / "feedback" / project_name / "records"
+    rec_dir.mkdir(parents=True, exist_ok=True)
+    rec = rec_dir / name
+    rec.write_text(text)
+    stamp = time.time() - age
+    os.utime(rec, (stamp, stamp))
+    return rec
+
+
+def _registry_entry(ws, target, *, sid, pgid=0, opened_at=None):
+    _write_entry(
+        sid,
+        {
+            "pgid": pgid,
+            "workspace": str(ws),
+            "target": str(target),
+            "kind": "review",
+            "opened_at": opened_at if opened_at is not None else time.time() - 3600.0,
+            "source": "spawned",
+        },
+    )
+    return sid
+
+
+def _multi_pkg_ws(fake_cli):
+    """Create a tkt multi-package workspace: DM-56581 with a package dir
+    inside it.
+    """
+    ws = fake_cli / "DM-56581"
+    (ws / "images").mkdir(parents=True)
+    return ws
+
+
+def test_result_finds_records_under_target_derived_project_dir(fake_cli):
+    """Feedback stored under the TARGET-derived name is found.
+
+    The incident: review opened against <ws>/images; the record landed under
+    feedback/images/ while the workspace basename is DM-56581. result()
+    must not report closed just because the workspace-named directory is
+    empty.
+    """
+    ws = _multi_pkg_ws(fake_cli)
+    sid = _registry_entry(ws, ws / "images", sid="local-4242", pgid=0)
+    _touch_project_record(
+        fake_cli, "images", "2026-10-15T14-31-43-477Z-review-feedback.md", text="Target-keyed feedback"
+    )
+    res = PlannotatorManager().result(str(ws), sid)
+    assert res["type"] == "feedback"
+    assert res["text"] == "Target-keyed feedback"
+
+
+def test_result_target_dir_stale_record_stays_invisible(fake_cli):
+    """Freshness applies across candidates: a pre-opened_at record under the
+    target-derived directory must not count as feedback.
+    """
+    ws = _multi_pkg_ws(fake_cli)
+    now = time.time()
+    keeper = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        sid = _registry_entry(ws, ws / "images", sid="local-4242", pgid=keeper.pid, opened_at=now)
+        _touch_project_record(fake_cli, "images", "old-review-feedback.md", age=3600.0)
+        res = PlannotatorManager().result(str(ws), sid)
+        assert res["type"] == "pending"  # live pgid, nothing fresh
+    finally:
+        keeper.terminate()
+        keeper.wait()
+
+
+def test_result_merges_candidates_newest_wins(fake_cli):
+    """Records under BOTH candidate directories merge into one set: the same
+    record name in both must not double-count, and newest wins across the
+    merged set regardless of which candidate it lives under.
+    """
+    ws = _multi_pkg_ws(fake_cli)
+    sid = _registry_entry(ws, ws / "images", sid="local-4242", pgid=0)
+    _touch_project_record(
+        fake_cli, "DM-56581", "r-annotate-feedback.md", text="workspace copy (older)", age=60.0
+    )
+    _touch_project_record(fake_cli, "images", "r-annotate-feedback.md", text="target copy (newer)", age=5.0)
+    res = PlannotatorManager().result(str(ws), sid)
+    assert res["type"] == "feedback"
+    assert res["text"] == "target copy (newer)"
+    # Newest wins from the other side too.
+    _touch_project_record(
+        fake_cli, "DM-56581", "r2-annotate-feedback.md", text="workspace copy (newest)", age=0.0
+    )
+    res = PlannotatorManager().result(str(ws), sid)
+    assert res["text"] == "workspace copy (newest)"
+
+
+def test_result_url_target_uses_workspace_candidate(fake_cli):
+    """A PR-URL target's name-derived directory is inert: records resolve via
+    the workspace-name candidate.
+    """
+    ws = fake_cli / "DM-56581"
+    ws.mkdir()
+    sid = _registry_entry(ws, "https://host/o/r/pull/123", sid="local-4242", pgid=0)
+    _touch_project_record(fake_cli, "DM-56581", "pr-review-123-feedback.md", text="PR feedback")
+    res = PlannotatorManager().result(str(ws), sid)
+    assert res["type"] == "feedback"
+    assert res["text"] == "PR feedback"

@@ -637,14 +637,29 @@ class PlannotatorManager:
         if entry is None or entry.get("workspace") != str(Path(workspace).resolve()):
             raise ValueError(f"unknown session {session!r} for workspace {workspace!r}.")
         proj_dir = Path(os.environ.get("PLANNOTATOR_DATA_DIR", os.path.expanduser("~/.plannotator")))
-        name = Path(entry["workspace"]).name
-        # Records are keyed by Plannotator's own ids/targets, not our registry
-        # id, so the per-session filter is time-based (opened_at) + the two
-        # spec name patterns. `pn-*` registry ids matching a record name win
-        # when several records are fresh (P2 probe narrows this exactly).
+        # Plannotator keys its feedback store by a target-derived project
+        # label (a package dir under a multi-package workspace lands its
+        # records under feedback/<package>/records/), not by tkt's workspace
+        # name — so glob the target-derived directory first and fall back to
+        # the workspace-named one (the two coincide in a single-repo
+        # workspace).  Records are still keyed by Plannotator's own ids/
+        # targets, not our registry id, so the per-session filter stays
+        # time-based (opened_at) + the two record patterns. `pn-*` registry
+        # ids matching a record name win when several records are fresh.
+        target = entry.get("target")
+        candidates: list[str] = []
+        for raw in (target, entry["workspace"]):
+            name = Path(str(raw)).name if isinstance(raw, str) and raw else ""
+            if name and name not in candidates:
+                candidates.append(name)
         patterns = ("*-annotate-feedback.md", "*-review-*")
         records = sorted(
-            {p for pat in patterns for p in proj_dir.glob(f"feedback/{name}/records/{pat}")},
+            {
+                p
+                for name in candidates
+                for pat in patterns
+                for p in proj_dir.glob(f"feedback/{name}/records/{pat}")
+            },
             key=lambda p: p.stat().st_mtime,
         )
         fresh = [p for p in records if p.stat().st_mtime > float(entry["opened_at"])]
