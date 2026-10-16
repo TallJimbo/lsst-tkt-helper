@@ -44,7 +44,7 @@ branch into a single commit and rebase it onto main.
   `Workspace`.
 - **`tkt/_cli.py`** — Click-based CLI commands: `new`, `update`,
   `upgrade-metapackage`, `rm`, `rm-package`, `fix-openspec`, `direnv`,
-  `agent-run` (as `sandbox-run`), `sandbox-reset`, `pull-sandbox`.
+  `sandbox-run`, `sandbox-reset`, `pull-sandbox`.
 - **`tkt/_environment.py`** — Abstract base classes `Environment` and `Tool`.
   `Environment` is subclassed per observatory (e.g. `RubinEnvironment`); `Tool`
   is subclassed per integration (e.g. `Zed`, `Pyright`, `Sandbox`).
@@ -65,7 +65,7 @@ branch into a single commit and rebase it onto main.
   OpenCode's same-key config entry via `OPENCODE_CONFIG_CONTENT`;
   full-network (`--network`) runs do not front remote MCP at all.
   Workspaces created with `tkt new
-  --shared-worktree` (persisted in `tkt.json`; default from `shared_worktree`
+--shared-worktree` (persisted in `tkt.json`; default from `shared_worktree`
   in `local.jsonc`) create no `.agent` directory at all: the whole workspace
   is bind-mounted read-write (a single `--bind` of the workspace root) so
   the agent works directly on the human's branches, the sandbox sets up EUPS
