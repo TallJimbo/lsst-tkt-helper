@@ -79,23 +79,38 @@ def session_server_command(workspace: str) -> list[str]:
     return [sys.executable, "-m", "tkt.session_server", "--workspace", workspace]
 
 
-def session_mcp_config(net_dir: str) -> dict[str, Any]:
-    """OpenCode config (OPENCODE_CONFIG_CONTENT) wiring the session socket.
+def _socat_system_arg(argv: Sequence[str]) -> str:
+    """Build a socat ``SYSTEM:`` address argument for ``argv``.
 
-    Only the ``mcp`` block goes through this channel: the ``plugin`` array
-    in env config is NOT honored by the installed OpenCode (its entries are
-    npm package specs), so the wake plugin is delivered as a real copied
-    file in ``~/.config/opencode/plugin/`` instead (see tkt.install).
+    socat's address-parameter parser treats ``:`` and ``,`` as parameter
+    separators, so a plain ``shlex.join`` of a command containing a URL
+    (``https://...``) makes the forked child fail with "wrong number of
+    parameters".  Backslash-escaping both makes socat unescape them
+    before handing the command to its shell.
     """
-    sock = os.path.join(net_dir, SESSION_SOCKET_NAME)
-    return {
-        "mcp": {
-            "tkt-session": {
-                "type": "local",
-                "command": ["socat", "-", f"UNIX-CONNECT:{sock}"],
-            }
-        }
-    }
+    return "SYSTEM:" + shlex.join(argv).replace(":", "\\:").replace(",", "\\,")
+
+
+def opencode_config_content(net_dir: str, remote_mcp_names: Iterable[str] = ()) -> dict[str, Any]:
+    """OpenCode config (OPENCODE_CONFIG_CONTENT) wiring the bridge MCP servers.
+
+    The session socket plus one ``local`` socat override per bridged
+    remote-MCP name; the override key matches the host config's server
+    key (e.g. ``github``) so the merged-last env config replaces the
+    host's unreachable remote entry.  Only the ``mcp`` block goes
+    through this channel: the ``plugin`` array in env config is NOT
+    honored by the installed OpenCode (its entries are npm package
+    specs), so the wake plugin is delivered as a real copied file in
+    ``~/.config/opencode/plugin/`` instead (see tkt.install).
+    """
+
+    def local(sock: str) -> dict[str, Any]:
+        return {"type": "local", "command": ["socat", "-", f"UNIX-CONNECT:{sock}"]}
+
+    mcp: dict[str, Any] = {"tkt-session": local(os.path.join(net_dir, SESSION_SOCKET_NAME))}
+    for name in remote_mcp_names:
+        mcp[name] = local(os.path.join(net_dir, f"mcp-{name}.sock"))
+    return {"mcp": mcp}
 
 
 def _warn_if_wake_plugin_stale() -> None:
@@ -322,6 +337,16 @@ class Sandbox(Tool):
         Default :data:`_DEFAULT_PORT`. Each port maps to the same port on the
         host's loopback (the ssh tunnel's listen port).  Only used when
         ``network`` is ``False``.
+    remote_mcp
+        Mapping of MCP server name to ``{"url": ..., "token_file": ...,
+        "header": ...}`` (``header`` optional, default ``"Bearer {token}"``)
+        for remote streamable-HTTP MCP servers to front in restricted
+        sandboxes.  Each entry with an existing host token file gets a
+        host-side ``tkt.remote_mcp_proxy`` listener at
+        ``<net_dir>/mcp-<name>.sock`` and an OPENCODE_CONFIG_CONTENT
+        override of the same key; the token never enters the sandbox.
+        Full-network (``network=True``) runs do not front remote MCP
+        servers at all (no token export either).
     """
 
     def __init__(
@@ -333,6 +358,7 @@ class Sandbox(Tool):
         env: dict[str, str] | None = None,
         network: bool = False,
         port: int | Sequence[int] = _DEFAULT_PORT,
+        remote_mcp: dict[str, dict[str, str]] | None = None,
     ):
         self._command = tuple(command)
         self._mounts_ro = tuple(mounts_ro)
@@ -340,6 +366,7 @@ class Sandbox(Tool):
         self._env = dict(env) if env is not None else {}
         self._network = bool(network)
         self._ports = _normalize_ports(port)
+        self._remote_mcp = dict(remote_mcp) if remote_mcp else {}
 
     @classmethod
     def from_json_data(cls, data: dict[str, Any]) -> Tool:
@@ -356,6 +383,14 @@ class Sandbox(Tool):
         if not isinstance(network, bool):
             raise ValueError(f"'network' must be a boolean, got {network!r}.")
         port = data.pop("port", _DEFAULT_PORT)
+        remote_mcp = data.pop("remote_mcp", {})
+        if not isinstance(remote_mcp, dict):
+            raise ValueError(f"'remote_mcp' must be a mapping, got {remote_mcp!r}.")
+        for name, entry in remote_mcp.items():
+            if not isinstance(entry, dict) or not {"url", "token_file"} <= set(entry):
+                raise ValueError(f"remote_mcp entry {name!r} needs 'url' and 'token_file': {entry!r}.")
+            if set(entry) - {"url", "token_file", "header"}:
+                raise ValueError(f"Unexpected keys in remote_mcp entry {name!r}: {sorted(entry)}.")
         if data:
             raise ValueError(f"Unexpected entries in sandbox configuration: {data}.")
         return cls(
@@ -365,6 +400,7 @@ class Sandbox(Tool):
             env=env,
             network=network,
             port=port,
+            remote_mcp=remote_mcp,
         )
 
     def write(
@@ -590,6 +626,18 @@ class Sandbox(Tool):
             self._stop_bridge(net_dir, procs)
         raise SystemExit(rc)
 
+    def _bridged_remote_mcp(self) -> dict[str, dict[str, str]]:
+        """Remote-MCP entries whose host token file exists (bridged now).
+
+        Checked at bridge-start and argv-build time in the same process,
+        so the two views cannot diverge in practice.
+        """
+        return {
+            name: entry
+            for name, entry in self._remote_mcp.items()
+            if os.path.isfile(os.path.expanduser(entry["token_file"]))
+        }
+
     def _start_bridge(self, workspace: str) -> tuple[str, list[subprocess.Popen[Any]]]:
         """Start the host-side bridges for a restricted sandbox.
 
@@ -604,6 +652,13 @@ class Sandbox(Tool):
           one host-side ``tkt.session_server`` per connection (via socat's
           ``fork``), giving the agent the session tools on the host, where
           the human's browser can reach the servers they start.
+        - ``mcp-<name>.sock`` for each bridged ``remote_mcp`` entry spawns
+          one host-side ``tkt.remote_mcp_proxy`` per connection (via socat's
+          ``fork``) to front that remote streamable-HTTP MCP server; the
+          bearer token is read from the host token file and never enters
+          the sandbox.  The per-server host log lives in the sandbox-visible
+          ``net_dir``, so the proxy must never print token-bearing material
+          (see ``tkt/remote_mcp_proxy.py``).
 
         Returns the socket directory and the list of host ``socat``
         subprocesses.
@@ -617,6 +672,9 @@ class Sandbox(Tool):
         net_dir = tempfile.mkdtemp(prefix="net-", dir=state_dir)
         procs: list[subprocess.Popen[Any]] = []
         sock_paths: list[str] = []
+        # Evaluate once so the listener loop and the early-exit log list
+        # can never describe different sets of bridged servers.
+        bridged = self._bridged_remote_mcp()
         try:
             for p in self._ports:
                 sock = os.path.join(net_dir, f"llm-{p}.sock")
@@ -644,7 +702,7 @@ class Sandbox(Tool):
                         [
                             "socat",
                             f"UNIX-LISTEN:{session_sock},fork",
-                            "SYSTEM:" + shlex.join(session_server_command(workspace)),
+                            _socat_system_arg(session_server_command(workspace)),
                         ],
                         stdout=f,
                         stderr=subprocess.STDOUT,
@@ -652,6 +710,35 @@ class Sandbox(Tool):
                         preexec_fn=_set_pdeathsig,
                     )
                 )
+            for name, entry in bridged.items():
+                remote_sock = os.path.join(net_dir, f"mcp-{name}.sock")
+                remote_log = os.path.join(net_dir, f"host-mcp-{name}-socat.log")
+                server_cmd = [
+                    sys.executable,
+                    "-m",
+                    "tkt.remote_mcp_proxy",
+                    "--url",
+                    entry["url"],
+                    "--token-file",
+                    os.path.expanduser(entry["token_file"]),
+                ]
+                if "header" in entry:
+                    server_cmd += ["--header", entry["header"]]
+                sock_paths.append(remote_sock)
+                with open(remote_log, "w", encoding="utf-8") as f:
+                    procs.append(
+                        subprocess.Popen(
+                            [
+                                "socat",
+                                f"UNIX-LISTEN:{remote_sock},fork",
+                                _socat_system_arg(server_cmd),
+                            ],
+                            stdout=f,
+                            stderr=subprocess.STDOUT,
+                            start_new_session=True,
+                            preexec_fn=_set_pdeathsig,
+                        )
+                    )
             # Wait for all listeners (LLM and session) to create their sockets
             # before the sandbox's socats and MCP clients try to connect, so
             # there is no startup race.
@@ -665,9 +752,11 @@ class Sandbox(Tool):
                 time.sleep(0.05)
             if any(p.poll() is not None for p in procs):
                 detail = ""
-                logs = [os.path.join(net_dir, f"host-llm-{p}.log") for p in self._ports] + [
-                    os.path.join(net_dir, "host-session-socat.log")
-                ]
+                logs = (
+                    [os.path.join(net_dir, f"host-llm-{p}.log") for p in self._ports]
+                    + [os.path.join(net_dir, "host-session-socat.log")]
+                    + [os.path.join(net_dir, f"host-mcp-{n}-socat.log") for n in bridged]
+                )
                 try:
                     for lp in logs:
                         if os.path.exists(lp):
@@ -915,7 +1004,11 @@ class Sandbox(Tool):
         # (net_dir is validated non-None in the bridge mount block above.)
         if not network and bridge_llm and net_dir is not None:
             argv += ["--setenv", "TKT_SESSION_SOCKET", os.path.join(net_dir, SESSION_SOCKET_NAME)]
-            argv += ["--setenv", "OPENCODE_CONFIG_CONTENT", json.dumps(session_mcp_config(net_dir))]
+            argv += [
+                "--setenv",
+                "OPENCODE_CONFIG_CONTENT",
+                json.dumps(opencode_config_content(net_dir, self._bridged_remote_mcp())),
+            ]
             # The wake plugin reaches the sandbox only via the host config
             # dir's plugin autoload (a copied real file); warn when that
             # copy is missing or stale so feedback delivery does not fail

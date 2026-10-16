@@ -72,6 +72,12 @@
         ]
       },
       "port": [8080, 8090],
+      "remote_mcp": {
+        "github": {
+          "url": "https://api.githubcopilot.com/mcp/",
+          "token_file": "~/.github-mcp-token"
+        }
+      },
       "env": {
         "GIT_EDITOR": "true",
         "GIT_SEQUENCE_EDITOR": "true"

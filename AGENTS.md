@@ -59,6 +59,11 @@ branch into a single commit and rebase it onto main.
   blocks). Restricted runs bridge a per-launch unix socket
   (`net-*/session.sock`) to a host-side MCP session server hosting the
   companion and Plannotator tools; there is no sandbox-to-host TCP bridge.
+  Restricted runs also front each configured `remote_mcp` server (e.g. GitHub)
+  with a per-launch `mcp-<name>.sock` listener spawning a host-side
+  `tkt.remote_mcp_proxy` (token injected on the host only), redirected from
+  OpenCode's same-key config entry via `OPENCODE_CONFIG_CONTENT`;
+  full-network (`--network`) runs do not front remote MCP at all.
   Workspaces created with `tkt new
   --shared-worktree` (persisted in `tkt.json`; default from `shared_worktree`
   in `local.jsonc`) create no `.agent` directory at all: the whole workspace
@@ -68,6 +73,14 @@ branch into a single commit and rebase it onto main.
   the superpowers docs worktree lives at `<workspace>/superpowers-docs`
   (`Superpowers.remove` handles either location), and
   `pull-sandbox`/`sandbox-reset` refuse such workspaces.
+- **`tkt/remote_mcp_proxy.py`** — host-side stdio↔streamable-HTTP MCP proxy
+  spawned per connection by the bridge socat; relays `tools/list`/`tools/call`
+  verbatim to a remote MCP server with an injected `Authorization` header so
+  the PAT never enters the sandbox. The `mcp-<name>.sock` bridge socket is an
+  unauthenticated same-UID capability inside the sandbox; a process that pipes
+  to it directly bypasses OpenCode's per-tool permission rules, which is
+  accepted (same trust model as `session.sock`) — host-side enforcement is
+  intentionally absent (spec D5).
 - **`tkt/pull.py`** — `Pull` helper: implements `tkt pull-sandbox`, transferring
   committed and/or uncommitted agent work from `.agent/<pkg>` worktrees onto
   human-workspace branches, with a resumable `--finish`/`--abort` lifecycle and a

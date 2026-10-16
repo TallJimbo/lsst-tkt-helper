@@ -27,9 +27,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -42,9 +44,10 @@ from tkt.sandbox import (
     SESSION_SOCKET_NAME,
     Sandbox,
     _bridge_net_dir,
+    _socat_system_arg,
     cleanup_stale_bridges,
+    opencode_config_content,
     render_agents_md,
-    session_mcp_config,
 )
 
 
@@ -212,6 +215,27 @@ def test_full_network_argv_shares_host_network(workspace, sandbox):
     assert "socat TCP4-LISTEN" not in _inner_of(argv)
 
 
+def test_no_remote_mcp_token_or_override_in_full_network_argv(tmp_path, monkeypatch):
+    """Full-network runs are unsupported for remote MCP by design (D3):
+    no token export, no config override — and restricted runs already
+    carry only the socket override, never the token (Task 2 test).
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tok = tmp_path / "tok"
+    tok.write_text("ghp_secret\n")
+    remote = {"github": {"url": "https://api.githubcopilot.com/mcp/", "token_file": str(tok)}}
+    argv = Sandbox(command=[], remote_mcp=remote)._build_common_argv(
+        home=str(tmp_path),
+        mounts=[],
+        inner="exec true",
+        network=True,
+    )
+    joined = " ".join(argv)
+    assert "ghp_secret" not in joined
+    assert "GITHUB_TOKEN" not in joined
+    assert "mcp-github.sock" not in joined  # no override without the bridge
+
+
 def test_single_repo_network_modes(tmp_path, sandbox):
     """Single-repo restricted vs. full differ like the workspace modes."""
     net_dir = tmp_path / "net"
@@ -255,11 +279,16 @@ def test_from_json_rejects_vc_port(tmp_path):
         Sandbox.from_json_data({"command": [], "vc_port": 9090})
 
 
-def test_start_bridge_session_listener(workspace, tmp_path, monkeypatch):
+def test_start_bridge_session_listener(workspace, tmp_path, monkeypatch, request):
     """The bridge spawns a session listener; session.sock exists and serves
     the spawn command over the socket.
     """
-    monkeypatch.setenv("HOME", str(tmp_path))
+    # socat caps UNIX socket paths at 108 characters and the bridge's socket
+    # directory lives under HOME, which pytest's default tmp_path base puts
+    # right at that boundary; use a short HOME instead.
+    short_home = tempfile.TemporaryDirectory(prefix="tktb", dir="/tmp")
+    request.addfinalizer(short_home.cleanup)
+    monkeypatch.setenv("HOME", short_home.name)
     sandbox = Sandbox(command=[], port=18089)
     net_dir, procs = sandbox._start_bridge(str(tmp_path / "ws"))
     try:
@@ -299,6 +328,148 @@ def test_start_bridge_session_listener(workspace, tmp_path, monkeypatch):
     assert not os.path.exists(net_dir)
 
 
+def test_from_json_data_parses_remote_mcp():
+    """remote_mcp config parses; missing keys and extra keys are rejected."""
+    ok = Sandbox.from_json_data(
+        {"command": [], "remote_mcp": {"github": {"url": "https://x/mcp/", "token_file": "~/tok"}}}
+    )
+    assert ok._remote_mcp == {"github": {"url": "https://x/mcp/", "token_file": "~/tok"}}
+    # absent => empty
+    assert Sandbox.from_json_data({"command": []})._remote_mcp == {}
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data({"command": [], "remote_mcp": {"github": {"url": "x"}}})
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data({"command": [], "remote_mcp": {"github": {"token_file": "t"}}})
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data(
+            {"command": [], "remote_mcp": {"github": {"url": "x", "token_file": "t", "bogus": 1}}}
+        )
+    with pytest.raises(ValueError):
+        Sandbox.from_json_data({"command": [], "remote_mcp": ["github"]})
+
+
+def test_bridged_remote_mcp_requires_token_file(tmp_path):
+    """Only entries whose host token file exists are bridged."""
+    tok = tmp_path / "tok"
+    sb = Sandbox(command=[], remote_mcp={"github": {"url": "u", "token_file": str(tok)}})
+    assert sb._bridged_remote_mcp() == {}
+    tok.write_text("t\n")
+    assert set(sb._bridged_remote_mcp()) == {"github"}
+
+
+def test_start_bridge_remote_mcp_listener(workspace, tmp_path, monkeypatch, request):
+    """A bridged entry gets an mcp-<name>.sock listener; an unbridged one
+    does not and must not stall or fail bridge startup.
+    """
+    # Short HOME for the same 108-character socat socket-path reason as
+    # test_start_bridge_session_listener.
+    short_home = tempfile.TemporaryDirectory(prefix="tktb", dir="/tmp")
+    request.addfinalizer(short_home.cleanup)
+    monkeypatch.setenv("HOME", short_home.name)
+    tok = tmp_path / "tok"
+    tok.write_text("secret\n")
+    sandbox = Sandbox(
+        command=[],
+        port=18089,
+        remote_mcp={
+            "github": {"url": "http://127.0.0.1:1/mcp", "token_file": str(tok)},
+            "nope": {"url": "http://127.0.0.1:1/mcp", "token_file": str(tmp_path / "absent")},
+        },
+    )
+    net_dir, procs = sandbox._start_bridge(str(tmp_path / "ws"))
+    try:
+        assert os.path.exists(os.path.join(net_dir, "mcp-github.sock"))
+        assert not os.path.exists(os.path.join(net_dir, "mcp-nope.sock"))
+    finally:
+        sandbox._stop_bridge(net_dir, procs)
+    assert not os.path.exists(net_dir)
+
+
+def test_socat_system_arg_escapes_separators():
+    """Colons/commas are socat parameter separators: escaped; clean
+    commands unchanged.
+    """
+    arg = _socat_system_arg(["python", "-m", "pkg", "--url", "https://a.example/mcp"])
+    assert arg.startswith("SYSTEM:")
+    assert "\\:" in arg and "https\\://a.example/mcp" in arg
+    arg2 = _socat_system_arg(["/bin/true", "plain"])
+    assert arg2 == "SYSTEM:/bin/true plain"
+    arg3 = _socat_system_arg(["sh", "-c", "echo a,b"])
+    assert "\\," in arg3
+
+
+def test_start_bridge_escapes_socat_system_args(workspace, tmp_path, monkeypatch):
+    """Listener SYSTEM args must have ':' and ',' escaped so forked
+    children can parse them (regression: URL with https:// broke
+    parsing).
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tok = tmp_path / "tok"
+    tok.write_text("secret\n")
+    captured: list[list[str]] = []
+    real_popen = subprocess.Popen
+
+    def fake_popen(argv, **kwargs):
+        argv = list(argv)
+        captured.append(argv)
+        for a in argv:
+            if a.startswith("UNIX-LISTEN:"):
+                path = a[len("UNIX-LISTEN:") :].rsplit(",", 1)[0]
+                open(path, "w").close()
+        safe = {
+            k: v for k, v in kwargs.items() if k in ("stdout", "stderr", "start_new_session", "preexec_fn")
+        }
+        return real_popen(["sleep", "3600"], **safe)
+
+    monkeypatch.setattr("tkt.sandbox.subprocess.Popen", fake_popen)
+    sandbox = Sandbox(
+        command=[],
+        port=18089,
+        remote_mcp={"github": {"url": "https://api.githubcopilot.com/mcp/", "token_file": str(tok)}},
+    )
+    net_dir, procs = sandbox._start_bridge(str(tmp_path / "ws"))
+    try:
+        sys_args = [a[2] for a in captured if a[0] == "socat" and a[2].startswith("SYSTEM:")]
+        assert sys_args, "no socat listeners captured"
+        for s in sys_args:
+            body = s[len("SYSTEM:") :]
+            # every unescaped colon would be parsed as a parameter separator
+            assert not re.search(r"(?<!\\):", body), s
+        github_arg = next(s for s in sys_args if "remote_mcp_proxy" in s)
+        assert "\\:" in github_arg
+        assert "https\\://api.githubcopilot.com/mcp/" in github_arg
+    finally:
+        sandbox._stop_bridge(net_dir, procs)
+
+
+def test_common_argv_injects_remote_mcp_override(workspace, tmp_path, monkeypatch):
+    """Restricted runs redirect the bridged server key to its socket;
+    unbridged entries get no override (host config entry stays).
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tok = tmp_path / "tok"
+    tok.write_text("secret\n")
+    net_dir = tmp_path / "net-r"
+    net_dir.mkdir()
+    remote = {
+        "github": {"url": "https://api.githubcopilot.com/mcp/", "token_file": str(tok)},
+        "ghost": {"url": "https://example.invalid/mcp/", "token_file": str(tmp_path / "absent")},
+    }
+    argv = Sandbox(command=[], remote_mcp=remote)._build_common_argv(
+        home=str(tmp_path),
+        mounts=[],
+        inner="exec true",
+        network=False,
+        net_dir=str(net_dir),
+        ports=(18089,),
+    )
+    cfg = json.loads(argv[argv.index("OPENCODE_CONFIG_CONTENT") + 1])
+    assert cfg["mcp"]["github"]["command"][-1] == f"UNIX-CONNECT:{net_dir / 'mcp-github.sock'}"
+    assert "ghost" not in cfg["mcp"]
+    # the token value never appears in restricted-mode argv
+    assert "secret" not in " ".join(argv)
+
+
 def test_common_argv_injects_session_env(workspace, tmp_path, monkeypatch):
     """The session socket env vars are injected after the configured env."""
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -328,12 +499,15 @@ def test_common_argv_injects_session_env(workspace, tmp_path, monkeypatch):
     assert "TCP-LISTEN" not in joined  # in-sandbox vc socat is gone, too
 
 
-def test_session_mcp_config_has_no_plugin_key():
-    """The env-config plugin array is dead in the installed OpenCode: config
-    is mcp-only.
-    """
-    cfg = session_mcp_config("/x/net-1")
-    assert set(cfg) == {"mcp"}
+def test_opencode_config_content_wires_bridged_mcp():
+    """Session socket plus one local socat override per bridged remote MCP."""
+    cfg = opencode_config_content("/x/net-1", ["github"])
+    assert set(cfg) == {"mcp"}  # the env-config plugin channel is dead: mcp-only
+    assert cfg["mcp"]["tkt-session"]["command"][-1] == "UNIX-CONNECT:/x/net-1/session.sock"
+    assert cfg["mcp"]["github"]["type"] == "local"
+    assert cfg["mcp"]["github"]["command"][-1] == "UNIX-CONNECT:/x/net-1/mcp-github.sock"
+    # no names => session only (unchanged behavior)
+    assert set(opencode_config_content("/x/net-1")["mcp"]) == {"tkt-session"}
 
 
 def _wake_restricted_argv(tmp_path, monkeypatch, *, network=False):
