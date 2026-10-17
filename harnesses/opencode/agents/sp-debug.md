@@ -17,6 +17,12 @@ permissions:
   - { action: skill, resource: "*", effect: allow }
   - { action: webfetch, resource: "*", effect: ask }
   - { action: websearch, resource: "*", effect: ask }
+  # GitHub MCP: fully hidden here. Read-only GitHub access belongs to the
+  # code-review/pr-responder profiles; agent-level "ask" is ineffective
+  # because its approval prompt is fail-open under ACP clients (e.g. Zed
+  # external agents). The global opencode.jsonc also denies the write
+  # tools per-tool, covering agents with no profile file.
+  - { action: "github_*", resource: "*", effect: deny }
 ---
 
 You are the debugging agent. Load the `systematic-debugging` skill at the start

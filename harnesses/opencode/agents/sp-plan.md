@@ -19,6 +19,12 @@ permissions:
   - { action: edit, resource: "*/superpowers-docs/*/plans/*.md", effect: allow }
   - { action: edit, resource: "docs/superpowers/plans/*.md", effect: allow }
   - { action: edit, resource: ".agent/docs/superpowers/plans/*.md", effect: allow }
+  # GitHub MCP: fully hidden here. Read-only GitHub access belongs to the
+  # code-review/pr-responder profiles; agent-level "ask" is ineffective
+  # because its approval prompt is fail-open under ACP clients (e.g. Zed
+  # external agents). The global opencode.jsonc also denies the write
+  # tools per-tool, covering agents with no profile file.
+  - { action: "github_*", resource: "*", effect: deny }
 ---
 
 You are the plan-writing agent. Load the `writing-plans` skill at the start of
