@@ -34,7 +34,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from ._sessionmanagers import BrainstormManager, PlannotatorManager, _format_brainstorm_info
 
@@ -69,7 +69,8 @@ def _inbox_call(upstream_tool: str, arguments: dict[str, Any]) -> str:
                     res = await session.call_tool(upstream_tool, arguments)
                 texts = [c.text for c in res.content if isinstance(c, TextContent)]
                 joined = "\n".join(texts)
-                if getattr(res, "isError", False):
+                # mcp 2.x models use snake_case attributes.
+                if res.is_error:
                     return f"plannotator_inbox upstream error: {joined}"
                 return joined
 
@@ -90,7 +91,7 @@ def safe_subpath(workspace: str, candidate: str) -> str:
     return str(resolved)
 
 
-def build_session_tools(mcp: FastMCP, *, workspace: str) -> None:
+def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
     """Register the session tools on ``mcp``."""
     brainstorm = BrainstormManager(root=workspace)
     plannotator_mgr = PlannotatorManager()

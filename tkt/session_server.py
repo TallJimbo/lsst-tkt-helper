@@ -31,14 +31,14 @@ from __future__ import annotations
 
 from typing import NoReturn
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from ._session_tools import build_session_tools
 
 
 def run_session_server(workspace: str) -> NoReturn:
     """Run the session-tool MCP server over stdio until EOF."""
-    mcp = FastMCP(name="tkt-session")
+    mcp = MCPServer(name="tkt-session")
     build_session_tools(mcp, workspace=str(workspace))
     mcp.run()  # stdio; EOF on socket close ends the process
     raise SystemExit(0)

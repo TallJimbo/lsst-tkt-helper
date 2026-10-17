@@ -31,9 +31,9 @@ Run as ``python tests/fake_github_mcp.py <port>``.  Not a pytest module.
 
 import sys
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 
-mcp = FastMCP(name="fake-github")
+mcp = MCPServer(name="fake-github")
 
 
 @mcp.tool()
@@ -46,5 +46,4 @@ async def whoami(ctx: Context) -> str:
 
 
 if __name__ == "__main__":
-    mcp.settings.port = int(sys.argv[1])
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="streamable-http", port=int(sys.argv[1]))

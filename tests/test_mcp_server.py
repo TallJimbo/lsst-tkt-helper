@@ -211,7 +211,7 @@ def test_mcp_server_run_server_builds_warm_sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server, "WarmSandbox", fake_warm)
     # mcp.run() drives the stdio transport, which would block/error on the
     # test runner's stdin; neutralize it so we only exercise construction.
-    monkeypatch.setattr(mcp_server.FastMCP, "run", lambda self: None)
+    monkeypatch.setattr(mcp_server.MCPServer, "run", lambda self: None)
     sandbox = mock.Mock()
     mcp_server.run_server(sandbox, cwd=str(tmp_path), repo_dir=str(tmp_path))
     assert captured["kwargs"]["repo_dir"] == str(tmp_path)
@@ -239,7 +239,7 @@ def test_mcp_server_run_server_registers_session_tools(tmp_path, monkeypatch):
     # must sit on the defining module for the local import to pick it up.
     monkeypatch.setattr(_session_tools, "build_session_tools", spy_build)
     monkeypatch.setattr(mcp_server, "WarmSandbox", lambda *args, **kwargs: mock.Mock())
-    monkeypatch.setattr(mcp_server.FastMCP, "run", lambda self: None)
+    monkeypatch.setattr(mcp_server.MCPServer, "run", lambda self: None)
     mcp_server.run_server(mock.Mock(), cwd=str(tmp_path), repo_dir=str(tmp_path))
     assert captured.get("called") is True
     assert captured["workspace"] == str(tmp_path)

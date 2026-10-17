@@ -57,7 +57,7 @@ import shlex
 import subprocess
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel
 
 from ._sessionmanagers import BrainstormManager  # re-exported via __all__
@@ -722,7 +722,7 @@ def run_server(
     repo_dir=None,
     conda_env: str | None = None,
 ) -> None:
-    """Run the FastMCP stdio server exposing the ``bash`` tool.
+    """Run the MCPServer stdio server exposing the ``bash`` tool.
 
     ``sandbox`` is the configured ``tkt.sandbox.Sandbox`` tool. ``cwd`` is the
     project root (Zed spawns this process with cwd = project root). Warm start
@@ -735,7 +735,7 @@ def run_server(
         cwd=cwd,
         conda_env=conda_env,
     )
-    mcp = FastMCP(name="tkt")
+    mcp = MCPServer(name="tkt")
 
     from ._session_tools import build_session_tools
 

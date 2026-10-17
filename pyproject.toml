@@ -43,7 +43,7 @@ extend-select = [
     "RUF100", # Warn about unused noqa
 ]
 
-# FastMCP tool docstrings (in mcp_server.py) are the agent-facing MCP
+# MCPServer tool docstrings (in mcp_server.py) are the agent-facing MCP
 # contract: what matters is that they render well to consuming agents, not
 # that they follow numpydoc. Exempt the file from the numpydoc content rules
 # (D4). Internal helpers in the same file remain well-documented by hand.

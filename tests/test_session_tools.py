@@ -35,10 +35,10 @@ import pytest
 from tkt._session_tools import build_session_tools, safe_subpath
 
 pytest.importorskip("mcp")
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 
-def _tools(mcp: FastMCP) -> set[str]:
+def _tools(mcp: MCPServer) -> set[str]:
     return {t.name for t in asyncio.run(mcp.list_tools())}
 
 
@@ -52,7 +52,7 @@ def _call(tool: Any, **kwargs: Any) -> Any:
 
 def test_session_tools_registered() -> None:
     """The builder registers exactly the session-lifecycle tools."""
-    mcp = FastMCP("t")
+    mcp = MCPServer("t")
     build_session_tools(mcp, workspace="/tmp/ws")
     names = _tools(mcp)
     assert {"brainstorm_server", "plannotator"} <= names
@@ -60,7 +60,7 @@ def test_session_tools_registered() -> None:
 
 def test_no_host_danger_tools() -> None:
     """Guard: no host execution tools on the session surface."""
-    mcp = FastMCP("t")
+    mcp = MCPServer("t")
     build_session_tools(mcp, workspace="/tmp/ws")
     forbidden = {"bash", "read", "write", "edit", "glob", "grep", "ls", "todo_write"}
     assert not forbidden & _tools(mcp)
@@ -91,7 +91,7 @@ def test_plannotator_tool_delegates_and_contains(monkeypatch) -> None:
             return {"type": "open", "url": "http://localhost:9/x", "session": "pn-1", "reused": False}
 
     monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
-    mcp = FastMCP("t")
+    mcp = MCPServer("t")
     build_session_tools(mcp, workspace="/ws")
     # The installed SDK's list_tools() returns schema-only mcp.types.Tool
     # objects; the registered callable lives on the tool manager's Tool.
@@ -153,7 +153,7 @@ def test_inbox_send_maps_and_forwards(fake_inbox_cli) -> None:
     """``send`` maps to upstream ``send_message`` and forwards arguments."""
     import json as _json
 
-    mcp = FastMCP("t")
+    mcp = MCPServer("t")
     build_session_tools(mcp, workspace="/ws")
     tool = mcp._tool_manager.get_tool("plannotator_inbox")
     out = _call(tool, action="send", text="hello")
@@ -167,7 +167,7 @@ def test_inbox_guide_submit_forwards_payload_verbatim(fake_inbox_cli) -> None:
     """
     import json as _json
 
-    mcp = FastMCP("t")
+    mcp = MCPServer("t")
     build_session_tools(mcp, workspace="/ws")
     tool = mcp._tool_manager.get_tool("plannotator_inbox")
     payload = {"title": "Guided tour", "steps": [{"label": "diff", "note": "start here"}], "n": 2}
@@ -207,7 +207,7 @@ def test_inbox_unknown_action_rejected_without_spawn(monkeypatch) -> None:
         raise AssertionError("upstream must not spawn for a non-allow-listed action")
 
     monkeypatch.setattr(stdio_mod, "stdio_client", _spy)
-    mcp = FastMCP("t")
+    mcp = MCPServer("t")
     build_session_tools(mcp, workspace="/ws")
     tool = mcp._tool_manager.get_tool("plannotator_inbox")
     out = _call(tool, action="approve", text="rm -rf")

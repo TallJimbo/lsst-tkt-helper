@@ -51,6 +51,7 @@ import mcp.types as types
 from mcp import ClientSession
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 from mcp.server import Server
+from mcp.server.context import ServerRequestContext
 from mcp.server.stdio import stdio_server
 
 
@@ -72,18 +73,27 @@ async def _serve(url: str, headers: dict[str, str]) -> None:
     # streamable_http_client does not close a caller-provided client, so
     # own its lifecycle here.
     async with create_mcp_http_client(headers=headers) as http:
-        async with streamable_http_client(url, http_client=http) as (read, write, _get_session_id):
+        async with streamable_http_client(url, http_client=http) as (read, write):
             async with ClientSession(read, write) as upstream:
                 await upstream.initialize()
                 server = Server("tkt-remote-mcp")
 
-                @server.list_tools()
-                async def list_tools() -> list[types.Tool]:
-                    return (await upstream.list_tools()).tools
+                async def list_tools(
+                    ctx: ServerRequestContext[Any, Any], params: types.PaginatedRequestParams
+                ) -> types.ListToolsResult:
+                    # Relay the upstream result verbatim (no pagination
+                    # handling: the proxy is stateless per connection).
+                    return await upstream.list_tools()
 
-                @server.call_tool()
-                async def call_tool(name: str, arguments: dict[str, Any] | None) -> types.CallToolResult:
-                    return await upstream.call_tool(name, arguments)
+                async def call_tool(
+                    ctx: ServerRequestContext[Any, Any], params: types.CallToolRequestParams
+                ) -> types.CallToolResult:
+                    # params.arguments is relayed untouched: calls missing
+                    # upstream-required fields fail upstream, not here.
+                    return await upstream.call_tool(params.name, params.arguments)
+
+                server.add_request_handler("tools/list", types.PaginatedRequestParams, list_tools)
+                server.add_request_handler("tools/call", types.CallToolRequestParams, call_tool)
 
                 async with stdio_server() as (client_read, client_write):
                     await server.run(client_read, client_write, server.create_initialization_options())

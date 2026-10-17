@@ -7,7 +7,9 @@ Prefer simple solutions to thorough handling of edge cases; the users of this to
 ## Development setup
 
 - **Python**: 3.13
-- **Dependencies**: `click`, `GitPython`, `pyyaml`, `json5`
+- **Dependencies**: `click`, `GitPython`, `pyyaml`, `json5`, `mcp` (requires
+  2.x: `mcp.server.mcpserver.MCPServer`; `mcp.server.fastmcp` no longer
+  exists)
 - **License**: BSD-3-Clause; all `.py` files include a license header — preserve it for new files.
 - **Distribution**: `tkt` is **not** distributed via pip or any package index. It is intended to be used directly from a git clone. There is no `setup.py`, `setup.cfg` (for packaging), or `MANIFEST.in`. Non-`.py` files (e.g. `tkt/AGENTS.md.in`, `pyrightconfig.json`) live alongside the Python source and are located at runtime via `os.path.dirname(__file__)`. Do **not** add packaging configuration.
 
@@ -65,7 +67,7 @@ branch into a single commit and rebase it onto main.
   OpenCode's same-key config entry via `OPENCODE_CONFIG_CONTENT`;
   full-network (`--network`) runs do not front remote MCP at all.
   Workspaces created with `tkt new
---shared-worktree` (persisted in `tkt.json`; default from `shared_worktree`
+  --shared-worktree` (persisted in `tkt.json`; default from `shared_worktree`
   in `local.jsonc`) create no `.agent` directory at all: the whole workspace
   is bind-mounted read-write (a single `--bind` of the workspace root) so
   the agent works directly on the human's branches, the sandbox sets up EUPS
