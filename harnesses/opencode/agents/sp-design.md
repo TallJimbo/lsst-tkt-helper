@@ -17,14 +17,18 @@ permissions:
   - { action: webfetch, resource: "*", effect: ask }
   - { action: websearch, resource: "*", effect: ask }
   - { action: edit, resource: "*", effect: deny }
-  - { action: edit, resource: "*/superpowers-docs/*/specs/*.md", effect: allow }
+  - {
+      action: edit,
+      resource: "*/superpowers-docs/*/specs/*.md",
+      effect: allow,
+    }
   - { action: edit, resource: "docs/superpowers/specs/*.md", effect: allow }
-  # GitHub MCP: fully hidden here. Read-only GitHub access belongs to the
-  # code-review/pr-responder profiles; agent-level "ask" is ineffective
-  # because its approval prompt is fail-open under ACP clients (e.g. Zed
-  # external agents). The global opencode.jsonc also denies the write
-  # tools per-tool, covering agents with no profile file.
+  # GitHub MCP: some read-only access, for evaluating third-party products.
   - { action: "github_*", resource: "*", effect: deny }
+  - { action: "github_search_repositories", resource: "*", effect: allow }
+  - { action: "github_search_pull_requests", resource: "*", effect: allow }
+  - { action: "github_search_code", resource: "*", effect: allow }
+  - { action: "github_get_file_contents", resource: "*", effect: allow }
 ---
 
 You are the design agent. Load the `brainstorming` skill at the start of the
