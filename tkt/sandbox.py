@@ -27,7 +27,6 @@ from __future__ import annotations
 __all__ = ("Sandbox", "cleanup_stale_bridges", "render_agents_md")
 
 import ctypes
-import filecmp
 import json
 import logging
 import os
@@ -47,7 +46,6 @@ import git
 from ._environment import Environment, Tool
 from ._sessionmanagers import sweep_session_registry
 from ._workspace import Workspace
-from .install import wake_plugin_dest, wake_plugin_source
 
 # Subdirectory of the workspace where the agent's writable state lives.
 AGENT_SUBDIR = ".agent"
@@ -100,7 +98,7 @@ def opencode_config_content(net_dir: str, remote_mcp_names: Iterable[str] = ()) 
     host's unreachable remote entry.  Only the ``mcp`` block goes
     through this channel: the ``plugin`` array in env config is NOT
     honored by the installed OpenCode (its entries are npm package
-    specs), so the wake plugin is delivered as a real copied file in
+    specs), so autoloaded plugins are delivered as real copied files in
     ``~/.config/opencode/plugin/`` instead (see tkt.install).
     """
 
@@ -111,26 +109,6 @@ def opencode_config_content(net_dir: str, remote_mcp_names: Iterable[str] = ()) 
     for name in remote_mcp_names:
         mcp[name] = local(os.path.join(net_dir, f"mcp-{name}.sock"))
     return {"mcp": mcp}
-
-
-def _warn_if_wake_plugin_stale() -> None:
-    """Warn (non-fatally) when the host wake-plugin copy is missing or stale.
-
-    The wake plugin must be a real copy in ``~/.config/opencode/plugin/``
-    (the installed OpenCode's plugin loader skips symlinks and the
-    env-config ``plugin`` array is dead); without it, Plannotator feedback
-    never wakes the agent.
-    """
-    try:
-        dst = wake_plugin_dest()
-        if not os.path.isfile(dst) or not filecmp.cmp(wake_plugin_source(), dst, shallow=False):
-            logging.warning(
-                f"Wake plugin copy {dst} is missing or stale in the host OpenCode config: "
-                "restricted launches cannot deliver Plannotator feedback without it. "
-                "Fix with `tkt install-opencode-agent`."
-            )
-    except OSError as exc:
-        logging.warning(f"Could not check the wake plugin copy ({exc}); run `tkt install-opencode-agent`.")
 
 
 # Environment variables that carry the OpenCode background-service password
@@ -1009,12 +987,6 @@ class Sandbox(Tool):
                 "OPENCODE_CONFIG_CONTENT",
                 json.dumps(opencode_config_content(net_dir, self._bridged_remote_mcp())),
             ]
-            # The wake plugin reaches the sandbox only via the host config
-            # dir's plugin autoload (a copied real file); warn when that
-            # copy is missing or stale so feedback delivery does not fail
-            # silently.  Non-fatal: the session MCP tools still work without
-            # the wake layer.
-            _warn_if_wake_plugin_stale()
         # Namespaces and cleanup.  Network access is isolated by default: only
         # the bridged localhost port is reachable from the agent.  When full
         # network access is requested we deliberately omit --unshare-net so the

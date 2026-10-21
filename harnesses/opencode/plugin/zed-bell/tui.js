@@ -13,7 +13,7 @@
 // event directly; both return an unsubscribe function. Prefer listen (one
 // subscription for the whole attention set) with a per-type on fallback,
 // and unwrap defensively so either delivery shape rings. No ACP guard: there
-// is no TUI under ACP. Keep the never-throw posture of plannotator-wake.js:
+// is no TUI under ACP. Keep the never-throw posture:
 // every host call is capability-guarded and wrapped, because a broken
 // listener must never crash the TUI. setup returns the unsubscribe cleanup
 // (returning a truthy non-function would make the host's teardown throw).

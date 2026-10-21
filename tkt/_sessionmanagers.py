@@ -570,7 +570,7 @@ class PlannotatorManager:
         return {"type": "open", "url": url, "session": session_id, "reused": False}
 
     def status(self, workspace: str) -> list[dict[str, Any]]:
-        """List this workspace's sessions for the wake layer.
+        """List this workspace's sessions (agents pull ``result`` per id).
 
         Returns the union of registry entries owned by the workspace and
         CLI-listed sessions matching it.  Every entry tied to a registry
@@ -582,9 +582,9 @@ class PlannotatorManager:
         ``result()`` still returns its feedback — is returned with
         ``state="closed"``.  CLI-listed sessions with no registry match
         (host-started, unregistered) pass through unchanged: they
-        legitimately have no id, the wake layer covers agent-started
-        sessions.  Live entries sort first, then newest-first by
-        ``startedAt``/``opened_at``.
+        legitimately have no id: ``result``/``close`` routing covers
+        registered (agent-started) sessions.  Live entries sort first, then
+        newest-first by ``startedAt``/``opened_at``.
         """
         ws = str(Path(workspace).resolve())
         entries = {sid: e for sid, e in _registry_entries().items() if e.get("workspace") == ws}

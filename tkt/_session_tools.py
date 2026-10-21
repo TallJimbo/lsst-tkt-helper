@@ -170,8 +170,9 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
         ``open`` attaches to a live session for the same target when one
         exists, otherwise spawns a detached host session; it returns the
         session ``url`` — hand it to the human **verbatim** and end your turn
-        (feedback arrives later, or via ``action="result"`` after the human
-        says it is in).  Never run the ``plannotator`` CLI yourself.
+        (feedback is not pushed to you — pull it with ``action="result"``
+        once the human says it is in).  Never run the ``plannotator``
+        CLI yourself.
         ``status`` lists this workspace's sessions (live and closed-but-
         uncollected); entries carry the ``id`` accepted by ``result`` and
         ``close``; ``result`` reads the on-disk records for ``session``
@@ -239,8 +240,7 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
         walkthrough, ``guide_submit`` submits the authored guide JSON (in
         ``payload``).  ``wait`` blocks up to ~50 s for a reply and may return
         a cursor — call it again.  Nothing here wakes the human's browser at
-        the session; replies arrive to you via ``wait``/``read`` or as
-        injected ``Plannotator:`` messages.
+        the session; replies arrive to you via ``wait``/``read``.
 
         Args:
             action: One of "send", "read", "wait", "resolve", "decisions",

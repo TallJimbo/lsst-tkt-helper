@@ -37,12 +37,12 @@ __all__ = ("install_opencode_agent", "install_zed_agent")
 # plugin_source/dest).  A name may be a single ``.js`` file or a directory
 # plugin (e.g. ``zed-bell``, with an ``index.js`` server half and a ``tui.js``
 # TUI half); the source's type on disk decides which is installed.
-PLUGIN_NAMES: tuple[str, ...] = ("plannotator-wake.js", "zed-bell")
+PLUGIN_NAMES: tuple[str, ...] = ("zed-bell",)
 
 # tkt-owned plugin artifacts from older installs that live in the host plugin
-# dir but must be *removed* on install (they would otherwise keep loading
-# alongside their replacements).
-LEGACY_PLUGIN_NAMES: tuple[str, ...] = ("zed-bell.js",)
+# dir but must be *removed* on install (they would otherwise keep loading —
+# their feature was removed or a newer plugin form supersedes them).
+LEGACY_PLUGIN_NAMES: tuple[str, ...] = ("zed-bell.js", "plannotator-wake.js")
 
 
 def _repo_root() -> str:
@@ -65,21 +65,6 @@ def plugin_dest(name: str, home: str | None = None) -> str:
     symlink.
     """
     return os.path.join(home or os.path.expanduser("~"), ".config", "opencode", "plugin", name)
-
-
-def wake_plugin_source(repo_root: str | None = None) -> str:
-    """Repo path of the OpenCode wake plugin source file."""
-    return plugin_source("plannotator-wake.js", repo_root)
-
-
-def wake_plugin_dest(home: str | None = None) -> str:
-    """Host copy path of the OpenCode wake plugin.
-
-    The installed OpenCode's plugin loader picks up only real files under
-    ``~/.config/opencode/plugin/`` (it silently skips symlinks), which is why
-    delivery is a copy rather than a symlink.
-    """
-    return plugin_dest("plannotator-wake.js", home)
 
 
 def _ensure_link(link: str, target: str, *, dry_run: bool) -> None:
@@ -288,11 +273,11 @@ def install_opencode_agent(
 
     Makes ``~/.config/opencode/agents`` a symlink to
     ``harnesses/opencode/agents``, replacing any stale symlink, copies the
-    autoloaded plugins (wake + zed-bell) into
+    autoloaded plugins (zed-bell) into
     ``~/.config/opencode/plugin/`` for the global plugin autoload (real
     files or directories: the installed OpenCode's loader skips symlinks),
-    and removes legacy single-file plugin copies that a newer plugin form
-    supersedes (LEGACY_PLUGIN_NAMES).
+    and removes legacy plugin copies whose feature was removed outright or
+    that a newer plugin form supersedes (LEGACY_PLUGIN_NAMES).
     """
     repo_root = repo_root or _repo_root()
     home = home or os.path.expanduser("~")
@@ -304,7 +289,9 @@ def install_opencode_agent(
     for name in LEGACY_PLUGIN_NAMES:
         legacy = plugin_dest(name, home)
         if os.path.lexists(legacy):
-            logging.warning(f"Removing legacy plugin copy {legacy} (superseded by a newer plugin form)")
+            logging.warning(
+                f"Removing legacy plugin copy {legacy} (removed feature or superseded by a newer plugin form)"
+            )
             if not dry_run:
                 os.remove(legacy)
     for name in PLUGIN_NAMES:

@@ -25,7 +25,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import shutil
@@ -508,73 +507,6 @@ def test_opencode_config_content_wires_bridged_mcp():
     assert cfg["mcp"]["github"]["command"][-1] == "UNIX-CONNECT:/x/net-1/mcp-github.sock"
     # no names => session only (unchanged behavior)
     assert set(opencode_config_content("/x/net-1")["mcp"]) == {"tkt-session"}
-
-
-def _wake_restricted_argv(tmp_path, monkeypatch, *, network=False):
-    """Build a common argv restricted to the session bridge (or full net)."""
-    monkeypatch.setenv("HOME", str(tmp_path))
-    net_dir = tmp_path / "net-wake"
-    net_dir.mkdir()
-    return Sandbox(command=[])._build_common_argv(
-        home=str(tmp_path),
-        mounts=[],
-        inner="exec true",
-        network=network,
-        net_dir=str(net_dir) if network is False else None,
-        ports=(18089,),
-    )
-
-
-def _fake_wake_paths(tmp_path, monkeypatch):
-    """Point the wake-plugin source/dest resolution at tmp files."""
-    src = tmp_path / "repo-wake.js"
-    src.write_text("// wake\n")
-    dst = tmp_path / "cfg" / "plugin" / "plannotator-wake.js"
-    monkeypatch.setattr("tkt.sandbox.wake_plugin_source", lambda repo_root=None: str(src))
-    monkeypatch.setattr("tkt.sandbox.wake_plugin_dest", lambda home=None: str(dst))
-    return src, dst
-
-
-def test_wake_plugin_warning_when_host_copy_missing(tmp_path, monkeypatch, caplog):
-    """A missing host plugin copy warns (naming the fix) but does not raise."""
-    _fake_wake_paths(tmp_path, monkeypatch)
-    with caplog.at_level(logging.WARNING):
-        _wake_restricted_argv(tmp_path, monkeypatch)
-    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any("install-opencode-agent" in m for m in msgs)
-
-
-def test_wake_plugin_warning_when_host_copy_stale(tmp_path, monkeypatch, caplog):
-    """A bytewise-differing host plugin copy warns with the fix command."""
-    src, dst = _fake_wake_paths(tmp_path, monkeypatch)
-    dst.parent.mkdir(parents=True)
-    dst.write_text("// old stale copy\n")
-    with caplog.at_level(logging.WARNING):
-        _wake_restricted_argv(tmp_path, monkeypatch)
-    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any("install-opencode-agent" in m for m in msgs)
-
-
-def test_wake_plugin_no_warning_when_host_copy_matches(tmp_path, monkeypatch, caplog):
-    """An up-to-date host plugin copy (even a symlink) launches silently."""
-    src, dst = _fake_wake_paths(tmp_path, monkeypatch)
-    dst.parent.mkdir(parents=True)
-    dst.write_bytes(src.read_bytes())
-    with caplog.at_level(logging.WARNING):
-        _wake_restricted_argv(tmp_path, monkeypatch)
-    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert not any("wake plugin" in m.lower() for m in msgs)
-
-
-def test_wake_plugin_no_check_for_full_network_run(tmp_path, monkeypatch, caplog):
-    """Full-network launches do not check the plugin: it only matters for
-    the restricted session bridge.
-    """
-    _fake_wake_paths(tmp_path, monkeypatch)
-    with caplog.at_level(logging.WARNING):
-        _wake_restricted_argv(tmp_path, monkeypatch, network=True)
-    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert not any("wake plugin" in m.lower() for m in msgs)
 
 
 def test_inner_script_has_no_vc_socat(workspace, tmp_path, monkeypatch):

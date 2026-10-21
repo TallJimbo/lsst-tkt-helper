@@ -49,8 +49,9 @@ If you offer a browser-based visual companion (see the brainstorming skill) or
 Plannotator reviews, use the `brainstorm_server` / `plannotator` MCP tools: they
 run the session servers on the *host*, where the human's browser reaches them
 directly. Hand the human any URL the tool returns **verbatim** and end your
-turn — feedback arrives later as `Plannotator:`-prefixed messages or when you
-ask the `plannotator` tool for the session `result`. If you offer the Plannotator
+turn — feedback is not pushed to you. When the human prods you (or when you
+need the outcome), call the `plannotator` tool's `status` action to list
+session ids and `result` to fetch each outcome. If you offer the Plannotator
 Inbox / guided reviews, use the `plannotator_inbox` tool (`guide_brief` then
 `guide_submit` to author a guided review — ask your human to request it rather
 than clicking the web-UI button). Never launch `start-server.sh` or the

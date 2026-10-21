@@ -591,7 +591,7 @@ def test_cleanup_workspace_never_signals_own_group(fake_cli):
     assert list(Path(session_registry_dir()).glob("*.json")) == []
 
 
-# ========== PlannotatorManager.status (wake-layer contract) ==========
+# ========== PlannotatorManager.status (agent pull contract) ==========
 
 
 def test_status_lists_spawned_session_with_id_and_live_fields(fake_cli, monkeypatch):
@@ -618,7 +618,7 @@ def test_status_lists_spawned_session_with_id_and_live_fields(fake_cli, monkeypa
 def test_status_lists_closed_registry_session(fake_cli, monkeypatch):
     """Post-close invisibility regression: a submitted review vanishes from
     `sessions --json` while its registry entry remains; status must still
-    list it — with its id — so the wake layer can call result().
+    list it — with its id — so the agent can call result().
     """
     monkeypatch.setenv("FAKE_SESSION", "1")
     mgr = PlannotatorManager()
@@ -634,8 +634,8 @@ def test_status_lists_closed_registry_session(fake_cli, monkeypatch):
 
 def test_status_passes_through_unregistered_cli_session(fake_cli):
     """A host-started CLI session with no registry match passes through
-    unchanged: it legitimately has no id (the wake layer covers agent-started
-    sessions only).
+    unchanged: it legitimately has no id (``result`` routing covers
+    registered, agent-started sessions only).
     """
     cli_entry = {
         "index": 0,
