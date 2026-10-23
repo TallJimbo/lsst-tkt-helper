@@ -57,14 +57,6 @@ def _make_repo(root: str) -> None:
     os.makedirs(os.path.join(root, "harnesses", "opencode", "agents"))
     with open(os.path.join(root, "harnesses", "opencode", "agents", "sp-build.md"), "w") as f:
         f.write("# sp-build\n")
-    plugin_dir = os.path.join(root, "harnesses", "opencode", "plugin")
-    os.makedirs(plugin_dir, exist_ok=True)
-    bell_dir = os.path.join(plugin_dir, "zed-bell")
-    os.makedirs(bell_dir)
-    with open(os.path.join(bell_dir, "index.js"), "w") as f:
-        f.write("// zed bell server half v1\n")
-    with open(os.path.join(bell_dir, "tui.js"), "w") as f:
-        f.write("// zed bell tui half v1\n")
 
 
 def test_install_zed_agent_creates_symlinks(tmp_path):
@@ -179,71 +171,6 @@ def _plugin_dst(home: str, name: str) -> str:
     return os.path.join(home, ".config", "opencode", "plugin", name)
 
 
-def test_install_opencode_agent_copies_plugins(tmp_path):
-    """Verify the zed-bell directory plugin is copied (real files, not
-    symlinks) into the config dir, with both entrypoint files byte-exact.
-    """
-    _make_repo(str(tmp_path / "repo"))
-    home = str(tmp_path / "home")
-    install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
-    bell = _plugin_dst(home, "zed-bell")
-    assert os.path.isdir(bell)
-    assert not os.path.islink(bell)
-    for name, contents in (
-        ("index.js", "// zed bell server half v1\n"),
-        ("tui.js", "// zed bell tui half v1\n"),
-    ):
-        entry = os.path.join(bell, name)
-        assert os.path.isfile(entry)
-        assert not os.path.islink(entry)
-        with open(entry) as f:
-            assert f.read() == contents
-
-
-def test_install_opencode_agent_plugins_idempotent(tmp_path, caplog):
-    """Verify a second run leaves the identical plugin copies untouched and
-    says so.
-    """
-    _make_repo(str(tmp_path / "repo"))
-    home = str(tmp_path / "home")
-    install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
-    bell = _plugin_dst(home, "zed-bell")
-    files = [os.path.join(bell, "index.js"), os.path.join(bell, "tui.js")]
-    before = [os.stat(f).st_mtime_ns for f in files]
-    with caplog.at_level(logging.INFO):
-        install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
-    assert [os.stat(f).st_mtime_ns for f in files] == before
-    assert any(
-        "up to date" in record.getMessage() and bell in record.getMessage() for record in caplog.records
-    )
-
-
-def test_install_opencode_agent_zed_bell_replaces_stale_directory(tmp_path, caplog):
-    """Verify a stale installed zed-bell directory (differing bytes plus a
-    stray extra file) is replaced so the copy ends byte-equal to the source
-    tree.
-    """
-    _make_repo(str(tmp_path / "repo"))
-    home = str(tmp_path / "home")
-    bell = _plugin_dst(home, "zed-bell")
-    os.makedirs(bell)
-    with open(os.path.join(bell, "index.js"), "w") as f:
-        f.write("// stale old server half\n")
-    with open(os.path.join(bell, "tui.js"), "w") as f:
-        f.write("// zed bell tui half v1\n")
-    with open(os.path.join(bell, "stray.js"), "w") as f:
-        f.write("// not part of the plugin\n")
-    with caplog.at_level(logging.WARNING):
-        install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
-    assert sorted(os.listdir(bell)) == ["index.js", "tui.js"]
-    with open(os.path.join(bell, "index.js")) as f:
-        assert f.read() == "// zed bell server half v1\n"
-    with open(os.path.join(bell, "tui.js")) as f:
-        assert f.read() == "// zed bell tui half v1\n"
-    assert not os.path.lexists(os.path.join(bell, "stray.js"))
-    assert any("stale" in record.getMessage().lower() for record in caplog.records)
-
-
 def test_install_opencode_agent_removes_legacy_zed_bell_file(tmp_path, caplog):
     """Verify the legacy single-file zed-bell.js (Task-1 artifact) is
     removed from the host plugin dir, so it cannot keep loading.
@@ -258,8 +185,32 @@ def test_install_opencode_agent_removes_legacy_zed_bell_file(tmp_path, caplog):
         install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
     assert not os.path.lexists(legacy)
     assert any("legacy" in record.getMessage().lower() for record in caplog.records)
-    # The directory plugin itself still installs.
-    assert os.path.isfile(os.path.join(_plugin_dst(home, "zed-bell"), "tui.js"))
+
+
+def test_install_opencode_agent_removes_legacy_zed_bell_dir(tmp_path, caplog):
+    """Verify the legacy zed-bell directory plugin copy is removed entirely,
+    and a symlink named zed-bell is unlinked without touching its target.
+    """
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    bell = _plugin_dst(home, "zed-bell")
+    os.makedirs(bell)
+    with open(os.path.join(bell, "index.js"), "w") as f:
+        f.write("// zed bell server half\n")
+    with open(os.path.join(bell, "tui.js"), "w") as f:
+        f.write("// zed bell tui half\n")
+    with caplog.at_level(logging.WARNING):
+        install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    assert not os.path.lexists(bell)
+    assert any("legacy" in record.getMessage().lower() for record in caplog.records)
+    # A symlink named zed-bell pointing at a directory elsewhere: the link
+    # is unlinked, the target directory survives.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.symlink(str(elsewhere), bell)
+    install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    assert not os.path.lexists(bell)
+    assert elsewhere.is_dir()
 
 
 def test_install_opencode_agent_removes_legacy_wake_plugin(tmp_path, caplog):
@@ -276,8 +227,6 @@ def test_install_opencode_agent_removes_legacy_wake_plugin(tmp_path, caplog):
         install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
     assert not os.path.lexists(wake)
     assert any("legacy" in record.getMessage().lower() for record in caplog.records)
-    # The surviving plugin still installs.
-    assert os.path.isfile(os.path.join(_plugin_dst(home, "zed-bell"), "tui.js"))
     # A user-made symlink at the destination is a lexists() entry too: gone.
     elsewhere = tmp_path / "elsewhere.js"
     elsewhere.write_text("// somewhere else\n")
@@ -286,9 +235,9 @@ def test_install_opencode_agent_removes_legacy_wake_plugin(tmp_path, caplog):
     assert not os.path.lexists(wake)
 
 
-def test_install_opencode_agent_plugins_dry_run_writes_nothing(tmp_path):
-    """Verify dry run does not create the plugin dir, copy the plugins, or
-    remove legacy single files.
+def test_install_opencode_agent_legacy_dry_run_writes_nothing(tmp_path):
+    """Verify dry run removes nothing: the legacy single files and the
+    legacy zed-bell directory are all left in place.
     """
     _make_repo(str(tmp_path / "repo"))
     home = str(tmp_path / "home")
@@ -297,12 +246,16 @@ def test_install_opencode_agent_plugins_dry_run_writes_nothing(tmp_path):
     legacy = _plugin_dst(home, "zed-bell.js")
     with open(legacy, "w") as f:
         f.write("// legacy single-file bell\n")
+    bell = _plugin_dst(home, "zed-bell")
+    os.makedirs(bell)
+    with open(os.path.join(bell, "index.js"), "w") as f:
+        f.write("// zed bell server half\n")
     wake = _plugin_dst(home, "plannotator-wake.js")
     with open(wake, "w") as f:
         f.write("// wake plugin v1\n")
     install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home, dry_run=True)
-    assert not os.path.lexists(_plugin_dst(home, "zed-bell"))
     assert os.path.isfile(legacy)
+    assert os.path.isdir(bell)
     assert os.path.isfile(wake)
 
 

@@ -148,14 +148,10 @@ are exposed to OpenCode through a directory symlink, `~/.config/opencode/agents`
 skills they use come from the `superpowers/` submodule;
 `~/.config/opencode/opencode.jsonc` points its `skills.paths` at
 `superpowers/skills`. Neither lives at `~/.config/opencode/superpowers` anymore.
-`tkt install-opencode-agent` additionally copies the autoloaded
-`harnesses/opencode/plugin/zed-bell/` directory plugin (whose `index.js`
-server half is a no-op and whose `tui.js` half rings the terminal bell in the
-TUI process, where stdout is the pty) into `~/.config/opencode/plugin/` as a
-real directory (the installed OpenCode's plugin autoload skips symlinks), and
-removes tkt-owned plugin copies from older installs — the former wake plugin
-(its server-side prompt injection cannot wake ACP-driven sessions) among them;
-see `LEGACY_PLUGIN_NAMES` in `tkt/install.py`.
+`tkt install-opencode-agent` also removes tkt-owned plugin copies from older
+installs — the former bell plugin (it misfired, especially under ACP) and the
+former wake plugin (its server-side prompt injection cannot wake ACP-driven
+sessions) among them; see `LEGACY_PLUGIN_NAMES` in `tkt/install.py`.
 
 ## Zed integration
 

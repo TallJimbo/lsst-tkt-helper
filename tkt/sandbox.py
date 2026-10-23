@@ -98,8 +98,9 @@ def opencode_config_content(net_dir: str, remote_mcp_names: Iterable[str] = ()) 
     host's unreachable remote entry.  Only the ``mcp`` block goes
     through this channel: the ``plugin`` array in env config is NOT
     honored by the installed OpenCode (its entries are npm package
-    specs), so autoloaded plugins are delivered as real copied files in
-    ``~/.config/opencode/plugin/`` instead (see tkt.install).
+    specs), so plugins live as real files and directories in
+    ``~/.config/opencode/plugin/``, not in config (tkt.install purges
+    legacy copies from there).
     """
 
     def local(sock: str) -> dict[str, Any]:
