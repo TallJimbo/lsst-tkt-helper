@@ -167,9 +167,10 @@ def direnv(
 @cli.command(
     "install-zed-agent",
     help=(
-        "Symlink the Zed harness skills into ~/.agents/skills and rules.md into "
-        "~/.config/zed/AGENTS.md. Warns about (and, with --yes, removes) stale "
-        "entries under ~/.agents/skills."
+        "Symlink the Zed harness skills into ~/.agents/skills and generate "
+        "~/.config/zed/AGENTS.md by concatenating harnesses/shared/AGENTS.md "
+        "with harnesses/zed/rules.md. Warns about (and, with --yes, removes) "
+        "stale entries under ~/.agents/skills."
     ),
 )
 @click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
@@ -187,8 +188,10 @@ def install_zed_agent(*, dry_run: bool = False, yes: bool = False, verbose: int 
     "install-opencode-agent",
     help=(
         "Symlink the OpenCode harness agents dir into ~/.config/opencode/agents, "
-        "replacing any stale symlink, and remove legacy tkt plugin copies "
-        "from ~/.config/opencode/plugin/."
+        "replacing any stale symlink, generate ~/.config/opencode/AGENTS.md by "
+        "concatenating harnesses/shared/AGENTS.md with "
+        "harnesses/opencode/AGENTS.md, and remove legacy tkt plugin copies from "
+        "~/.config/opencode/plugin/."
     ),
 )
 @click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")

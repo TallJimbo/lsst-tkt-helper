@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import tempfile
 from collections.abc import Callable
 
 __all__ = ("install_opencode_agent", "install_zed_agent")
@@ -122,6 +123,53 @@ def _link_skill_dirs(skills_src: str, skills_dst: str, managed: set[str], *, dry
         _ensure_link(os.path.join(skills_dst, name), src, dry_run=dry_run)
 
 
+def _install_merged_agents_md(sources: list[str], dest: str, *, dry_run: bool) -> None:
+    """Concatenate the existing ``sources`` (in order) into ``dest``.
+
+    Sources are stripped of surrounding whitespace, joined by one blank line,
+    and terminated by exactly one newline.  A symlink at ``dest`` (correct,
+    stale, or broken) is replaced; a real file with identical bytes is left
+    untouched; a real file whose bytes differ is replaced with a warning; a
+    non-file (e.g. a directory) is refused.  Writes nothing when no source
+    exists.  The write is atomic (mkstemp in the dest dir + os.replace).
+    """
+    sections: list[str] = []
+    for src in sources:
+        if not os.path.isfile(src):
+            logging.info(f"Skipping missing agents source {src}")
+            continue
+        with open(src, encoding="utf-8") as f:
+            sections.append(f.read().strip())
+    if not sections:
+        logging.info(f"No agents sources present; leaving {dest} alone")
+        return
+    data = ("\n\n".join(sections) + "\n").encode("utf-8")
+    if os.path.islink(dest):
+        logging.warning(f"Replacing symlink {dest} -> {os.readlink(dest)}")
+    elif os.path.lexists(dest):
+        if not os.path.isfile(dest):
+            logging.warning(f"Refusing to replace non-file {dest}")
+            return
+        with open(dest, "rb") as f:
+            if f.read() == data:
+                logging.info(f"OK: {dest} up to date")
+                return
+        logging.warning(f"Replacing stale generated copy {dest}")
+    logging.info(f"{'Would write' if dry_run else 'Writing'} {dest}")
+    if dry_run:
+        return
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest), prefix=".AGENTS.md.")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        # mkstemp yields 0600; this file is meant to be world-readable.
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, dest)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
 def install_zed_agent(
     repo_root: str | None = None,
     home: str | None = None,
@@ -129,12 +177,14 @@ def install_zed_agent(
     dry_run: bool = False,
     confirm: Callable[[str], bool] | None = None,
 ) -> None:
-    """Symlink the Zed harness skills and rules into the user's Zed config.
+    """Install the Zed harness skills and generate global agent
+    instructions in the user's Zed config.
 
     Creates ``~/.agents/skills/<name>`` for each skill (directory containing
     ``SKILL.md``) in ``harnesses/zed/skills``, ``harnesses/shared/skills`` and
     ``superpowers/skills`` (earlier sources win on name collisions) and
-    ``~/.config/zed/AGENTS.md`` -> ``harnesses/zed/rules.md``. Warns about
+    generates ``~/.config/zed/AGENTS.md`` by concatenating
+    ``harnesses/shared/AGENTS.md`` and ``harnesses/zed/rules.md``. Warns about
     (and, when confirmed, removes) stale symlinks under ``~/.agents/skills``
     that this command no longer manages.
     """
@@ -149,9 +199,12 @@ def install_zed_agent(
     managed: set[str] = set()
     for parts in _SKILL_SOURCES:
         _link_skill_dirs(os.path.join(repo_root, *parts), skills_dst, managed, dry_run=dry_run)
-    _ensure_link(
+    _install_merged_agents_md(
+        [
+            os.path.join(repo_root, "harnesses", "shared", "AGENTS.md"),
+            os.path.join(repo_root, "harnesses", "zed", "rules.md"),
+        ],
         os.path.join(zed_cfg, "AGENTS.md"),
-        os.path.join(repo_root, "harnesses", "zed", "rules.md"),
         dry_run=dry_run,
     )
     _clean_stale_links(skills_dst, managed, dry_run=dry_run, confirm=confirm)
@@ -166,9 +219,12 @@ def install_opencode_agent(
     """Symlink the OpenCode harness agents dir into the user's OpenCode config.
 
     Makes ``~/.config/opencode/agents`` a symlink to
-    ``harnesses/opencode/agents``, replacing any stale symlink, and removes
-    legacy tkt plugin copies (both the former bell plugin and the former wake
-    plugin) from ``~/.config/opencode/plugin/`` (LEGACY_PLUGIN_NAMES).
+    ``harnesses/opencode/agents``, replacing any stale symlink, and generates
+    ``~/.config/opencode/AGENTS.md`` by concatenating
+    ``harnesses/shared/AGENTS.md`` and ``harnesses/opencode/AGENTS.md``.
+    Removes legacy tkt plugin copies (both the former bell plugin and the
+    former wake plugin) from ``~/.config/opencode/plugin/``
+    (LEGACY_PLUGIN_NAMES).
     """
     repo_root = repo_root or _repo_root()
     home = home or os.path.expanduser("~")
@@ -177,6 +233,14 @@ def install_opencode_agent(
     if not dry_run:
         os.makedirs(dst_dir, exist_ok=True)
     _ensure_link(os.path.join(dst_dir, "agents"), src, dry_run=dry_run)
+    _install_merged_agents_md(
+        [
+            os.path.join(repo_root, "harnesses", "shared", "AGENTS.md"),
+            os.path.join(repo_root, "harnesses", "opencode", "AGENTS.md"),
+        ],
+        os.path.join(dst_dir, "AGENTS.md"),
+        dry_run=dry_run,
+    )
     for name in LEGACY_PLUGIN_NAMES:
         legacy = plugin_dest(name, home)
         if not os.path.lexists(legacy):

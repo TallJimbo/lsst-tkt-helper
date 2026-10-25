@@ -124,10 +124,16 @@ install-opencode-agent`).
   shared workflows. The `superpowers/` submodule holds only modifications to
   upstream-shipped skills. Linked into `~/.agents/skills` by `tkt
 install-zed-agent` and registered via the `skills` array in opencode.jsonc.
+- **`harnesses/shared/AGENTS.md`** — cross-harness global agent rules. Each
+  installer concatenates it ahead of that harness's own instruction file
+  (`harnesses/zed/rules.md`, `harnesses/opencode/AGENTS.md`) into the harness's
+  global `AGENTS.md`; the installed file is generated, so edit a source and
+  re-run the install command.
 - **`harnesses/zed/`** — Zed harness: `rules.md` (role-scoped dispatch table,
-  symlinked to `~/.config/zed/AGENTS.md`) and `skills/<name>/` (Zed-only skills,
-  symlinked to `~/.agents/skills/<name>`); see `harnesses/README.md` for
-  content-placement rules.
+  concatenated after `harnesses/shared/AGENTS.md` into the generated
+  `~/.config/zed/AGENTS.md`) and `skills/<name>/` (Zed-only skills, symlinked to
+  `~/.agents/skills/<name>`); see `harnesses/README.md` for content-placement
+  rules.
 - **`superpowers/`** — Git submodule (TallJimbo's fork of `obra/superpowers`)
   providing the `skills/` the `sp-*` agents use; pinned by this repo.
 - **`investigations/`** — Uncomitted notes, logs, and general investigation
@@ -152,16 +158,22 @@ skills they use come from the `superpowers/` submodule;
 installs — the former bell plugin (it misfired, especially under ACP) and the
 former wake plugin (its server-side prompt injection cannot wake ACP-driven
 sessions) among them; see `LEGACY_PLUGIN_NAMES` in `tkt/install.py`.
+It also generates `~/.config/opencode/AGENTS.md` by concatenating
+`harnesses/shared/AGENTS.md` with `harnesses/opencode/AGENTS.md`, replacing any
+symlink already at that path (older installs symlinked it to the deleted
+`harnesses/shared/sandbox-agents.md`).
 
 ## Zed integration
 
 The Zed native-agent harness lives in `harnesses/zed/`: `rules.md` is the
-role-scoped dispatch table (the Zed global AGENTS.md) and `skills/` holds the
-Zed-only skills. They are exposed via `tkt install-zed-agent`, which symlinks
+role-scoped dispatch table (a source of the generated Zed global AGENTS.md)
+and `skills/` holds the Zed-only skills. They are exposed via `tkt install-zed-agent`, which symlinks
 `harnesses/zed/skills/<name>` to `~/.agents/skills/<name>`, each shared
 superpowers skill (`superpowers/skills/<name>`) to `~/.agents/skills/<name>`,
-and `harnesses/zed/rules.md` to `~/.config/zed/AGENTS.md`. See
-`harnesses/README.md` for the content-placement rules.
+and generates `~/.config/zed/AGENTS.md` by concatenating
+`harnesses/shared/AGENTS.md` with `harnesses/zed/rules.md`. That file is a
+generated copy, not a symlink: edit a source and re-run `tkt install-zed-agent`.
+See `harnesses/README.md` for the content-placement rules.
 
 ## Testing
 

@@ -6,15 +6,23 @@ differ by harness.
 
 ```
 harnesses/
+  shared/AGENTS.md            Cross-harness global agent rules — concatenated
+                              ahead of each harness's own file when
+                              `tkt install-*-agent` writes that harness's
+                              global AGENTS.md
   shared/skills/<name>/       tkt-authored, cross-harness per-phase skills
                               (symlinked into ~/.agents/skills for Zed by
                               `tkt install-zed-agent`; registered via the
                               `skills` array in opencode.jsonc for OpenCode)
+  opencode/AGENTS.md          OpenCode-specific global rules, concatenated
+                              after shared/AGENTS.md into
+                              ~/.config/opencode/AGENTS.md
   opencode/agents/            OpenCode agent shells: superpowers sp-* plus
                               standalone primary agents (symlinked to
                               ~/.config/opencode/agents)
   zed/rules.md                Zed global AGENTS.md content — role-scoped dispatch
-                              table (symlinked to ~/.config/zed/AGENTS.md)
+                              table (concatenated after shared/AGENTS.md into
+                              ~/.config/zed/AGENTS.md)
   zed/skills/<name>/          Zed-only skills (symlinked to ~/.agents/skills/<name>)
 ```
 
@@ -34,6 +42,11 @@ harnesses/
 - **Tool mapping / subagent names / permissions** — harness layer
   (`opencode-tools.md` / `zed-tools.md`)
 - **Project facts for all agents incl. subagents** — project `AGENTS.md`
+- **Cross-harness global agent rules** — `harnesses/shared/AGENTS.md`, concatenated
+  ahead of the harness's own file (`harnesses/zed/rules.md`,
+  `harnesses/opencode/AGENTS.md`) into that harness's global `AGENTS.md`. The
+  installers write a generated file, not a symlink, so edit a source and re-run
+  `tkt install-*-agent`.
 
 Guidelines:
 

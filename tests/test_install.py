@@ -45,6 +45,8 @@ def _make_repo(root: str) -> None:
         os.makedirs(d)
         with open(os.path.join(d, "SKILL.md"), "w") as f:
             f.write(f"# {name}\n")
+    with open(os.path.join(root, "harnesses", "shared", "AGENTS.md"), "w") as f:
+        f.write("# shared\n\nshared rule\n\n")
     superpowers = os.path.join(root, "superpowers", "skills")
     for name in SUPERPOWERS_SKILLS:
         d = os.path.join(superpowers, name)
@@ -57,10 +59,12 @@ def _make_repo(root: str) -> None:
     os.makedirs(os.path.join(root, "harnesses", "opencode", "agents"))
     with open(os.path.join(root, "harnesses", "opencode", "agents", "sp-build.md"), "w") as f:
         f.write("# sp-build\n")
+    with open(os.path.join(root, "harnesses", "opencode", "AGENTS.md"), "w") as f:
+        f.write("# OpenCode\n\nopencode rule\n")
 
 
-def test_install_zed_agent_creates_symlinks(tmp_path):
-    """Verify skill and rules symlinks are created under the home dir."""
+def test_install_zed_agent_creates_skill_symlinks(tmp_path):
+    """Verify skill symlinks are created under the home dir."""
     _make_repo(str(tmp_path / "repo"))
     home = str(tmp_path / "home")
     install_zed_agent(repo_root=str(tmp_path / "repo"), home=home)
@@ -72,9 +76,89 @@ def test_install_zed_agent_creates_symlinks(tmp_path):
         link = os.path.join(home, ".agents", "skills", name)
         assert os.path.islink(link), link
         assert os.readlink(link) == os.path.join(str(tmp_path / "repo"), "superpowers", "skills", name)
-    rules = os.path.join(home, ".config", "zed", "AGENTS.md")
-    assert os.path.islink(rules)
-    assert os.readlink(rules) == os.path.join(str(tmp_path / "repo"), "harnesses", "zed", "rules.md")
+
+
+def test_install_zed_agent_merges_agents_md(tmp_path):
+    """Zed's global AGENTS.md is a generated file: shared then rules."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    install_zed_agent(repo_root=str(tmp_path / "repo"), home=home)
+    dest = os.path.join(home, ".config", "zed", "AGENTS.md")
+    assert os.path.isfile(dest)
+    assert not os.path.islink(dest)
+    with open(dest, encoding="utf-8") as f:
+        assert f.read() == "# shared\n\nshared rule\n\n# rules\n"
+    assert oct(os.stat(dest).st_mode & 0o777) == "0o644"
+
+
+def test_install_zed_agent_replaces_agents_md_symlink(tmp_path, caplog):
+    """A legacy install's rules.md symlink becomes the generated file."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    zed_cfg = os.path.join(home, ".config", "zed")
+    os.makedirs(zed_cfg)
+    dest = os.path.join(zed_cfg, "AGENTS.md")
+    os.symlink(os.path.join(str(tmp_path / "repo"), "harnesses", "zed", "rules.md"), dest)
+    with caplog.at_level(logging.WARNING):
+        install_zed_agent(repo_root=str(tmp_path / "repo"), home=home)
+    assert os.path.isfile(dest)
+    assert not os.path.islink(dest)
+    assert any("replacing symlink" in r.getMessage().lower() for r in caplog.records)
+
+
+def test_install_zed_agent_merges_agents_md_idempotent(tmp_path, caplog):
+    """A second run leaves an up-to-date merged file untouched."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    install_zed_agent(repo_root=str(tmp_path / "repo"), home=home)
+    dest = os.path.join(home, ".config", "zed", "AGENTS.md")
+    before = os.stat(dest).st_ino
+    with caplog.at_level(logging.INFO):
+        install_zed_agent(repo_root=str(tmp_path / "repo"), home=home)
+    # inode, not mtime: "left untouched" is the behavior under test.
+    assert os.stat(dest).st_ino == before
+    assert any("up to date" in r.getMessage() for r in caplog.records)
+
+
+def test_install_zed_agent_replaces_stale_agents_md_copy(tmp_path, caplog):
+    """A hand-edited installed copy is replaced, with a warning."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    zed_cfg = os.path.join(home, ".config", "zed")
+    os.makedirs(zed_cfg)
+    dest = os.path.join(zed_cfg, "AGENTS.md")
+    with open(dest, "w", encoding="utf-8") as f:
+        f.write("# hand edited\n")
+    with caplog.at_level(logging.WARNING):
+        install_zed_agent(repo_root=str(tmp_path / "repo"), home=home)
+    with open(dest, encoding="utf-8") as f:
+        assert f.read() == "# shared\n\nshared rule\n\n# rules\n"
+    assert any("stale" in r.getMessage().lower() for r in caplog.records)
+
+
+def test_install_zed_agent_missing_shared_source_still_writes(tmp_path):
+    """One absent source is skipped; dest is written from the present one."""
+    repo = str(tmp_path / "repo")
+    os.makedirs(os.path.join(repo, "harnesses", "zed"))
+    with open(os.path.join(repo, "harnesses", "zed", "rules.md"), "w") as f:
+        f.write("# rules\n")
+    home = str(tmp_path / "home")
+    install_zed_agent(repo_root=repo, home=home)
+    dest = os.path.join(home, ".config", "zed", "AGENTS.md")
+    # not a symlink: the old code's symlink-to-rules.md would read the same.
+    assert os.path.isfile(dest)
+    assert not os.path.islink(dest)
+    with open(dest, encoding="utf-8") as f:
+        assert f.read() == "# rules\n"
+
+
+def test_install_zed_agent_no_sources_writes_nothing(tmp_path):
+    """With no source present at all, dest is never created."""
+    repo = str(tmp_path / "repo")
+    os.makedirs(repo)
+    home = str(tmp_path / "home")
+    install_zed_agent(repo_root=repo, home=home)
+    assert not os.path.lexists(os.path.join(home, ".config", "zed", "AGENTS.md"))
 
 
 def test_install_zed_agent_skips_missing_superpowers(tmp_path):
@@ -101,6 +185,8 @@ def test_install_zed_agent_dry_run_writes_nothing(tmp_path):
     home = str(tmp_path / "home")
     install_zed_agent(repo_root=str(tmp_path / "repo"), home=home, dry_run=True)
     assert not os.path.exists(os.path.join(home, ".agents"))
+    assert not os.path.exists(os.path.join(home, ".config", "zed", "AGENTS.md"))
+    assert not os.path.exists(os.path.join(home, ".config"))
 
 
 def test_install_zed_agent_removes_stale_symlink_when_confirmed(tmp_path):
@@ -165,6 +251,37 @@ def test_install_opencode_agent_repoints_symlink(tmp_path):
     install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
     assert os.path.islink(dst)
     assert os.readlink(dst) == os.path.join(str(tmp_path / "repo"), "harnesses", "opencode", "agents")
+
+
+def test_install_opencode_agent_merges_agents_md(tmp_path):
+    """~/.config/opencode/AGENTS.md is shared then the OpenCode extras."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    dest = os.path.join(home, ".config", "opencode", "AGENTS.md")
+    assert os.path.isfile(dest)
+    assert not os.path.islink(dest)
+    with open(dest, encoding="utf-8") as f:
+        assert f.read() == "# shared\n\nshared rule\n\n# OpenCode\n\nopencode rule\n"
+
+
+def test_install_opencode_agent_replaces_broken_agents_md_symlink(tmp_path, caplog):
+    """The broken sandbox-agents.md symlink on real hosts becomes the file."""
+    _make_repo(str(tmp_path / "repo"))
+    home = str(tmp_path / "home")
+    dst_dir = os.path.join(home, ".config", "opencode")
+    os.makedirs(dst_dir)
+    dest = os.path.join(dst_dir, "AGENTS.md")
+    # Mirrors the real host state: a symlink to a file deleted upstream.
+    os.symlink(os.path.join(str(tmp_path / "repo"), "harnesses", "shared", "sandbox-agents.md"), dest)
+    assert os.path.islink(dest) and not os.path.exists(dest)
+    with caplog.at_level(logging.WARNING):
+        install_opencode_agent(repo_root=str(tmp_path / "repo"), home=home)
+    assert os.path.isfile(dest)
+    assert not os.path.islink(dest)
+    with open(dest, encoding="utf-8") as f:
+        assert f.read() == "# shared\n\nshared rule\n\n# OpenCode\n\nopencode rule\n"
+    assert any("replacing symlink" in r.getMessage().lower() for r in caplog.records)
 
 
 def _plugin_dst(home: str, name: str) -> str:
