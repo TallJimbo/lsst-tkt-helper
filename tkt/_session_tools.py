@@ -69,6 +69,13 @@ def _inbox_call(upstream_tool: str, arguments: dict[str, Any]) -> str:
                     res = await session.call_tool(upstream_tool, arguments)
                 texts = [c.text for c in res.content if isinstance(c, TextContent)]
                 joined = "\n".join(texts)
+                # Upstream ships real payloads (get_guide_brief's brief)
+                # in structuredContent; content carries only a summary.
+                if res.structured_content is not None:
+                    import json
+
+                    block = json.dumps(res.structured_content, indent=2, default=str)
+                    joined += f"\n```json\n{block}\n```"
                 # mcp 2.x models use snake_case attributes.
                 if res.is_error:
                     return f"plannotator_inbox upstream error: {joined}"
@@ -228,38 +235,113 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
     @mcp.tool()
     def plannotator_inbox(
         action: str,  # "send"|"read"|"wait"|"resolve"|"decisions"|"record"|"guide_brief"|"guide_submit"
+        body: str | None = None,
+        subject: str | None = None,
         text: str | None = None,
         thread: str | None = None,
         reply_to: str | None = None,
+        thread_id: str | None = None,
+        message_id: str | None = None,
+        cursor: int | None = None,
+        resolved: bool | None = None,
+        attachments: list[str] | None = None,
+        guide: dict[str, Any] | str | None = None,
+        patch: str | None = None,
+        snapshot: dict[str, Any] | str | None = None,
+        project_path: str | None = None,
         payload: dict[str, Any] | str | None = None,
         description: str | None = None,  # present for human approvals of tool actions
     ) -> str:
         """Leave non-blocking messages/questions for the human in the
         Plannotator Inbox, and drive the guided-review flow:
-        ``guide_brief`` fetches the diff brief for authoring a guided review
-        walkthrough, ``guide_submit`` submits the authored guide JSON (in
-        ``payload``).  ``wait`` blocks up to ~50 s for a reply and may return
-        a cursor — call it again.  Nothing here wakes the human's browser at
-        the session; replies arrive to you via ``wait``/``read``.
+        ``guide_brief`` fetches the brief for authoring a guided review
+        walkthrough, ``guide_submit`` submits the authored ``guide`` with the
+        ``patch`` it describes (or a ``snapshot``).  ``wait`` blocks up to
+        ~50 s for a reply and may return a ``cursor`` — pass it back to keep
+        waiting.  Nothing here wakes the human's browser at the session;
+        replies arrive to you via ``wait``/``read``.
 
         Args:
             action: One of "send", "read", "wait", "resolve", "decisions",
                 "record", "guide_brief", or "guide_submit".
-            text: "send" only; the message body left for the human.
-            thread: Thread id routing read/wait/resolve to one conversation.
-            reply_to: Message id this one answers.
-            payload: Structured input carried for "record" and
-                "guide_submit" — a JSON object (dict) or string.
+            body: "send": the markdown message for the human (question
+                blocks render as answerable cards); "guide_submit": an
+                optional note above the guide card.
+            subject: "send"/"guide_submit": one-line thread subject when
+                starting a thread.
+            text: "record" only: the decision summary.
+            thread: "send"/"guide_submit": thread *name* to join or start.
+            reply_to: "send"/"guide_submit": message id this one answers.
+            thread_id: "read"/"wait": the thread to read or wait on.
+            message_id: "read"/"wait": read/wait on this message's thread;
+                "resolve": a message (or the thread id) whose thread to
+                archive.
+            cursor: "wait": resume token from the previous wait's result.
+            resolved: "resolve": False reopens an archived thread.
+            attachments: "send": files to show the human beside the message
+                (workspace-relative or absolute paths).
+            guide: "guide_submit": the authored guide (JSON object or
+                string) in the shape ``guide_brief`` describes.
+            patch: "guide_submit": the exact unified diff the guide
+                describes.
+            snapshot: "guide_submit": a complete snapshot in place of
+                guide + patch.
+            project_path: "decisions": folder whose decisions to list;
+                defaults to this workspace.
+            payload: "record": structured data carried with the decision.
             description: Optional human-readable rationale for this call.
         """
         name = INBOX_ACTION_TOOLS.get(action.strip().lower())
         if name is None:
             return f"plannotator_inbox: unknown action {action!r}; use one of {sorted(INBOX_ACTION_TOOLS)}."
-        args: dict[str, Any] = {
-            k: v for k, v in {"text": text, "thread": thread, "reply_to": reply_to}.items() if v is not None
-        }
-        if payload is not None:
-            args["payload"] = payload
+        action = action.strip().lower()
+
+        def _present(**kv: Any) -> dict[str, Any]:
+            return {k: v for k, v in kv.items() if v is not None}
+
+        # Forward only the keys the upstream tool for this action accepts,
+        # under its own names.
+        if action == "send":
+            if body is None:
+                return "plannotator_inbox: send requires `body` (the message for the human)."
+            args = _present(
+                body=body, subject=subject, thread=thread, reply_to=reply_to, attachments=attachments
+            )
+        elif action == "read":
+            args = _present(thread_id=thread_id, message_id=message_id)
+        elif action == "wait":
+            args = _present(thread_id=thread_id, message_id=message_id, cursor=cursor)
+        elif action == "resolve":
+            if message_id is None:
+                return (
+                    "plannotator_inbox: resolve requires `message_id` "
+                    "(any message in the thread, or the thread id)."
+                )
+            args = _present(message_id=message_id, resolved=resolved)
+        elif action == "record":
+            if text is None:
+                return "plannotator_inbox: record requires `text` (the decision summary)."
+            args = _present(text=text, payload=payload)
+        elif action == "decisions":
+            try:
+                folder = safe_subpath(workspace, project_path) if project_path else workspace
+            except ValueError as exc:
+                return f"plannotator_inbox failed: {exc}"
+            args = {"project_path": folder}
+        elif action == "guide_brief":
+            args = {}
+        else:  # guide_submit
+            if snapshot is None and (guide is None or patch is None):
+                return "plannotator_inbox: guide_submit needs `guide` with `patch`, or a complete `snapshot`."
+            args = _present(
+                guide=guide,
+                patch=patch,
+                snapshot=snapshot,
+                body=body,
+                subject=subject,
+                thread=thread,
+                reply_to=reply_to,
+            )
         return _inbox_call(name, args)
 
 

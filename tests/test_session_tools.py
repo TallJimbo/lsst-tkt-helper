@@ -104,6 +104,26 @@ def test_plannotator_tool_delegates_and_contains(monkeypatch) -> None:
 
 FAKE_INBOX_MCP = r"""#!/usr/bin/env python3
 import json, sys
+
+# Per-tool argument sets mirroring `plannotator inbox --help`: required keys
+# and the keys each upstream tool recognizes.  A wrapper that forwards a
+# wrong or unrecognized key must be refused here, the way the real Inbox
+# refuses it.
+SCHEMAS = {
+    "send_message": (["body"], {"body", "subject", "thread", "reply_to", "attachments"}),
+    "read_thread": ([], {"thread_id", "message_id"}),
+    "wait_for_reply": ([], {"thread_id", "message_id", "cursor"}),
+    "resolve_message": (["message_id"], {"message_id", "resolved"}),
+    "record_decision": (["text"], {"text", "payload"}),
+    "list_decisions": (["project_path"], {"project_path"}),
+    "get_guide_brief": ([], set()),
+    "submit_guide": ([], {"guide", "patch", "snapshot", "body", "subject", "thread", "reply_to"}),
+}
+
+def refuse(rid, msg):
+    return {"jsonrpc": "2.0", "id": rid, "result": {
+        "content": [{"type": "text", "text": msg}], "isError": True}}
+
 for line in sys.stdin:
     try: req = json.loads(line)
     except ValueError: continue
@@ -112,16 +132,37 @@ for line in sys.stdin:
         resp = {"jsonrpc":"2.0","id":rid,"result":{"protocolVersion":"2024-11-05",
                 "capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"0"}}}
     elif method == "tools/list":
-        resp = {"jsonrpc":"2.0","id":rid,"result":{"tools":[
-            {"name":params.get("needle","send_message"),"description":"x",
-             "inputSchema":{"type":"object","properties":{}}}]}}
+        resp = {"jsonrpc":"2.0","id":rid,"result":{"tools":[]}}
     elif method == "tools/call":
-        echo = {"jsonrpc":"2.0","id":rid,"result":{"content":[{"type":"text",
-                "text":json.dumps({"tool":params.get("name"),"args":params.get("arguments")})}]}}
-        if params.get("name") == "boom":
-            echo["result"]["isError"] = True
-            echo["result"]["content"][0]["text"] = "upstream exploded"
-        sys.stdout.write(json.dumps(echo) + "\n"); sys.stdout.flush(); continue
+        name = params.get("name")
+        args = params.get("arguments") or {}
+        if name == "boom":
+            resp = refuse(rid, "upstream exploded")
+        else:
+            required, allowed = SCHEMAS.get(name, ([], set(args)))
+            unknown = sorted(set(args) - allowed)
+            missing = [k for k in required if k not in args]
+            if unknown:
+                resp = refuse(rid, 'Invalid arguments for tool %s: Unrecognized key: "%s"'
+                              % (name, unknown[0]))
+            elif missing:
+                resp = refuse(rid, "Invalid arguments for tool %s: %s: Invalid input: "
+                              "expected string, received undefined" % (name, missing[0]))
+            elif name == "get_guide_brief":
+                # The brief ships in structuredContent, with only a one-line
+                # companion string in content (as the real get_guide_brief does).
+                resp = {"jsonrpc":"2.0","id":rid,"result":{
+                    "content":[{"type":"text","text":"The guided-review method, the "
+                                "guide's shape, how to read the diff, the rules and a "
+                                "worked submit_guide call."}],
+                    "structuredContent":{"methodology":"read the diff first",
+                                          "output_schema":{"title":"str"},
+                                          "diff_steps":["git diff main...HEAD"],
+                                          "rules":["code diffs only"],
+                                          "example":{"guide":{"title":"tour"},"patch":"@@ x"}}}}
+            else:
+                resp = {"jsonrpc":"2.0","id":rid,"result":{"content":[{"type":"text",
+                        "text":json.dumps({"tool":name,"args":args})}]}}
     elif method == "notifications/initialized":
         continue
     else:
@@ -149,33 +190,132 @@ def fake_inbox_cli(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_inbox_send_maps_and_forwards(fake_inbox_cli) -> None:
-    """``send`` maps to upstream ``send_message`` and forwards arguments."""
+def _inbox_tool(workspace: str = "/ws") -> Any:
+    mcp = MCPServer("t")
+    build_session_tools(mcp, workspace=workspace)
+    return mcp._tool_manager.get_tool("plannotator_inbox")
+
+
+def _forwarded(out: str) -> dict:
     import json as _json
 
-    mcp = MCPServer("t")
-    build_session_tools(mcp, workspace="/ws")
-    tool = mcp._tool_manager.get_tool("plannotator_inbox")
-    out = _call(tool, action="send", text="hello")
-    forwarded = _json.loads(out)
-    assert forwarded["tool"] == "send_message" and forwarded["args"]["text"] == "hello"
+    return _json.loads(out)
 
 
-def test_inbox_guide_submit_forwards_payload_verbatim(fake_inbox_cli) -> None:
-    """``guide_submit`` maps to upstream ``submit_guide`` and the payload dict
-    reaches the upstream server verbatim (keys and values intact).
+def _no_spawn_spy(monkeypatch) -> list:
+    import mcp.client.stdio as stdio_mod
+
+    spawns: list = []
+
+    def _spy(*args, **kwargs):
+        spawns.append((args, kwargs))
+        raise AssertionError("upstream must not spawn when the wrapper rejects locally")
+
+    monkeypatch.setattr(stdio_mod, "stdio_client", _spy)
+    return spawns
+
+
+def test_inbox_send_forwards_body_and_routing(fake_inbox_cli) -> None:
+    """``send`` maps to upstream ``send_message``, forwarding ``body`` (not
+    ``text``) plus the routing fields under their upstream names.
     """
-    import json as _json
+    out = _forwarded(
+        _call(
+            _inbox_tool(),
+            action="send",
+            body="hello",
+            subject="Probe",
+            reply_to="msg_1",
+            attachments=["docs/plan.md"],
+        )
+    )
+    assert out["tool"] == "send_message"
+    assert out["args"] == {
+        "body": "hello",
+        "subject": "Probe",
+        "reply_to": "msg_1",
+        "attachments": ["docs/plan.md"],
+    }
 
-    mcp = MCPServer("t")
-    build_session_tools(mcp, workspace="/ws")
-    tool = mcp._tool_manager.get_tool("plannotator_inbox")
-    payload = {"title": "Guided tour", "steps": [{"label": "diff", "note": "start here"}], "n": 2}
-    out = _call(tool, action="guide_submit", payload=payload)
-    forwarded = _json.loads(out)
-    assert forwarded["tool"] == "submit_guide"
-    assert forwarded["args"]["payload"] == payload
-    assert set(forwarded["args"]["payload"]["steps"][0]) == {"label", "note"}
+
+def test_inbox_guide_submit_forwards_guide_and_patch(fake_inbox_cli) -> None:
+    """``guide_submit`` maps to upstream ``submit_guide`` with ``guide`` +
+    ``patch`` intact (keys and values), plus its routing fields.
+    """
+    guide = {"title": "Guided tour", "steps": [{"label": "diff", "note": "start here"}]}
+    patch = "@@ -1 +1 @@\n-a\n+b\n"
+    out = _forwarded(_call(_inbox_tool(), action="guide_submit", guide=guide, patch=patch, reply_to="msg_1"))
+    assert out["tool"] == "submit_guide"
+    assert out["args"] == {"guide": guide, "patch": patch, "reply_to": "msg_1"}
+
+
+def test_inbox_guide_submit_forwards_snapshot(fake_inbox_cli) -> None:
+    """A complete ``snapshot`` substitutes for guide + patch."""
+    snapshot = {"files": [{"path": "a.py", "content": "x"}]}
+    out = _forwarded(_call(_inbox_tool(), action="guide_submit", snapshot=snapshot))
+    assert out["args"] == {"snapshot": snapshot}
+
+
+def test_inbox_read_wait_resolve_forward_upstream_ids(fake_inbox_cli) -> None:
+    """``read``/``wait``/``resolve`` route by ``thread_id``/``message_id`` and
+    ``wait`` carries the ``cursor`` resume token; ``resolve`` takes
+    ``resolved`` to reopen.
+    """
+    tool = _inbox_tool()
+    out = _forwarded(_call(tool, action="read", thread_id="thr_1"))
+    assert out["tool"] == "read_thread" and out["args"] == {"thread_id": "thr_1"}
+    out = _forwarded(_call(tool, action="wait", thread_id="thr_1", cursor=3))
+    assert out["tool"] == "wait_for_reply" and out["args"] == {"thread_id": "thr_1", "cursor": 3}
+    out = _forwarded(_call(tool, action="resolve", message_id="msg_1", resolved=False))
+    assert out["tool"] == "resolve_message" and out["args"] == {"message_id": "msg_1", "resolved": False}
+
+
+def test_inbox_record_forwards_text_and_payload(fake_inbox_cli) -> None:
+    """``record`` maps to upstream ``record_decision`` with ``text`` and an
+    optional structured ``payload``.
+    """
+    payload = {"choice": "dedicated queue", "why": "isolation"}
+    out = _forwarded(_call(_inbox_tool(), action="record", text="Chose the queue", payload=payload))
+    assert out["tool"] == "record_decision"
+    assert out["args"] == {"text": "Chose the queue", "payload": payload}
+
+
+def test_inbox_decisions_defaults_project_path_to_workspace(fake_inbox_cli) -> None:
+    """``decisions`` supplies the ``project_path`` the upstream shim does not
+    fill itself: the workspace by default, a contained path when given.
+    """
+    tool = _inbox_tool(workspace="/ws")
+    out = _forwarded(_call(tool, action="decisions"))
+    assert out["tool"] == "list_decisions" and out["args"] == {"project_path": "/ws"}
+    out = _forwarded(_call(tool, action="decisions", project_path="sub"))
+    assert out["args"] == {"project_path": "/ws/sub"}
+    out = _call(tool, action="decisions", project_path="../elsewhere")
+    assert "outside workspace" in out
+
+
+def test_inbox_structured_content_surfaced(fake_inbox_cli) -> None:
+    """``guide_brief``'s brief arrives in ``structuredContent``; the wrapper
+    must surface it, not just the one-line companion text.
+    """
+    out = _call(_inbox_tool(), action="guide_brief")
+    assert "guided-review method" in out  # companion text kept
+    assert "```json" in out  # structured fields surfaced
+    for key in ("methodology", "output_schema", "diff_steps", "rules", "example"):
+        assert key in out
+
+
+def test_inbox_local_validation_rejects_without_spawn(monkeypatch) -> None:
+    """Missing required arguments fail locally with the parameter named —
+    no upstream spawn, no opaque upstream error.
+    """
+    spawns = _no_spawn_spy(monkeypatch)
+    tool = _inbox_tool()
+    assert "body" in _call(tool, action="send")
+    assert "message_id" in _call(tool, action="resolve")
+    assert "text" in _call(tool, action="record")
+    assert "guide" in _call(tool, action="guide_submit")
+    assert "patch" in _call(tool, action="guide_submit", guide={"title": "t"})
+    assert spawns == []
 
 
 def test_inbox_action_map() -> None:
