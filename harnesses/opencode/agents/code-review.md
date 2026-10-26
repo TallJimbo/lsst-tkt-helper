@@ -13,7 +13,6 @@ permissions:
   - { action: question, resource: "*", effect: allow }
   - { action: skill, resource: "*", effect: allow }
   - { action: edit, resource: "*", effect: deny }
-  - { action: subagent, resource: "*", effect: deny }
   - { action: webfetch, resource: "*", effect: deny }
   - { action: websearch, resource: "*", effect: deny }
   # GitHub MCP read-only allow-list (mirrors the Zed "mcp-server-github" set)

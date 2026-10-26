@@ -14,8 +14,8 @@ permissions:
   - { action: question, resource: "*", effect: allow }
   - { action: skill, resource: "*", effect: allow }
   - { action: subagent, resource: "*", effect: allow }
-  - { action: webfetch, resource: "*", effect: ask }
-  - { action: websearch, resource: "*", effect: ask }
+  - { action: webfetch, resource: "*", effect: deny }
+  - { action: websearch, resource: "*", effect: deny }
   - { action: edit, resource: "*", effect: deny }
   - {
       action: edit,
