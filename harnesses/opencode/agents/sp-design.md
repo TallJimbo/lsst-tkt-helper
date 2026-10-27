@@ -23,6 +23,7 @@ permissions:
       effect: allow,
     }
   - { action: edit, resource: "docs/superpowers/specs/*.md", effect: allow }
+  - { action: edit, resource: "superpowers-docs/*/specs/*.md", effect: allow }
   # GitHub MCP: some read-only access, for evaluating third-party products.
   - { action: "github_*", resource: "*", effect: deny }
   - { action: "github_search_repositories", resource: "*", effect: allow }

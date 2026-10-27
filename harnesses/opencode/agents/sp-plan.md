@@ -27,6 +27,8 @@ permissions:
       resource: ".agent/docs/superpowers/plans/*.md",
       effect: allow,
     }
+  - { action: edit, resource: "superpowers-docs/*/plans/*.md", effect: allow }
+
   # GitHub MCP: fully hidden here. Read-only GitHub access belongs to the
   # code-review/pr-responder profiles; agent-level "ask" is ineffective
   # because its approval prompt is fail-open under ACP clients (e.g. Zed
