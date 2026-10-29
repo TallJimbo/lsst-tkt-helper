@@ -102,6 +102,32 @@ def test_plannotator_tool_delegates_and_contains(monkeypatch) -> None:
     assert "pn-1" in out and calls[0][0] == "/ws"
 
 
+def test_plannotator_open_accepts_plan_dir_target(monkeypatch) -> None:
+    """Plan-dir files are accepted open targets (and still contained)."""
+    from tkt import _session_tools
+
+    calls: list[tuple] = []
+
+    class FakeMgr:
+        def open(self, workspace, target, **kw):
+            calls.append((workspace, target, kw))
+            return {"type": "open", "url": "http://localhost:9/x", "session": "pn-1", "reused": False}
+
+    monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
+    monkeypatch.setenv("HOME", "/host-home")
+    mcp = MCPServer("t")
+    build_session_tools(mcp, workspace="/ws")
+    tool = mcp._tool_manager.get_tool("plannotator")
+    out = _call(tool, action="open", target="/host-home/.opencode/plan/plan.md")
+    assert "pn-1" in out
+    assert calls[0][1] == "/host-home/.opencode/plan/plan.md"
+    assert calls[0][2]["extra_roots"] == ["/host-home/.opencode/plan"]
+    # Escaping the plan dir is refused like any other escape.
+    out = _call(tool, action="open", target="/host-home/.opencode/plan/../evil.md")
+    assert "failed" in out
+    assert len(calls) == 1  # the refused target never reached the manager
+
+
 FAKE_INBOX_MCP = r"""#!/usr/bin/env python3
 import json, sys
 

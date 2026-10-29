@@ -27,8 +27,24 @@ from __future__ import annotations
 from click.testing import CliRunner
 
 from tkt._cli import cli
-from tkt._environment import Tool
+from tkt._environment import Environment, Tool
 from tkt.openspec import OpenSpec
+
+
+def test_environment_load_config_accepts_jsonc(tmp_path):
+    """Environment configs follow the json5 contract (comments, commas)."""
+    cfg = tmp_path / "local.jsonc"
+    cfg.write_text(
+        "{\n"
+        "  // comments and trailing commas are allowed in local.jsonc\n"
+        '  "module": "tkt._environment",\n'
+        '  "cls": "Environment",\n'
+        "}\n"
+    )
+    with open(cfg) as f:
+        cls, data = Environment.load_config(f)
+    assert cls is Environment
+    assert data["cls"] == "Environment"
 
 
 def test_tool_default_remove_is_noop(tmp_path):

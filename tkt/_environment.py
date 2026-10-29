@@ -27,10 +27,11 @@ from __future__ import annotations
 __all__ = ("Environment", "Tool")
 
 import importlib
-import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, TextIO
+
+import json5  # used to read to allow comments and trailing commas, never to write.
 
 if TYPE_CHECKING:
     from ._workspace import Workspace
@@ -68,7 +69,7 @@ class Environment(ABC):
     @staticmethod
     def load_config(f: TextIO) -> tuple[type[Environment], dict[str, Any]]:
         """Load config and resolve the Environment class."""
-        data = json.load(f)
+        data = json5.load(f)
         mod = importlib.import_module(data["module"])
         cls = getattr(mod, data["cls"])
         return cls, data

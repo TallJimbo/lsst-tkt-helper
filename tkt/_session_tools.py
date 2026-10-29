@@ -98,6 +98,11 @@ def safe_subpath(workspace: str, candidate: str) -> str:
     return str(resolved)
 
 
+# Host-side built-in Plan-mode plan store: the session ``plannotator`` tool
+# accepts files from here as ``open`` targets in addition to the workspace.
+_PLAN_DIR = os.path.join("~", ".opencode", "plan")
+
+
 def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
     """Register the session tools on ``mcp``."""
     brainstorm = BrainstormManager(root=workspace)
@@ -186,13 +191,15 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
         (``type``: feedback/pending/closed); ``close`` terminates it.
         ``kind`` is ``annotate`` or ``review``; ``gate`` adds the approval
         UI; ``base`` sets the review compare ref.  Non-URL ``target`` paths
-        must live inside the workspace.
+        must live inside the workspace or the host plan directory
+        (``~/.opencode/plan``).
 
         Args:
             action: One of "open", "status", "result", or "close".
             target: "open" only; the file or folder to annotate, the file or
                 folder to review, or a PR URL to review (absolute or
-                workspace-relative).
+                workspace-relative). Files under the host plan directory
+                (``~/.opencode/plan``) are also accepted.
             kind: "open" only; "annotate" (default) or "review".
             gate: "open" only; add the approval-gate UI to an annotate
                 session.
@@ -206,9 +213,15 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
             if action == "open":
                 if target is None:
                     return "plannotator open requires a target (file, folder, or PR URL)."
+                plan_root = os.path.realpath(os.path.expanduser(_PLAN_DIR))
                 if not re.match(r"https?://", target):  # PR URLs allowed
-                    target = safe_subpath(workspace, target)
-                info = plannotator_mgr.open(workspace, target, kind=kind, gate=gate, base=base)
+                    try:
+                        target = safe_subpath(workspace, target)
+                    except ValueError:
+                        target = safe_subpath(plan_root, target)  # plan-mode plan files
+                info = plannotator_mgr.open(
+                    workspace, target, kind=kind, gate=gate, base=base, extra_roots=[plan_root]
+                )
                 url = info.get("url")
                 body = (
                     "```json\n" + _json_block(info) + "\n```\n"

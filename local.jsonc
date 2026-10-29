@@ -64,6 +64,10 @@
           "~/.tkt"
         ],
         "rw": [
+          // The built-in Plan-mode agent's plan store: the only directory the
+          // plan plugin lets a plan-mode session edit, so it needs its own
+          // rw carve-out under the read-only ~/.opencode bind.
+          "~/.opencode/plan",
           "~/.local/share/opencode",
           "~/.cache/opencode",
           "~/.cache/prek",

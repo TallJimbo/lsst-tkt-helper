@@ -17,9 +17,10 @@ harnesses/
   opencode/AGENTS.md          OpenCode-specific global rules, concatenated
                               after shared/AGENTS.md into
                               ~/.config/opencode/AGENTS.md
-  opencode/agents/            OpenCode agent shells: superpowers sp-* plus
-                              standalone primary agents (symlinked to
-                              ~/.config/opencode/agents)
+  opencode/agents/            OpenCode agent shells: superpowers sp-*,
+                              standalone primary agents, and plan.md/build.md
+                              same-stem merges into the built-in Plan/Build
+                              agents (symlinked to ~/.config/opencode/agents)
   zed/rules.md                Zed global AGENTS.md content — role-scoped dispatch
                               table (concatenated after shared/AGENTS.md into
                               ~/.config/zed/AGENTS.md)
@@ -41,6 +42,10 @@ harnesses/
   `sp-*.md` shells; Zed `rules.md` + `zed-primary-agent`
 - **Tool mapping / subagent names / permissions** — harness layer
   (`opencode-tools.md` / `zed-tools.md`)
+- **Built-in agent (Plan/Build) permission parity and skill gating** —
+  same-stem markdown in `harnesses/opencode/agents/`: frontmatter
+  `permissions` append to the built-in ruleset (last match wins) and an
+  empty body keeps the built-in system prompt
 - **Project facts for all agents incl. subagents** — project `AGENTS.md`
 - **Cross-harness global agent rules** — `harnesses/shared/AGENTS.md`, concatenated
   ahead of the harness's own file (`harnesses/zed/rules.md`,

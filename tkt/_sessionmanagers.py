@@ -40,6 +40,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -480,13 +481,15 @@ class PlannotatorManager:
         kind: str = "annotate",
         gate: bool = False,
         base: str | None = None,
+        extra_roots: Sequence[str] = (),
     ) -> dict[str, Any]:
         workspace = str(Path(workspace).resolve())
         if kind == "review" and re.match(r"https?://", target):
             resolved = target  # PR URLs allowed verbatim
         else:
             resolved = str(Path(target).resolve())
-            if not resolved.startswith(workspace + os.sep) and resolved != workspace:
+            roots = [workspace, *(str(Path(root).resolve()) for root in extra_roots)]
+            if not any(resolved == root or resolved.startswith(root + os.sep) for root in roots):
                 raise ValueError(f"review target {target!r} is outside workspace {workspace!r}.")
         live = self._match(self._sessions(), resolved)
         if live is not None:

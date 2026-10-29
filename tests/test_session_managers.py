@@ -451,6 +451,29 @@ def test_open_spawns_when_absent_and_registers(fake_cli):
     assert len(entries) == 1 and entries[0]["workspace"] == str(fake_cli)
 
 
+def _plan_target_outside(fake_cli):
+    """Create a plan file under a sibling directory outside the workspace."""
+    plan_root = fake_cli.parent / (fake_cli.name + "-plan")
+    plan_root.mkdir()
+    plan = plan_root / "plan.md"
+    plan.write_text("# plan")
+    return plan_root, plan
+
+
+def test_open_extra_roots_allows_target_outside_workspace(fake_cli):
+    """extra_roots (e.g. the host plan dir) accepts outside targets."""
+    plan_root, plan = _plan_target_outside(fake_cli)
+    out = PlannotatorManager().open(str(fake_cli), str(plan), extra_roots=[str(plan_root)])
+    assert out["session"].startswith("pn-") or out["session"].startswith("local-")
+
+
+def test_open_target_outside_all_roots_raises(fake_cli):
+    """Without the extra root, the same plan-dir target is still refused."""
+    _, plan = _plan_target_outside(fake_cli)
+    with pytest.raises(ValueError, match="outside workspace"):
+        PlannotatorManager().open(str(fake_cli), str(plan))
+
+
 def test_open_missing_binary_raises(fake_cli, monkeypatch):
     """A missing plannotator binary raises RuntimeError naming the CLI."""
     monkeypatch.setenv("PATH", "/nonexistent-bin-that-does-not-exist")

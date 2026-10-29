@@ -74,7 +74,9 @@ branch into a single commit and rebase it onto main.
   from the human's `ups/` (`setup -r <workspace>`, not `setup -r .agent`),
   the superpowers docs worktree lives at `<workspace>/superpowers-docs`
   (`Superpowers.remove` handles either location), and
-  `pull-sandbox`/`sandbox-reset` refuse such workspaces.
+  `pull-sandbox`/`sandbox-reset` refuse such workspaces. Restricted runs
+  rw-mount `~/.opencode/plan` (the built-in Plan-mode plan store), and the
+  session `plannotator` tool accepts files there as `open` targets.
 - **`tkt/remote_mcp_proxy.py`** — host-side stdio↔streamable-HTTP MCP proxy
   spawned per connection by the bridge socat; relays `tools/list`/`tools/call`
   verbatim to a remote MCP server with an injected `Authorization` header so
@@ -117,7 +119,11 @@ branch into a single commit and rebase it onto main.
 - **`harnesses/opencode/agents/`** — Custom OpenCode workflow agents
   `sp-design`, `sp-plan`, `sp-build`, `sp-debug`, `sp-review`, plus the
   standalone (non-superpowers) primary agents `code-review` and
-  `pr-responder`; `~/.config/opencode/agents/` is a symlink to it (via `tkt
+  `pr-responder`, plus `plan.md`/`build.md` — same-stem merges into OpenCode's
+  built-in Plan/Build agents (frontmatter `permissions` append to the built-in
+  ruleset, last match wins; an empty body keeps the built-in system prompt),
+  gating the superpowers workflow skills and mirroring sp-* permission parity;
+  `~/.config/opencode/agents/` is a symlink to it (via `tkt
 install-opencode-agent`).
 - **`harnesses/shared/skills/`** — tkt-authored, cross-harness per-phase
   skills (`reviewing-code`, `responding-to-pr-review`): the place for new
