@@ -34,13 +34,11 @@ tkt sandbox-reset          # reset .agent worktrees to the human branches
 tkt sandbox-cleanup        # kill orphaned bridge socats left after unclean exit
 ```
 
-**Harness install** — symlink the Zed or OpenCode agent harnesses (rules + skills)
-into place for the editor/agent you use.
+**Harness install** — copy the Zed and OpenCode agent harnesses (rules +
+skills) into place for both editors.
 
 ```sh
-tkt install-zed-agent      # link Zed harness skills + AGENTS.md
-# or
-tkt install-opencode-agent # link OpenCode harness agents
+tkt install-harness        # copy skills, agents, and AGENTS.md into place
 ```
 
 **Model-traffic tracing** — capture and retroactively segment the model traffic a

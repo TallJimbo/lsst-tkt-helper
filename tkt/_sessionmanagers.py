@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any
 
 # Path of the visual-companion launcher inside this repo's pinned superpowers
-# submodule, and the fallback location installed by ``tkt install-zed-agent``.
+# submodule, and the fallback location installed by ``tkt install-harness``.
 _BRAINSTORM_SCRIPT_RELPATH = os.path.join(
     "superpowers", "skills", "brainstorming", "scripts", "start-server.sh"
 )

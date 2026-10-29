@@ -165,42 +165,24 @@ def direnv(
 
 
 @cli.command(
-    "install-zed-agent",
+    "install-harness",
     help=(
-        "Symlink the Zed harness skills into ~/.agents/skills and generate "
-        "~/.config/zed/AGENTS.md by concatenating harnesses/shared/AGENTS.md "
-        "with harnesses/zed/rules.md. Warns about (and, with --yes, removes) "
-        "stale entries under ~/.agents/skills."
+        "Copy all harness content into place for both Zed and OpenCode: "
+        "skills into ~/.agents/skills, OpenCode agent shells into "
+        "~/.config/opencode/agents, and generated AGENTS.md files into "
+        "each harness's config dir. Warns about (and, with --yes, removes) "
+        "stale tkt-installed entries no longer shipped."
     ),
 )
 @click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
 @click.option("--yes", "yes", is_flag=True, help="Remove stale entries without prompting.")
 @click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
-def install_zed_agent(*, dry_run: bool = False, yes: bool = False, verbose: int = 0) -> None:
+def install_harness(*, dry_run: bool = False, yes: bool = False, verbose: int = 0) -> None:
     _setup_logging(verbose)
-    from .install import install_zed_agent as _install_zed
+    from .install import install_harness as _install
 
     confirm = (lambda msg: True) if yes else click.confirm
-    _install_zed(dry_run=dry_run, confirm=confirm)
-
-
-@cli.command(
-    "install-opencode-agent",
-    help=(
-        "Symlink the OpenCode harness agents dir into ~/.config/opencode/agents, "
-        "replacing any stale symlink, generate ~/.config/opencode/AGENTS.md by "
-        "concatenating harnesses/shared/AGENTS.md with "
-        "harnesses/opencode/AGENTS.md, and remove legacy tkt plugin copies from "
-        "~/.config/opencode/plugin/."
-    ),
-)
-@click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
-@click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
-def install_opencode_agent(*, dry_run: bool = False, verbose: int = 0) -> None:
-    _setup_logging(verbose)
-    from .install import install_opencode_agent as _install_opencode
-
-    _install_opencode(dry_run=dry_run)
+    _install(dry_run=dry_run, confirm=confirm)
 
 
 @cli.command()

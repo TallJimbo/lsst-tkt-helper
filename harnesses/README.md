@@ -2,29 +2,37 @@
 
 This directory holds per-harness and cross-harness agent/prompt content for
 tkt. Each harness layer is separate because prompts and prompt placement
-differ by harness.
+differ by harness. `tkt install-harness` installs everything by **copying**
+(no symlinks: OpenCode's live reload ignores symlinked roots, and copies mean
+every content kind updates the same way); re-run it after editing a source or
+updating the `superpowers/` submodule.
 
 ```
 harnesses/
   shared/AGENTS.md            Cross-harness global agent rules — concatenated
                               ahead of each harness's own file when
-                              `tkt install-*-agent` writes that harness's
+                              `tkt install-harness` writes that harness's
                               global AGENTS.md
-  shared/skills/<name>/       tkt-authored, cross-harness per-phase skills
-                              (symlinked into ~/.agents/skills for Zed by
-                              `tkt install-zed-agent`; registered via the
-                              `skills` array in opencode.jsonc for OpenCode)
+  shared/skills/<name>/       Cross-harness skills — tkt-authored workflows
+                              plus vendored Plannotator skills (see
+                              "Vendored skills" below). Copied into
+                              ~/.agents/skills, which Zed and OpenCode both
+                              discover; installed by `tkt install-harness`
   opencode/AGENTS.md          OpenCode-specific global rules, concatenated
                               after shared/AGENTS.md into
                               ~/.config/opencode/AGENTS.md
   opencode/agents/            OpenCode agent shells: superpowers sp-*,
                               standalone primary agents, and plan.md/build.md
                               same-stem merges into the built-in Plan/Build
-                              agents (symlinked to ~/.config/opencode/agents)
+                              agents (copied into ~/.config/opencode/agents)
   zed/rules.md                Zed global AGENTS.md content — role-scoped dispatch
                               table (concatenated after shared/AGENTS.md into
                               ~/.config/zed/AGENTS.md)
-  zed/skills/<name>/          Zed-only skills (symlinked to ~/.agents/skills/<name>)
+  zed/skills/<name>/          Zed-only skills (copied into
+                              ~/.agents/skills/<name>; OpenCode hides them via
+                              a `zed-*` skill permission deny in opencode.jsonc
+                              — Zed has no other global skills directory, so
+                              physical separation is impossible)
 ```
 
 ## Content-placement rules
@@ -50,8 +58,18 @@ harnesses/
 - **Cross-harness global agent rules** — `harnesses/shared/AGENTS.md`, concatenated
   ahead of the harness's own file (`harnesses/zed/rules.md`,
   `harnesses/opencode/AGENTS.md`) into that harness's global `AGENTS.md`. The
-  installers write a generated file, not a symlink, so edit a source and re-run
-  `tkt install-*-agent`.
+  installer writes a generated file, not a symlink, so edit a source and re-run
+  `tkt install-harness`.
+
+## Vendored skills
+
+`plannotator`, `plannotator-annotate`, and `plannotator-review` are verbatim
+copies of skills installed by the Plannotator CLI, adopted here because the
+sandbox-bridged `plannotator` session tool makes them usable in restricted
+runs. Plannotator's other skills are host-only (they shell out to the
+`plannotator` CLI or read host data directories) and stay out of tkt. To
+update: run Plannotator's installer into a scratch directory (or read its
+upstream source), copy the three skill directories over these, and commit.
 
 Guidelines:
 
@@ -59,8 +77,8 @@ Guidelines:
   shell only says which skill to load and the harness-specific gate
   mechanism.
 - Cross-harness skills stay self-contained: no relative links to other skill
-  roots (Zed symlinks each skill individually into `~/.agents/skills`;
-  OpenCode skill roots are separate). Harness variance is inline prose.
+  roots (both harnesses discover flat `~/.agents/skills`; each skill must
+  stand alone). Harness variance is inline prose.
 - Zed _role_ prompts are Zed-only skills, framed for use by a primary or a
   subagent (Zed's `spawn_agent` has no built-in role prompt); OpenCode keeps
   its own templates/`sp-review`.
