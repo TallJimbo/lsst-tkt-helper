@@ -58,7 +58,12 @@ than clicking the web-UI button). Never launch `start-server.sh` or the
 `plannotator` CLI yourself: an in-sandbox server is unreachable by design, and
 the host tools own session lifecycles (attach-or-start, no duplicates). If a
 session tool is missing from your toolset, stop and report it instead of
-improvising.
+improvising. One exception: shortly after the session sat idle (e.g. while the
+human worked through a review), a turn's tool catalog may transiently list the
+session tools as "no longer available" while the harness reconnects its MCP
+connections. If such a revocation cites session tools you used in an earlier
+turn, wait one turn and use the tools if they reappear; report only if the
+tools stay missing across turns.
 
 All environment variables needed to build and import the packages in your
 working directory should all be set; do not try to use EUPS or load `.envrc`
