@@ -26,17 +26,87 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Callable
 
-__all__ = ("install_harness",)
+__all__ = ("PLANNOTATOR_HOST_ONLY_SKILLS", "install_harness")
 
 # tkt-owned plugin artifacts from older installs that live in the host plugin
 # dir but must be *removed* on install (their feature was removed from tkt;
 # a stale copy would otherwise keep loading).  A name may be a single file or
 # a directory plugin (e.g. ``zed-bell``).
 LEGACY_PLUGIN_NAMES: tuple[str, ...] = ("zed-bell.js", "zed-bell", "plannotator-wake.js")
+
+# Patches applied to the vendored Plannotator skills' SKILL.md at install
+# time, keyed by skill directory name; the files in harnesses/shared/skills
+# stay verbatim upstream text.  Upstream only ever describes MCP tools by
+# top-level names ("it can be listed with a prefix ... loaded through tool
+# search"), which in a code-mode harness (tool catalog entries of the form
+# ``tools["<server>"].<tool>``, callable only from inside the code-mode
+# ``execute`` tool) leads agents to call the always-failing bare name and
+# misread the error as a dead MCP server.  Each patch is anchored on unique
+# upstream text; a pattern not matching exactly once is warned about, since
+# that means upstream reworded the anchored passage.
+PLANNOTATOR_SKILL_PATCHES: dict[str, tuple[tuple[re.Pattern[str], str], ...]] = {
+    "plannotator": (
+        (
+            re.compile(re.escape("not `--gate --json`.")),
+            "not `--gate --json`.\n\n"
+            'In a harness whose tool catalog lists entries as `tools["<server>"].<tool>` (a code-mode '
+            "harness), that path is the call form: invoke the tool from code mode (the `execute` tool), "
+            "never as a top-level tool name. There, for example, "
+            '`tools["tkt-session"].plannotator({ action: "open", kind: "review", target: "<dir>", '
+            'base: "<ref>" })` opens a review. A failure of the bare name `plannotator` in such a harness '
+            "is not evidence the server is down — try the catalog path before reporting anything.",
+        ),
+        (
+            re.compile(re.escape("Use the CLI only when you have no such tool, or")),
+            "Use the CLI only when you have no such tool (having it means your catalog lists it in a "
+            'callable spelling; in a code-mode harness a bare-name failure means call the `tools["..."]` '
+            "path the catalog gives, not that the tool is gone), or",
+        ),
+        (
+            re.compile(re.escape("use the stdio MCP server `plannotator inbox mcp`.")),
+            "use the stdio MCP server `plannotator inbox mcp`. In a code-mode catalog listing it as "
+            '`tools["<server>"].plannotator_inbox`, that path is the call form (invoke it from `execute`).',
+        ),
+    ),
+    "plannotator-annotate": (
+        (
+            re.compile(re.escape("reviewing it inline in chat.\n")),
+            "reviewing it inline in chat.\n\n"
+            "If you have a `plannotator` tool — including a tool catalog entry "
+            '`tools["<server>"].plannotator` callable only from code mode — use it instead of the commands '
+            'below: `{ "action": "open", "target": "<path-or-url>", "kind": "annotate" }` (plus '
+            '`"gate": true` for an approval gate). It runs the session where the reviewer\'s browser reaches '
+            "it; a CLI session started in a sandbox is unreachable by design.",
+        ),
+    ),
+    "plannotator-review": (
+        (
+            re.compile(re.escape("reading a diff inline.\n")),
+            "reading a diff inline.\n\n"
+            "If you have a `plannotator` tool — including a tool catalog entry "
+            '`tools["<server>"].plannotator` callable only from code mode — use it instead of the command '
+            'below: `{ "action": "open", "kind": "review", "target": "<directory-or-pr-url>", '
+            'base": "<ref>" }`. It runs the session where the reviewer\'s browser reaches it; a CLI session '
+            "started in a sandbox is unreachable by design.",
+        ),
+    ),
+}
+
+# Plannotator skills that tkt deliberately does not vendor: their instructions
+# shell out to the `plannotator` CLI or read host data directories, which a
+# restricted sandbox cannot use.  The Plannotator installer drops them into
+# ~/.agents/skills and reinstalls them on every upgrade, so install_harness
+# removes them and sandbox runs deny them to agents
+# (tkt.sandbox.opencode_config_content).  A Plannotator skill present in
+# ~/.agents/skills but *not* named here or vendored is warned about and left
+# in place: whether it belongs vendored, host-only, or nowhere depends on
+# reading it.
+PLANNOTATOR_HOST_ONLY_SKILLS: tuple[str, ...] = ("plannotator-inbox", "plannotator-last")
 
 
 def _repo_root() -> str:
@@ -136,12 +206,90 @@ _SKILL_SOURCES: tuple[tuple[str, ...], ...] = (
 )
 
 
-def _install_skill_dirs(skills_src: str, skills_dst: str, managed: set[str], *, dry_run: bool) -> None:
+def _apply_skill_patches(name: str, content: str) -> str:
+    """Return ``content`` with the tkt patches for skill ``name`` applied,
+    warning about any patch whose anchor text is missing or ambiguous.
+    """
+    for pattern, repl in PLANNOTATOR_SKILL_PATCHES.get(name, ()):
+        content, count = pattern.subn(repl, content)
+        if count != 1:
+            logging.warning(
+                f"tkt patch for skill {name} matched {count} times (expected 1); upstream reworded the"
+                " anchored passage — update PLANNOTATOR_SKILL_PATCHES"
+            )
+    return content
+
+
+def _install_patched_skill(
+    name: str,
+    src: str,
+    dst: str,
+    *,
+    dry_run: bool,
+    confirm: Callable[[str], bool],
+    unattended: bool,
+) -> None:
+    """Install a vendored upstream skill dir into ``dst`` with the tkt
+    patches applied to ``SKILL.md``.
+
+    When the installed ``SKILL.md`` differs from both the verbatim vendored
+    copy and its patched form — a Plannotator upgrade past the vendored
+    revision, or a local edit — offer to adopt it as the new vendored
+    upstream copy (overwriting the repo's ``SKILL.md``, after which the
+    patches apply to the adopted text).  Adoption only ever covers
+    ``SKILL.md``; the rest of the skill dir stays tkt's copy.  An
+    ``unattended`` run (CLI ``--yes``) never adopts: rewriting the repo
+    without a human is not on offer, so it just overwrites the installed copy
+    with tkt's patched text.
+    """
+    src_md = os.path.join(src, "SKILL.md")
+    dst_md = os.path.join(dst, "SKILL.md")
+    with open(src_md, encoding="utf-8") as f:
+        vendored = f.read()
+    patched = _apply_skill_patches(name, vendored)
+    if os.path.isfile(dst_md):
+        with open(dst_md, encoding="utf-8") as f:
+            installed = f.read()
+        # installed == vendored is a fresh Plannotator install of exactly the
+        # vendored upstream text: no drift, the patched copy just goes on top.
+        if installed not in (vendored, patched):
+            logging.warning(
+                f"Installed skill {name} differs from tkt's patched copy (updated by Plannotator or edited)"
+            )
+            adopt = (not unattended) and confirm(
+                f"Adopt the installed {name} as tkt's vendored upstream copy, overwriting {src_md}"
+                " (tkt patches re-apply at install)?"
+            )
+            if adopt:
+                logging.info(f"Adopting installed {name} into {src_md}")
+                if not dry_run:
+                    with open(src_md, "w", encoding="utf-8") as f:
+                        f.write(installed)
+                vendored = installed
+    _copy_skill(src, dst, dry_run=dry_run)
+    if dry_run:
+        logging.info(f"Would apply tkt patches to {dst_md}")
+        return
+    with open(dst_md, "w", encoding="utf-8") as f:
+        f.write(_apply_skill_patches(name, vendored))
+
+
+def _install_skill_dirs(
+    skills_src: str,
+    skills_dst: str,
+    managed: set[str],
+    *,
+    dry_run: bool,
+    confirm: Callable[[str], bool],
+    unattended: bool,
+) -> None:
     """Copy each skill dir (containing ``SKILL.md``) under ``skills_src``
     into ``skills_dst``.
 
     Names already in ``managed`` (copied from an earlier source) are skipped
-    with a warning. ``managed`` is updated in place.
+    with a warning.  Skills with tkt patches go through
+    :func:`_install_patched_skill` instead of a plain copy.  ``managed`` is
+    updated in place.
     """
     if not os.path.isdir(skills_src):
         return
@@ -153,7 +301,11 @@ def _install_skill_dirs(skills_src: str, skills_dst: str, managed: set[str], *, 
             logging.warning(f"Skill {name} in {skills_src} is shadowed by an earlier source; skipping")
             continue
         managed.add(name)
-        _copy_skill(src, os.path.join(skills_dst, name), dry_run=dry_run)
+        dst = os.path.join(skills_dst, name)
+        if name in PLANNOTATOR_SKILL_PATCHES:
+            _install_patched_skill(name, src, dst, dry_run=dry_run, confirm=confirm, unattended=unattended)
+        else:
+            _copy_skill(src, dst, dry_run=dry_run)
 
 
 def _install_agents(agents_src: str, agents_dst: str, *, dry_run: bool) -> set[str]:
@@ -238,27 +390,61 @@ def _is_skill_entry(path: str) -> bool:
     return os.path.isdir(path) and os.path.isfile(os.path.join(path, "SKILL.md"))
 
 
+def _clean_skill_entries(skills_dst: str, managed: set[str], *, dry_run: bool) -> None:
+    """Handle ``~/.agents/skills`` entries this tkt run did not install.
+
+    Entries named in ``PLANNOTATOR_HOST_ONLY_SKILLS`` — reinstalled into the
+    shared skill home by Plannotator's own updater — are removed
+    unconditionally.  Every other skill entry is warned about and left in
+    place: tkt cannot tell a stale tkt-installed skill from a new
+    Plannotator-installed or hand-written one, and the right action (delete,
+    vendor, or list as host-only) requires reading it.
+    """
+    if not os.path.isdir(skills_dst):
+        return
+    for name in sorted(os.listdir(skills_dst)):
+        if name in managed:
+            continue
+        path = os.path.join(skills_dst, name)
+        if not _is_skill_entry(path):
+            continue
+        if name in PLANNOTATOR_HOST_ONLY_SKILLS:
+            logging.warning(f"Removing host-only Plannotator skill reinstalled outside tkt: {path}")
+            if not dry_run:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+            continue
+        logging.warning(f"Unrecognized skill entry, left in place for review: {path}")
+
+
 def install_harness(
     repo_root: str | None = None,
     home: str | None = None,
     *,
     dry_run: bool = False,
     confirm: Callable[[str], bool] | None = None,
+    unattended: bool = False,
 ) -> None:
     """Install the Zed and OpenCode harness content by copying.
 
     Copies every skill (directory containing ``SKILL.md``) in
     ``harnesses/zed/skills``, ``harnesses/shared/skills`` and
     ``superpowers/skills`` (earlier sources win on name collisions) into
-    ``~/.agents/skills``, which both harnesses discover. Copies the
+    ``~/.agents/skills``, which both harnesses discover; vendored Plannotator
+    skills get the tkt patches applied and offer to adopt an externally
+    updated copy back into the repo (never when ``unattended``).  Copies the
     ``harnesses/opencode/agents`` markdown files into a real
-    ``~/.config/opencode/agents`` directory. Generates
+    ``~/.config/opencode/agents`` directory.  Generates
     ``~/.config/zed/AGENTS.md`` and ``~/.config/opencode/AGENTS.md`` by
     concatenating ``harnesses/shared/AGENTS.md`` with each harness's own
-    file. Removes legacy tkt plugin copies (LEGACY_PLUGIN_NAMES) from
-    ``~/.config/opencode/plugin/``. Warns about (and, when confirmed)
-    removes stale tkt-installed entries in the managed directories that
-    this run no longer installs.
+    file.  Removes legacy tkt plugin copies (LEGACY_PLUGIN_NAMES) from
+    ``~/.config/opencode/plugin/``.  In ``~/.agents/skills``, removes
+    host-only Plannotator skills reinstalled by Plannotator
+    (PLANNOTATOR_HOST_ONLY_SKILLS) and warns about any other unrecognized
+    skill entry without touching it; warns about (and, when confirmed)
+    removes stale tkt-installed agent files no longer shipped.
     """
     repo_root = repo_root or _repo_root()
     home = home or os.path.expanduser("~")
@@ -272,7 +458,14 @@ def install_harness(
         os.makedirs(opencode_cfg, exist_ok=True)
     managed_skills: set[str] = set()
     for parts in _SKILL_SOURCES:
-        _install_skill_dirs(os.path.join(repo_root, *parts), skills_dst, managed_skills, dry_run=dry_run)
+        _install_skill_dirs(
+            os.path.join(repo_root, *parts),
+            skills_dst,
+            managed_skills,
+            dry_run=dry_run,
+            confirm=confirm,
+            unattended=unattended,
+        )
     managed_agents = _install_agents(
         os.path.join(repo_root, "harnesses", "opencode", "agents"),
         os.path.join(opencode_cfg, "agents"),
@@ -304,7 +497,7 @@ def install_harness(
                 shutil.rmtree(legacy)
             else:
                 os.remove(legacy)
-    _clean_stale(skills_dst, managed_skills, candidate=_is_skill_entry, dry_run=dry_run, confirm=confirm)
+    _clean_skill_entries(skills_dst, managed_skills, dry_run=dry_run)
     _clean_stale(
         os.path.join(opencode_cfg, "agents"),
         managed_agents,

@@ -39,6 +39,7 @@ import git
 import pytest
 
 from tkt._workspace import Workspace
+from tkt.install import PLANNOTATOR_HOST_ONLY_SKILLS
 from tkt.sandbox import (
     SESSION_SOCKET_NAME,
     Sandbox,
@@ -499,14 +500,19 @@ def test_common_argv_injects_session_env(workspace, tmp_path, monkeypatch):
 
 
 def test_opencode_config_content_wires_bridged_mcp():
-    """Session socket plus one local socat override per bridged remote MCP."""
+    """Session socket plus one local socat override per bridged remote MCP,
+    and skill denies for the host-only Plannotator skills.
+    """
     cfg = opencode_config_content("/x/net-1", ["github"])
-    assert set(cfg) == {"mcp"}  # the env-config plugin channel is dead: mcp-only
+    assert set(cfg) == {"mcp", "permissions"}  # the env-config plugin channel is dead
     assert cfg["mcp"]["tkt-session"]["command"][-1] == "UNIX-CONNECT:/x/net-1/session.sock"
     assert cfg["mcp"]["github"]["type"] == "local"
     assert cfg["mcp"]["github"]["command"][-1] == "UNIX-CONNECT:/x/net-1/mcp-github.sock"
     # no names => session only (unchanged behavior)
     assert set(opencode_config_content("/x/net-1")["mcp"]) == {"tkt-session"}
+    denies = cfg["permissions"]
+    assert {d["resource"] for d in denies} == set(PLANNOTATOR_HOST_ONLY_SKILLS)
+    assert all(d["action"] == "skill" and d["effect"] == "deny" for d in denies)
 
 
 def test_inner_script_has_no_vc_socat(workspace, tmp_path, monkeypatch):

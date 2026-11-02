@@ -46,6 +46,7 @@ import git
 from ._environment import Environment, Tool
 from ._sessionmanagers import sweep_session_registry
 from ._workspace import Workspace
+from .install import PLANNOTATOR_HOST_ONLY_SKILLS
 
 # Subdirectory of the workspace where the agent's writable state lives.
 AGENT_SUBDIR = ".agent"
@@ -95,12 +96,14 @@ def opencode_config_content(net_dir: str, remote_mcp_names: Iterable[str] = ()) 
     The session socket plus one ``local`` socat override per bridged
     remote-MCP name; the override key matches the host config's server
     key (e.g. ``github``) so the merged-last env config replaces the
-    host's unreachable remote entry.  Only the ``mcp`` block goes
-    through this channel: the ``plugin`` array in env config is NOT
-    honored by the installed OpenCode (its entries are npm package
-    specs), so plugins live as real files and directories in
-    ``~/.config/opencode/plugin/``, not in config (tkt.install purges
-    legacy copies from there).
+    host's unreachable remote entry.  Also denies the
+    host-only Plannotator skills: a Plannotator upgrade can reinstall them
+    into the shared ``~/.agents/skills`` the sandbox mounts, and their
+    CLI-launching instructions cannot reach a reviewer from inside the
+    sandbox.  The ``plugin`` array in env config is NOT honored by the
+    installed OpenCode (its entries are npm package specs), so plugins live
+    as real files and directories in ``~/.config/opencode/plugin/``, not in
+    config (tkt.install purges legacy copies from there).
     """
 
     def local(sock: str) -> dict[str, Any]:
@@ -109,7 +112,10 @@ def opencode_config_content(net_dir: str, remote_mcp_names: Iterable[str] = ()) 
     mcp: dict[str, Any] = {"tkt-session": local(os.path.join(net_dir, SESSION_SOCKET_NAME))}
     for name in remote_mcp_names:
         mcp[name] = local(os.path.join(net_dir, f"mcp-{name}.sock"))
-    return {"mcp": mcp}
+    permissions = [
+        {"action": "skill", "resource": name, "effect": "deny"} for name in PLANNOTATOR_HOST_ONLY_SKILLS
+    ]
+    return {"mcp": mcp, "permissions": permissions}
 
 
 # Environment variables that carry the OpenCode background-service password

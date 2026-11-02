@@ -67,9 +67,28 @@ harnesses/
 copies of skills installed by the Plannotator CLI, adopted here because the
 sandbox-bridged `plannotator` session tool makes them usable in restricted
 runs. Plannotator's other skills are host-only (they shell out to the
-`plannotator` CLI or read host data directories) and stay out of tkt. To
-update: run Plannotator's installer into a scratch directory (or read its
-upstream source), copy the three skill directories over these, and commit.
+`plannotator` CLI or read host data directories) and stay out of tkt. The
+vendored `SKILL.md` files stay verbatim upstream text: tkt's changes live in
+`PLANNOTATOR_SKILL_PATCHES` (`tkt/install.py`) and are applied at install
+time (they add the code-mode call form of the session tools, which upstream
+does not know about). To update: run Plannotator's installer into a scratch
+directory (or read its upstream source), copy the three skill directories
+over these, fix any patch that no longer matches (install warns per patch),
+and commit.
+
+Plannotator's installer writes the same skills into `~/.agents/skills` and
+reinstalls them on every upgrade. `tkt install-harness` compares the
+installed `SKILL.md` against both the verbatim vendored copy and its patched
+form (an install of exactly the vendored text is not drift); on a real
+mismatch it offers to adopt the installed text back into the repo as the new
+vendored upstream copy (never under `--yes`), otherwise overwriting the
+install with tkt's patched text. Plannotator skills tkt deliberately excludes
+are listed in `PLANNOTATOR_HOST_ONLY_SKILLS`: install removes them from
+`~/.agents/skills` and sandboxed agents deny them outright
+(`tkt.sandbox.opencode_config_content`), so a Plannotator upgrade cannot put
+them back in an agent's view. Any other unrecognized skill in
+`~/.agents/skills` is warned about and left in place — decide by reading it
+whether it belongs vendored, in `PLANNOTATOR_HOST_ONLY_SKILLS`, or nowhere.
 
 Guidelines:
 
