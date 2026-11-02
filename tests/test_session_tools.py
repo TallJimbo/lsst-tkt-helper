@@ -387,3 +387,157 @@ def test_inbox_upstream_error_surfaced(fake_inbox_cli) -> None:
 
     out = _inbox_call("boom", {})
     assert "upstream error" in out and "upstream exploded" in out
+
+
+# guide_submit patch sources: patch_file (host-side workspace read) and
+# patch_spec (host-side git diff).  The upstream fake accepts only
+# submit_guide's own keys, so a source key leaking upstream instead of being
+# resolved locally would be refused there.
+
+
+def _forwarded_head(out: str) -> dict:
+    """Parse the forwarded record from a result ending in a patch summary."""
+    import json as _json
+
+    return _json.loads(out.splitlines()[0])
+
+
+def _make_git_repo(path) -> None:
+    """Git repo with a ``main`` branch and a ``feature`` branch touching
+    two files (so a pathspec-scoped diff differs from the full one).
+    """
+    import subprocess
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True, text=True)
+
+    git("init", "-b", "main")
+    git("config", "user.email", "tests@example.com")
+    git("config", "user.name", "Tests")
+    (path / "a.py").write_text("x = 1\n")
+    (path / "b.txt").write_text("one\n")
+    git("add", "-A")
+    git("commit", "-m", "base")
+    git("checkout", "-b", "feature")
+    (path / "a.py").write_text("x = 2\n")
+    (path / "b.txt").write_text("two\n")
+    git("add", "-A")
+    git("commit", "-m", "feature")
+
+
+def test_inbox_guide_submit_patch_file_sent_as_patch(fake_inbox_cli) -> None:
+    """``patch_file`` is read host-side under the workspace and its content
+    is forwarded as ``patch``; the result echoes the resolved source.
+    """
+    ws = fake_inbox_cli
+    patch = "diff --git a/x.py b/x.py\n@@ -0,0 +1 @@\n+x\n"
+    (ws / "review-staging").mkdir()
+    (ws / "review-staging" / "guide.patch").write_text(patch)
+    out = _call(
+        _inbox_tool(workspace=str(ws)),
+        action="guide_submit",
+        guide={"title": "t"},
+        patch_file="review-staging/guide.patch",
+    )
+    fwd = _forwarded_head(out)
+    assert fwd["tool"] == "submit_guide"
+    assert fwd["args"] == {"guide": {"title": "t"}, "patch": patch}
+    assert "1 file(s)" in out and "bytes" in out and "review-staging/guide.patch" in out
+
+
+def test_inbox_guide_submit_patch_file_containment_and_missing(monkeypatch, fake_inbox_cli) -> None:
+    """Escapes are refused, a missing file names the host path it looked for,
+    non-UTF-8 bytes are refused — all locally, with no upstream spawn.
+    """
+    spawns = _no_spawn_spy(monkeypatch)
+    ws = fake_inbox_cli
+    tool = _inbox_tool(workspace=str(ws))
+    assert "outside workspace" in _call(
+        tool, action="guide_submit", guide={"title": "t"}, patch_file="../elsewhere.patch"
+    )
+    assert "outside workspace" in _call(
+        tool, action="guide_submit", guide={"title": "t"}, patch_file="/etc/passwd"
+    )
+    missing = _call(tool, action="guide_submit", guide={"title": "t"}, patch_file="missing.patch")
+    assert "not found" in missing and "missing.patch" in missing
+    (ws / "binary.patch").write_bytes(b"\xff\xfe not utf-8 \x00")
+    assert "UTF-8" in _call(tool, action="guide_submit", guide={"title": "t"}, patch_file="binary.patch")
+    assert spawns == []
+
+
+def test_inbox_guide_submit_patch_spec_runs_host_git_diff(fake_inbox_cli) -> None:
+    """``patch_spec`` forwards host-side ``git diff base...head`` output,
+    with ``head`` defaulting to ``HEAD`` and ``paths`` scoping the diff.
+    """
+    import subprocess
+
+    ws = fake_inbox_cli
+    repo = ws / "pkg"
+    repo.mkdir()
+    _make_git_repo(repo)
+    expected = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--no-color", "main...feature"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    tool = _inbox_tool(workspace=str(ws))
+    out = _call(
+        tool,
+        action="guide_submit",
+        guide={"title": "t"},
+        patch_spec={"dir": "pkg", "base": "main"},
+    )
+    fwd = _forwarded_head(out)
+    assert fwd["tool"] == "submit_guide"
+    assert fwd["args"] == {"guide": {"title": "t"}, "patch": expected}
+    assert "git diff main...HEAD" in out
+    out = _call(
+        tool,
+        action="guide_submit",
+        guide={"title": "t"},
+        patch_spec={"dir": "pkg", "base": "main", "head": "feature", "paths": ["a.py"]},
+    )
+    fwd = _forwarded_head(out)
+    assert "a.py" in fwd["args"]["patch"] and "b.txt" not in fwd["args"]["patch"]
+
+
+def test_inbox_guide_submit_patch_spec_errors(monkeypatch, fake_inbox_cli) -> None:
+    """Bad specs are refused locally — unknown keys, missing/dangerous refs,
+    escaping ``dir``, failing git, empty diffs — with no upstream spawn.
+    """
+    spawns = _no_spawn_spy(monkeypatch)
+    ws = fake_inbox_cli
+    repo = ws / "pkg"
+    repo.mkdir()
+    _make_git_repo(repo)
+    tool = _inbox_tool(workspace=str(ws))
+    cases = [
+        ({"dir": "pkg", "base": "main", "diff": "x"}, "unknown key"),
+        ({"dir": "pkg", "head": "feature"}, "requires a non-empty 'base'"),
+        ({"dir": "pkg", "base": "-b", "head": "feature"}, "must not start with '-'"),
+        ({"dir": "../outside", "base": "main"}, "outside workspace"),
+        ({"dir": "pkg", "base": "nope"}, "git diff failed"),
+        ({"dir": "pkg", "base": "main", "head": "main"}, "empty diff"),
+    ]
+    for spec, expected in cases:
+        out = _call(tool, action="guide_submit", guide={"title": "t"}, patch_spec=spec)
+        assert expected in out, f"{spec}: {out}"
+    assert spawns == []
+
+
+def test_inbox_guide_submit_patch_sources_mutually_exclusive(monkeypatch) -> None:
+    """At most one of patch, patch_file, patch_spec, snapshot — refused
+    locally, with no upstream spawn.
+    """
+    spawns = _no_spawn_spy(monkeypatch)
+    tool = _inbox_tool()
+    assert "at most one" in _call(
+        tool, action="guide_submit", guide={"title": "t"}, patch="x", patch_file="a.patch"
+    )
+    assert "at most one" in _call(
+        tool, action="guide_submit", snapshot={"files": []}, patch_spec={"base": "main"}
+    )
+    assert "at most one" in _call(
+        tool, action="guide_submit", guide={"title": "t"}, patch_file="a.patch", patch_spec={"base": "main"}
+    )
+    assert spawns == []

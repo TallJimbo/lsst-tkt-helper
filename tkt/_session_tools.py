@@ -98,6 +98,42 @@ def safe_subpath(workspace: str, candidate: str) -> str:
     return str(resolved)
 
 
+def _git_diff_spec(workspace: str, spec: dict[str, Any]) -> tuple[str, str]:
+    """Run a ``patch_spec`` ``git diff`` host-side; return (diff, origin).
+
+    The diff is ``base...head`` (merge-base semantics) over the optional
+    pathspecs, inside ``spec["dir"]`` contained to the workspace.  Refs are
+    checked for a leading ``-`` so they cannot read as git options.
+    """
+    import subprocess
+
+    unknown = set(spec) - {"dir", "base", "head", "paths"}
+    if unknown:
+        raise ValueError(f"patch_spec has unknown key(s) {sorted(unknown)}; allowed: dir, base, head, paths.")
+    base = spec.get("base")
+    if not isinstance(base, str) or not base:
+        raise ValueError("patch_spec requires a non-empty 'base' ref.")
+    head = spec.get("head", "HEAD")
+    if not isinstance(head, str) or not head:
+        raise ValueError("patch_spec 'head' must be a non-empty ref.")
+    if base.startswith("-") or head.startswith("-"):
+        raise ValueError("patch_spec refs must not start with '-'.")
+    paths = spec.get("paths") or []
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+        raise ValueError("patch_spec 'paths' must be a list of path strings.")
+    repo = safe_subpath(workspace, str(spec.get("dir", ".")))
+    res = subprocess.run(
+        ["git", "-C", repo, "diff", "--no-color", f"{base}...{head}", "--", *paths],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        raise ValueError(f"git diff failed in {repo}: {res.stderr.strip()}")
+    if not res.stdout.strip():
+        raise ValueError(f"patch_spec produced an empty diff (base={base!r}, head={head!r}).")
+    return res.stdout, f"git diff {base}...{head} in {repo}"
+
+
 # Host-side built-in Plan-mode plan store: the session ``plannotator`` tool
 # accepts files from here as ``open`` targets in addition to the workspace.
 _PLAN_DIR = os.path.join("~", ".opencode", "plan")
@@ -260,6 +296,8 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
         attachments: list[str] | None = None,
         guide: dict[str, Any] | str | None = None,
         patch: str | None = None,
+        patch_file: str | None = None,
+        patch_spec: dict[str, Any] | None = None,
         snapshot: dict[str, Any] | str | None = None,
         project_path: str | None = None,
         payload: dict[str, Any] | str | None = None,
@@ -268,8 +306,10 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
         """Leave non-blocking messages/questions for the human in the
         Plannotator Inbox, and drive the guided-review flow:
         ``guide_brief`` fetches the brief for authoring a guided review
-        walkthrough, ``guide_submit`` submits the authored ``guide`` with the
-        ``patch`` it describes (or a ``snapshot``).  ``wait`` blocks up to
+        walkthrough, ``guide_submit`` submits the authored ``guide`` with
+        the ``patch`` it describes (or a ``snapshot``; a large diff can
+        arrive from ``patch_file`` or ``patch_spec``, both resolved
+        host-side).  ``wait`` blocks up to
         ~50 s for a reply and may return a ``cursor`` — pass it back to keep
         waiting.  Nothing here wakes the human's browser at the session;
         replies arrive to you via ``wait``/``read``.
@@ -296,7 +336,17 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
             guide: "guide_submit": the authored guide (JSON object or
                 string) in the shape ``guide_brief`` describes.
             patch: "guide_submit": the exact unified diff the guide
-                describes.
+                describes.  Takes at most one of patch, patch_file,
+                patch_spec, snapshot.
+            patch_file: "guide_submit": path to a unified-diff file
+                inside the workspace, read on the host and sent as
+                patch.  Sandbox-private paths (e.g. /tmp in a
+                restricted run) are invisible to the host; stage the
+                diff inside the workspace.
+            patch_spec: "guide_submit": host-side git diff sent as
+                patch: dir (repo inside the workspace, default its
+                root), base (required ref), head (default HEAD),
+                paths (optional pathspecs).
             snapshot: "guide_submit": a complete snapshot in place of
                 guide + patch.
             project_path: "decisions": folder whose decisions to list;
@@ -314,6 +364,7 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
 
         # Forward only the keys the upstream tool for this action accepts,
         # under its own names.
+        echo: str | None = None
         if action == "send":
             if body is None:
                 return "plannotator_inbox: send requires `body` (the message for the human)."
@@ -344,18 +395,66 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
         elif action == "guide_brief":
             args = {}
         else:  # guide_submit
-            if snapshot is None and (guide is None or patch is None):
-                return "plannotator_inbox: guide_submit needs `guide` with `patch`, or a complete `snapshot`."
+            sources = {
+                n: v
+                for n, v in (
+                    ("patch", patch),
+                    ("patch_file", patch_file),
+                    ("patch_spec", patch_spec),
+                    ("snapshot", snapshot),
+                )
+                if v is not None
+            }
+            if len(sources) > 1:
+                return (
+                    "plannotator_inbox: guide_submit takes at most one of patch, "
+                    f"patch_file, patch_spec, snapshot; got {', '.join(sources)}."
+                )
+            if snapshot is None and (guide is None or not sources):
+                return (
+                    "plannotator_inbox: guide_submit needs `guide` with `patch`, "
+                    "`patch_file`, or `patch_spec`, or a complete `snapshot`."
+                )
+            patch_text = patch
+            origin = None
+            if patch_file is not None:
+                try:
+                    path = safe_subpath(workspace, patch_file)
+                except ValueError as exc:
+                    return f"plannotator_inbox failed: {exc}"
+                try:
+                    patch_text = Path(path).read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    return (
+                        f"plannotator_inbox: patch file {path!r} not found on the host. "
+                        "patch_file resolves host-side inside the workspace; files under "
+                        "the sandbox's /tmp are not visible there — stage the diff inside "
+                        "the workspace."
+                    )
+                except UnicodeDecodeError:
+                    return f"plannotator_inbox: patch file {path!r} is not valid UTF-8 text."
+                except OSError as exc:
+                    return f"plannotator_inbox failed: cannot read patch file {path!r}: {exc}"
+                origin = f"file {path}"
+            elif patch_spec is not None:
+                try:
+                    patch_text, origin = _git_diff_spec(workspace, patch_spec)
+                except (ValueError, OSError) as exc:
+                    return f"plannotator_inbox failed: {exc}"
+            if origin is not None and patch_text is not None:
+                n_files = sum(1 for line in patch_text.splitlines() if line.startswith("diff --git "))
+                echo = f"[patch: {n_files} file(s), {len(patch_text.encode())} bytes, from {origin}]"
             args = _present(
                 guide=guide,
-                patch=patch,
+                patch=patch_text,
                 snapshot=snapshot,
                 body=body,
                 subject=subject,
                 thread=thread,
                 reply_to=reply_to,
             )
-        return _inbox_call(name, args)
+        out = _inbox_call(name, args)
+        return out if echo is None else f"{out}\n{echo}"
 
 
 def _json_block(obj: Any) -> str:
