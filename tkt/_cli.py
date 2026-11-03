@@ -229,7 +229,7 @@ def install_harness(*, dry_run: bool = False, yes: bool = False, verbose: int = 
     help=(
         "Let the agent work directly in the human's worktrees and branches "
         "instead of in .agent sandbox worktrees. Defaults to the environment's "
-        "'shared_worktree' setting from the environment config file."
+        "'shared_worktree' setting from the environment config file (true)."
     ),
 )
 @click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")

@@ -48,7 +48,7 @@ class RubinEnvironment(Environment):
         externals: Mapping[str, str],
         tools: Mapping[str, Tool],
         default_tools: tuple[str, ...],
-        shared_worktree: bool = False,
+        shared_worktree: bool = True,
     ):
         self._workspace_path = workspace_path
         with open(repos_yaml) as f:
@@ -70,7 +70,7 @@ class RubinEnvironment(Environment):
             tools=cls.load_tools(data),
             default_tag=data.get("default_tag", "w_latest"),
             default_tools=tuple(data["default_tools"]),
-            shared_worktree=data.get("shared_worktree", False),
+            shared_worktree=data.get("shared_worktree", True),
         )
 
     def default_shared_worktree(self) -> bool:

@@ -919,7 +919,7 @@ def test_shared_worktree_tkt_json_roundtrip(tmp_path):
 
 
 def test_rubin_env_shared_worktree_default(tmp_path):
-    """local.jsonc can set the tkt new default for shared_worktree."""
+    """Shared-worktree is the tkt new default; local.jsonc can override."""
     from tkt.rubin import RubinEnvironment
 
     repos_yaml = tmp_path / "repos.yaml"
@@ -929,9 +929,9 @@ def test_rubin_env_shared_worktree_default(tmp_path):
         "repos_yaml": str(repos_yaml),
         "default_tools": [],
     }
-    assert RubinEnvironment.from_json_data(dict(base)).default_shared_worktree() is False
-    env = RubinEnvironment.from_json_data({**base, "shared_worktree": True})
-    assert env.default_shared_worktree() is True
+    assert RubinEnvironment.from_json_data(dict(base)).default_shared_worktree() is True
+    env = RubinEnvironment.from_json_data({**base, "shared_worktree": False})
+    assert env.default_shared_worktree() is False
 
 
 def test_require_agent_worktrees_guard(workspace, tmp_path):

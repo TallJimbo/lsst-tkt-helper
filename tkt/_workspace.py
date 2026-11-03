@@ -125,6 +125,8 @@ class Workspace:
             metapackage_tag=metapackage_tag,
             workspace_eups_product=data["workspace_eups_product"],
             tools=data["tools"],
+            # tkt.json predates shared-worktree mode; a missing key means the
+            # workspace was created in .agent mode.
             shared_worktree=data.get("shared_worktree", False),
         )
 
@@ -169,7 +171,7 @@ class Workspace:
         workspace_eups_product: str | None = None,
         environment: Environment,
         tools: Iterable[str] = (),
-        shared_worktree: bool = False,
+        shared_worktree: bool = True,
         dry_run: bool = False,
     ) -> Workspace:
         packages, externals, environment = cls._handle_package_args(

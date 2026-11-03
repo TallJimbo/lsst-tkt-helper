@@ -66,12 +66,13 @@ branch into a single commit and rebase it onto main.
   `tkt.remote_mcp_proxy` (token injected on the host only), redirected from
   OpenCode's same-key config entry via `OPENCODE_CONFIG_CONTENT`;
   full-network (`--network`) runs do not front remote MCP at all.
-  Workspaces created with `tkt new
-  --shared-worktree` (persisted in `tkt.json`; default from `shared_worktree`
-  in `local.jsonc`) create no `.agent` directory at all: the whole workspace
-  is bind-mounted read-write (a single `--bind` of the workspace root) so
-  the agent works directly on the human's branches, the sandbox sets up EUPS
-  from the human's `ups/` (`setup -r <workspace>`, not `setup -r .agent`),
+  Workspaces created with `tkt new` (shared-worktree mode is the default;
+  `--no-shared-worktree` opts out; persisted in `tkt.json`, default from
+  `shared_worktree` in `local.jsonc`) create no `.agent` directory at all: the
+  whole workspace is bind-mounted read-write (a single `--bind` of the
+  workspace root) so the agent works directly on the human's branches, the
+  sandbox sets up EUPS from the human's `ups/` (`setup -r <workspace>`, not
+  `setup -r .agent`),
   the superpowers docs worktree lives at `<workspace>/superpowers-docs`
   (`Superpowers.remove` handles either location), and
   `pull-sandbox`/`sandbox-reset` refuse such workspaces. Restricted runs
