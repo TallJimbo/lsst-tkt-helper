@@ -499,6 +499,59 @@ def test_common_argv_injects_session_env(workspace, tmp_path, monkeypatch):
     assert "TCP-LISTEN" not in joined  # in-sandbox vc socat is gone, too
 
 
+def _ro_pairs(argv: list[str]) -> set[tuple[str, str]]:
+    return {(argv[i + 1], argv[i + 2]) for i in range(len(argv) - 2) if argv[i] == "--ro-bind-try"}
+
+
+def _env_of(argv: list[str], name: str) -> str | None:
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+def test_plannotator_results_mounted_read_only(tmp_path, monkeypatch):
+    """Restricted runs expose the result dir at its host path, read-only."""
+    home = tmp_path / "home"
+    (home / ".local" / "state" / "tkt").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    result_dir = str(home / ".local" / "state" / "tkt" / "plannotator")
+    net_dir = tmp_path / "net"
+    net_dir.mkdir()
+    argv = Sandbox(command=[])._build_common_argv(
+        home=str(home), mounts=[], inner="true", network=False, net_dir=str(net_dir)
+    )
+    assert (result_dir, result_dir) in _ro_pairs(argv)
+    assert _env_of(argv, "TKT_PLANNOTATOR_RESULTS") == result_dir
+    assert Path(result_dir).is_dir()  # launch creates it, so the mount is never skipped
+
+
+def test_plannotator_results_absent_for_network_runs(tmp_path, monkeypatch):
+    """A full-network run has no session tools, so no result mount either."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    result_dir = str(home / ".local" / "state" / "tkt" / "plannotator")
+    argv = Sandbox(command=[])._build_common_argv(home=str(home), mounts=[], inner="true", network=True)
+    assert (result_dir, result_dir) not in _ro_pairs(argv)
+    assert _env_of(argv, "TKT_PLANNOTATOR_RESULTS") is None
+
+
+def test_plannotator_results_skipped_when_already_read_write(tmp_path, monkeypatch):
+    """A configured read-write bind of the same path is not overridden."""
+    home = tmp_path / "home"
+    (home / ".local" / "state" / "tkt").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    result_dir = str(home / ".local" / "state" / "tkt" / "plannotator")
+    net_dir = tmp_path / "net"
+    net_dir.mkdir()
+    argv = Sandbox(command=[], mounts_ro=[result_dir])._build_common_argv(
+        home=str(home),
+        mounts=["--bind", result_dir, result_dir],
+        inner="true",
+        network=False,
+        net_dir=str(net_dir),
+    )
+    assert (result_dir, result_dir) not in _ro_pairs(argv)
+
+
 def test_opencode_config_content_wires_bridged_mcp():
     """Session socket plus one local socat override per bridged remote MCP,
     and skill denies for the host-only Plannotator skills.
@@ -864,8 +917,39 @@ def test_render_agents_md_no_vc_port_guidance() -> None:
     with open(_AGENTS_MD_TEMPLATE, encoding="utf-8") as f:
         out = render_agents_md(f.read(), shared=False)
     assert "{{vc_port}}" not in out and "vc_port" not in out
-    assert "start-server.sh" in out  # the prohibition sentence references it to forbid it
+    flat = " ".join(out.split())  # the prohibition spans a line break in the template
+    assert "never launch `start-server.sh` or the `plannotator` CLI" in flat
     assert "brainstorm_server" in out and "plannotator" in out
+
+
+def test_agents_md_describes_the_result_contract() -> None:
+    """The one place the pull-by-file contract is documented."""
+    from tkt.sandbox import _AGENTS_MD_TEMPLATE, render_agents_md
+
+    with open(_AGENTS_MD_TEMPLATE, encoding="utf-8") as f:
+        out = render_agents_md(f.read(), shared=True)
+    assert "TKT_PLANNOTATOR_RESULTS" in out
+    assert "plannotator_open" in out
+    assert "does not parse" in out
+    assert "ended without a decision" in out
+    assert "no longer running" in out
+
+
+def test_agents_md_states_what_the_surface_accepts() -> None:
+    """Annotate takes text-like files; a directory review registers at the
+    repository root and is not a diff scope.
+    """
+    from tkt.sandbox import _AGENTS_MD_TEMPLATE, render_agents_md
+
+    with open(_AGENTS_MD_TEMPLATE, encoding="utf-8") as f:
+        out = render_agents_md(f.read(), shared=True)
+    flat = " ".join(out.split())  # guidance sentences span line breaks
+    assert "text-like files" in flat
+    assert "code goes through" in flat
+    assert "repository root" in flat
+    assert "not a diff scope" in flat
+    for gone in ('action: "result"', "action='status'", "draft is restored"):
+        assert gone not in out
 
 
 def test_render_agents_md_mismatched_block_raises():

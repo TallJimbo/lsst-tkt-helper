@@ -31,62 +31,14 @@ from __future__ import annotations
 
 import os
 import re
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
+from ._inbox_proxy import register_inbox_tools
 from ._sessionmanagers import BrainstormManager, PlannotatorManager, _format_brainstorm_info
-
-_INBOX_UPSTREAM_TIMEOUT_S = 75.0  # > the upstream wait_for_reply ~50 s cursor
-
-INBOX_ACTION_TOOLS = {
-    "send": "send_message",
-    "read": "read_thread",
-    "wait": "wait_for_reply",
-    "resolve": "resolve_message",
-    "decisions": "list_decisions",
-    "record": "record_decision",
-    "guide_brief": "get_guide_brief",
-    "guide_submit": "submit_guide",
-}
-
-
-def _inbox_call(upstream_tool: str, arguments: dict[str, Any]) -> str:
-    """One-shot stdio MCP call to ``plannotator inbox mcp`` (host side)."""
-    import asyncio
-
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
-    from mcp.types import TextContent
-
-    async def _run() -> str:
-        params = StdioServerParameters(command="plannotator", args=["inbox", "mcp"])
-        async with asyncio.timeout(_INBOX_UPSTREAM_TIMEOUT_S):  # > upstream's ~50 s cursor
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    res = await session.call_tool(upstream_tool, arguments)
-                texts = [c.text for c in res.content if isinstance(c, TextContent)]
-                joined = "\n".join(texts)
-                # Upstream ships real payloads (get_guide_brief's brief)
-                # in structuredContent; content carries only a summary.
-                if res.structured_content is not None:
-                    import json
-
-                    block = json.dumps(res.structured_content, indent=2, default=str)
-                    joined += f"\n```json\n{block}\n```"
-                # mcp 2.x models use snake_case attributes.
-                if res.is_error:
-                    return f"plannotator_inbox upstream error: {joined}"
-                return joined
-
-    try:
-        return asyncio.run(_run())
-    except FileNotFoundError as exc:
-        return f"plannotator_inbox failed: plannotator binary not found on host ({exc})."
-    except Exception as exc:  # surface any upstream breakage as tool text
-        return f"plannotator_inbox failed: {exc}."
 
 
 def safe_subpath(workspace: str, candidate: str) -> str:
@@ -134,8 +86,37 @@ def _git_diff_spec(workspace: str, spec: dict[str, Any]) -> tuple[str, str]:
     return res.stdout, f"git diff {base}...{head} in {repo}"
 
 
-# Host-side built-in Plan-mode plan store: the session ``plannotator`` tool
-# accepts files from here as ``open`` targets in addition to the workspace.
+def _resolve_patch_source(workspace: str, name: str, value: Any) -> str:
+    """Resolve a tkt ``submit_guide`` patch source to diff text, host-side.
+
+    ``patch_file`` is read inside the workspace (a sandbox-private path is
+    invisible to this host process, which is why the property exists);
+    ``patch_spec`` is a ``git diff base...head`` run here.
+    """
+    if name == "patch_file":
+        try:
+            path = safe_subpath(workspace, str(value))
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise ValueError(
+                f"patch file {path!r} not found on the host. patch_file resolves host-side inside "
+                "the workspace; files under the sandbox's /tmp are not visible there — stage the "
+                "diff inside the workspace."
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"patch file {path!r} is not valid UTF-8 text.") from exc
+        except OSError as exc:
+            raise ValueError(f"cannot read patch file {path!r}: {exc}") from exc
+    patch_text, _origin = _git_diff_spec(workspace, dict(value or {}))
+    return patch_text
+
+
+# Host-side built-in Plan-mode plan store: the session ``plannotator_open``
+# tool accepts files from here as ``open`` targets in addition to the
+# workspace.
 _PLAN_DIR = os.path.join("~", ".opencode", "plan")
 
 
@@ -204,257 +185,92 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
         return _format_brainstorm_info(info)
 
     @mcp.tool()
-    def plannotator(
-        action: str,  # "open" | "status" | "result" | "close"
-        target: str | None = None,
+    def plannotator_open(
+        target: str,
         kind: str = "annotate",
         gate: bool = False,
         base: str | None = None,
-        session: str | None = None,
         description: str | None = None,  # present for human approvals of tool actions
     ) -> str:
-        """Run host-side Plannotator review sessions for this workspace.
+        """Open a Plannotator review session on the host, where the human's
+        browser reaches it.
 
-        ``open`` attaches to a live session for the same target when one
-        exists, otherwise spawns a detached host session; it returns the
-        session ``url`` — hand it to the human **verbatim** and end your turn
-        (feedback is not pushed to you — pull it with ``action="result"``
-        once the human says it is in).  Never run the ``plannotator``
-        CLI yourself.
-        ``status`` lists this workspace's sessions (live and closed-but-
-        uncollected); entries carry the ``id`` accepted by ``result`` and
-        ``close``; ``result`` reads the on-disk records for ``session``
-        (``type``: feedback/pending/closed); ``close`` terminates it.
-        ``kind`` is ``annotate`` or ``review``; ``gate`` adds the approval
-        UI; ``base`` sets the review compare ref.  Non-URL ``target`` paths
-        must live inside the workspace or the host plan directory
-        (``~/.opencode/plan``).
+        Hand the human the returned URL **verbatim** and end your turn:
+        feedback is not pushed to you.  Their decision arrives as JSON at
+        ``result_path``, a file you read once they say the review is in.
+        Never run the ``plannotator`` CLI yourself: a session started inside
+        a sandbox is unreachable by design.
 
         Args:
-            action: One of "open", "status", "result", or "close".
-            target: "open" only; the file or folder to annotate, the file or
-                folder to review, or a PR URL to review (absolute or
-                workspace-relative). Files under the host plan directory
-                (``~/.opencode/plan``) are also accepted.
-            kind: "open" only; "annotate" (default) or "review".
-            gate: "open" only; add the approval-gate UI to an annotate
-                session.
-            base: "open" only; the compare ref for a review session
-                (``--base``).
-            session: Session id (from "open" or "status"); required by
-                "result" and "close".
+            target: For "annotate", a text-like file to mark up — markdown
+                and the other formats Plannotator renders; the CLI refuses
+                code, which goes through "review".  For "review", a directory
+                or a PR URL: Plannotator registers a directory review at its
+                repository root, so the directory is not a diff scope.
+                Non-URL paths may be absolute or workspace-relative and must
+                live inside the workspace or the host plan directory
+                (``~/.opencode/plan``).
+            kind: "annotate" (default) or "review".
+            gate: Add the approval-gate UI to an annotate session.
+            base: Compare ref for a review session (``--base``).
             description: Optional human-readable rationale for this call.
         """
         try:
-            if action == "open":
-                if target is None:
-                    return "plannotator open requires a target (file, folder, or PR URL)."
-                plan_root = os.path.realpath(os.path.expanduser(_PLAN_DIR))
-                if not re.match(r"https?://", target):  # PR URLs allowed
-                    try:
-                        target = safe_subpath(workspace, target)
-                    except ValueError:
-                        target = safe_subpath(plan_root, target)  # plan-mode plan files
-                info = plannotator_mgr.open(
-                    workspace, target, kind=kind, gate=gate, base=base, extra_roots=[plan_root]
-                )
-                url = info.get("url")
-                body = (
-                    "```json\n" + _json_block(info) + "\n```\n"
-                    f"Hand the human this URL **verbatim** and end your turn: {url}"
-                    if url
-                    else "```json\n" + _json_block(info) + "\n```\n"
-                    "Session spawning; call action='status' once to retrieve its URL to hand over."
-                )
-                return body
-            if action == "status":
-                return "```json\n" + _json_block(plannotator_mgr.status(workspace)) + "\n```"
-            if action == "result":
-                if session is None:
-                    return "plannotator result requires a session id (from open/status)."
-                return "```json\n" + _json_block(plannotator_mgr.result(workspace, session)) + "\n```"
-            if action == "close":
-                if session is None:
-                    return "plannotator close requires a session id."
-                return "```json\n" + _json_block(plannotator_mgr.close(workspace, session)) + "\n```"
-            return f"plannotator: unknown action {action!r}; use 'open', 'status', 'result', or 'close'."
+            plan_root = os.path.realpath(os.path.expanduser(_PLAN_DIR))
+            if not re.match(r"https?://", target):  # PR URLs allowed verbatim
+                try:
+                    target = safe_subpath(workspace, target)
+                except ValueError:
+                    target = safe_subpath(plan_root, target)  # plan-mode plan files
+            info = plannotator_mgr.open(
+                workspace, target, kind=kind, gate=gate, base=base, extra_roots=[plan_root]
+            )
         except (ValueError, RuntimeError, FileNotFoundError, OSError) as exc:
-            return f"plannotator failed: {exc}"
-
-    @mcp.tool()
-    def plannotator_inbox(
-        action: str,  # "send"|"read"|"wait"|"resolve"|"decisions"|"record"|"guide_brief"|"guide_submit"
-        body: str | None = None,
-        subject: str | None = None,
-        text: str | None = None,
-        thread: str | None = None,
-        reply_to: str | None = None,
-        thread_id: str | None = None,
-        message_id: str | None = None,
-        cursor: int | None = None,
-        resolved: bool | None = None,
-        attachments: list[str] | None = None,
-        guide: dict[str, Any] | str | None = None,
-        patch: str | None = None,
-        patch_file: str | None = None,
-        patch_spec: dict[str, Any] | None = None,
-        snapshot: dict[str, Any] | str | None = None,
-        project_path: str | None = None,
-        payload: dict[str, Any] | str | None = None,
-        description: str | None = None,  # present for human approvals of tool actions
-    ) -> str:
-        """Leave non-blocking messages/questions for the human in the
-        Plannotator Inbox, and drive the guided-review flow:
-        ``guide_brief`` fetches the brief for authoring a guided review
-        walkthrough, ``guide_submit`` submits the authored ``guide`` with
-        the ``patch`` it describes (or a ``snapshot``; a large diff can
-        arrive from ``patch_file`` or ``patch_spec``, both resolved
-        host-side).  ``wait`` blocks up to
-        ~50 s for a reply and may return a ``cursor`` — pass it back to keep
-        waiting.  Nothing here wakes the human's browser at the session;
-        replies arrive to you via ``wait``/``read``.
-
-        Args:
-            action: One of "send", "read", "wait", "resolve", "decisions",
-                "record", "guide_brief", or "guide_submit".
-            body: "send": the markdown message for the human (question
-                blocks render as answerable cards); "guide_submit": an
-                optional note above the guide card.
-            subject: "send"/"guide_submit": one-line thread subject when
-                starting a thread.
-            text: "record" only: the decision summary.
-            thread: "send"/"guide_submit": thread *name* to join or start.
-            reply_to: "send"/"guide_submit": message id this one answers.
-            thread_id: "read"/"wait": the thread to read or wait on.
-            message_id: "read"/"wait": read/wait on this message's thread;
-                "resolve": a message (or the thread id) whose thread to
-                archive.
-            cursor: "wait": resume token from the previous wait's result.
-            resolved: "resolve": False reopens an archived thread.
-            attachments: "send": files to show the human beside the message
-                (workspace-relative or absolute paths).
-            guide: "guide_submit": the authored guide (JSON object or
-                string) in the shape ``guide_brief`` describes.
-            patch: "guide_submit": the exact unified diff the guide
-                describes.  Takes at most one of patch, patch_file,
-                patch_spec, snapshot.
-            patch_file: "guide_submit": path to a unified-diff file
-                inside the workspace, read on the host and sent as
-                patch.  Sandbox-private paths (e.g. /tmp in a
-                restricted run) are invisible to the host; stage the
-                diff inside the workspace.
-            patch_spec: "guide_submit": host-side git diff sent as
-                patch: dir (repo inside the workspace, default its
-                root), base (required ref), head (default HEAD),
-                paths (optional pathspecs).
-            snapshot: "guide_submit": a complete snapshot in place of
-                guide + patch.
-            project_path: "decisions": folder whose decisions to list;
-                defaults to this workspace.
-            payload: "record": structured data carried with the decision.
-            description: Optional human-readable rationale for this call.
-        """
-        name = INBOX_ACTION_TOOLS.get(action.strip().lower())
-        if name is None:
-            return f"plannotator_inbox: unknown action {action!r}; use one of {sorted(INBOX_ACTION_TOOLS)}."
-        action = action.strip().lower()
-
-        def _present(**kv: Any) -> dict[str, Any]:
-            return {k: v for k, v in kv.items() if v is not None}
-
-        # Forward only the keys the upstream tool for this action accepts,
-        # under its own names.
-        echo: str | None = None
-        if action == "send":
-            if body is None:
-                return "plannotator_inbox: send requires `body` (the message for the human)."
-            args = _present(
-                body=body, subject=subject, thread=thread, reply_to=reply_to, attachments=attachments
+            return f"plannotator_open failed: {exc}"
+        lines = ["```json", _json_block(info), "```"]
+        if info.get("decision_captured"):
+            lines.append(
+                f"The decision is already captured: read `{info['result_path']}` now. The session "
+                "has ended and its page may be gone, so do not hand out its URL or wait on it."
             )
-        elif action == "read":
-            args = _present(thread_id=thread_id, message_id=message_id)
-        elif action == "wait":
-            args = _present(thread_id=thread_id, message_id=message_id, cursor=cursor)
-        elif action == "resolve":
-            if message_id is None:
-                return (
-                    "plannotator_inbox: resolve requires `message_id` "
-                    "(any message in the thread, or the thread id)."
-                )
-            args = _present(message_id=message_id, resolved=resolved)
-        elif action == "record":
-            if text is None:
-                return "plannotator_inbox: record requires `text` (the decision summary)."
-            args = _present(text=text, payload=payload)
-        elif action == "decisions":
-            try:
-                folder = safe_subpath(workspace, project_path) if project_path else workspace
-            except ValueError as exc:
-                return f"plannotator_inbox failed: {exc}"
-            args = {"project_path": folder}
-        elif action == "guide_brief":
-            args = {}
-        else:  # guide_submit
-            sources = {
-                n: v
-                for n, v in (
-                    ("patch", patch),
-                    ("patch_file", patch_file),
-                    ("patch_spec", patch_spec),
-                    ("snapshot", snapshot),
-                )
-                if v is not None
-            }
-            if len(sources) > 1:
-                return (
-                    "plannotator_inbox: guide_submit takes at most one of patch, "
-                    f"patch_file, patch_spec, snapshot; got {', '.join(sources)}."
-                )
-            if snapshot is None and (guide is None or not sources):
-                return (
-                    "plannotator_inbox: guide_submit needs `guide` with `patch`, "
-                    "`patch_file`, or `patch_spec`, or a complete `snapshot`."
-                )
-            patch_text = patch
-            origin = None
-            if patch_file is not None:
-                try:
-                    path = safe_subpath(workspace, patch_file)
-                except ValueError as exc:
-                    return f"plannotator_inbox failed: {exc}"
-                try:
-                    patch_text = Path(path).read_text(encoding="utf-8")
-                except FileNotFoundError:
-                    return (
-                        f"plannotator_inbox: patch file {path!r} not found on the host. "
-                        "patch_file resolves host-side inside the workspace; files under "
-                        "the sandbox's /tmp are not visible there — stage the diff inside "
-                        "the workspace."
-                    )
-                except UnicodeDecodeError:
-                    return f"plannotator_inbox: patch file {path!r} is not valid UTF-8 text."
-                except OSError as exc:
-                    return f"plannotator_inbox failed: cannot read patch file {path!r}: {exc}"
-                origin = f"file {path}"
-            elif patch_spec is not None:
-                try:
-                    patch_text, origin = _git_diff_spec(workspace, patch_spec)
-                except (ValueError, OSError) as exc:
-                    return f"plannotator_inbox failed: {exc}"
-            if origin is not None and patch_text is not None:
-                n_files = sum(1 for line in patch_text.splitlines() if line.startswith("diff --git "))
-                echo = f"[patch: {n_files} file(s), {len(patch_text.encode())} bytes, from {origin}]"
-            args = _present(
-                guide=guide,
-                patch=patch_text,
-                snapshot=snapshot,
-                body=body,
-                subject=subject,
-                thread=thread,
-                reply_to=reply_to,
+            return "\n".join(lines)
+        if info.get("ended_without_decision"):
+            lines.append(
+                "This session ended without a decision: the CLI exited before the human submitted, "
+                "the capture stays empty, and nothing further will arrive. Ask the human what they "
+                "want; a session the human walked away from has to be started again."
             )
-        out = _inbox_call(name, args)
-        return out if echo is None else f"{out}\n{echo}"
+            return "\n".join(lines)
+        url = info.get("url")
+        if url:
+            lines.append(f"Hand the human this URL **verbatim** and end your turn: {url}")
+        elif info.get("err_path"):
+            lines.append(
+                "The session listing did not report a URL; it is the `Plannotator session ready:` "
+                f"line in `{info['err_path']}`."
+            )
+        if info.get("source") == "discovered":
+            lines.append(
+                "This session was started outside tkt, so its feedback is not captured for you: ask "
+                "the human what they submitted, or ask them to close the tab and let you open your "
+                "own session."
+            )
+        else:
+            if info.get("previous_ended_without_decision"):
+                lines.append(
+                    "A previous session on this target ended without a decision; this is a new "
+                    "session for the same target."
+                )
+            lines.append(
+                f"When the human says the review is in, read `{info['result_path']}`. While the "
+                "session is still open the file is empty; an empty file for a session that is no "
+                "longer running means it ended without a decision — ask the human rather than "
+                "re-reading. JSON that does not parse means the session has not resolved — read it "
+                "again later rather than reporting a parse error."
+            )
+        return "\n".join(lines)
+
+    register_inbox_tools(mcp, workspace=workspace, patch_resolver=partial(_resolve_patch_source, workspace))
 
 
 def _json_block(obj: Any) -> str:

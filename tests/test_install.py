@@ -34,7 +34,8 @@ SHARED_SKILLS = ("shared-one",)
 AGENTS = ("sp-build.md", "plan.md")
 
 # Real vendored Plannotator skills, copied into synthetic repos by tests:
-# the patch behavior must be exercised against the actual upstream text.
+# the verbatim-install contract must be exercised against the actual
+# upstream text.
 _TKT_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _VENDORED_PLANNOTATOR = ("plannotator", "plannotator-annotate", "plannotator-review")
 
@@ -490,164 +491,19 @@ def test_install_harness_legacy_dry_run_writes_nothing(tmp_path):
     assert os.path.isdir(bell)
 
 
-# Vendored Plannotator skills: install-time patches and drift adoption.
+# Vendored Plannotator skills: installed byte-for-byte upstream.
 
 
 def _vendored_path(name: str) -> str:
     return os.path.join(_TKT_REPO_ROOT, "harnesses", "shared", "skills", name, "SKILL.md")
 
 
-def test_install_applies_tkt_patches(tmp_path):
-    """Installed Plannotator skills carry the tkt patches; the repo's
-    vendored copies stay verbatim upstream text.
-    """
+def test_plannotator_skills_install_verbatim(tmp_path):
+    """Vendored Plannotator skills are installed byte-for-byte upstream."""
     repo = str(tmp_path / "repo")
     _make_repo_with_vendored(repo)
     home = str(tmp_path / "home")
     install_harness(repo_root=repo, home=home)
     for name in _VENDORED_PLANNOTATOR:
         installed = _read(os.path.join(home, ".agents", "skills", name, "SKILL.md"))
-        assert "code mode" in installed
-        assert 'tools["' in installed
-        vendored = _read(_vendored_path(name))
-        assert "code mode" not in vendored
-        assert installed != vendored
-
-
-def test_install_patched_skill_second_run_is_quiet(tmp_path, caplog):
-    """Up-to-date patched installs prompt nothing and warn nothing."""
-    repo = str(tmp_path / "repo")
-    _make_repo_with_vendored(repo)
-    home = str(tmp_path / "home")
-    install_harness(repo_root=repo, home=home)
-    caplog.clear()
-
-    def confirm(msg: str) -> bool:
-        raise AssertionError(f"unexpected prompt: {msg}")
-
-    with caplog.at_level(logging.WARNING):
-        install_harness(repo_root=repo, home=home, confirm=confirm)
-    assert not caplog.records
-
-
-def test_install_fresh_upstream_install_not_drift(tmp_path, caplog):
-    """A Plannotator install of exactly the vendored upstream text (no tkt
-    patches yet) is not drift: the patched copy just goes on top, no prompt.
-    """
-    repo = str(tmp_path / "repo")
-    _make_repo_with_vendored(repo)
-    home = str(tmp_path / "home")
-    skills_dst = os.path.join(home, ".agents", "skills", "plannotator")
-    os.makedirs(skills_dst)
-    shutil.copy(_vendored_path("plannotator"), os.path.join(skills_dst, "SKILL.md"))
-
-    def confirm(msg: str) -> bool:
-        raise AssertionError(f"unexpected prompt: {msg}")
-
-    with caplog.at_level(logging.WARNING):
-        install_harness(repo_root=repo, home=home, confirm=confirm)
-    assert "code mode" in _read(os.path.join(skills_dst, "SKILL.md"))
-    assert not [r for r in caplog.records if "plannotator" in r.getMessage()]
-
-
-def test_install_adopt_writes_upstream_back_to_repo(tmp_path):
-    """A Plannotator-updated installed copy, adopted at the prompt, becomes
-    the repo's vendored copy verbatim; the installed copy gets the patches
-    re-applied on top of it.
-    """
-    repo = str(tmp_path / "repo")
-    _make_repo_with_vendored(repo)
-    home = str(tmp_path / "home")
-    install_harness(repo_root=repo, home=home)
-    upstream_new = _read(_vendored_path("plannotator")) + "Upstream addition.\n"
-    installed_md = os.path.join(home, ".agents", "skills", "plannotator", "SKILL.md")
-    with open(installed_md, "w", encoding="utf-8") as f:
-        f.write(upstream_new)
-    prompts: list[str] = []
-    install_harness(repo_root=repo, home=home, confirm=lambda m: prompts.append(m) or True)
-    assert any("plannotator" in m and "Adopt" in m for m in prompts)
-    repo_md = os.path.join(repo, "harnesses", "shared", "skills", "plannotator", "SKILL.md")
-    assert _read(repo_md) == upstream_new
-    installed = _read(installed_md)
-    assert "Upstream addition." in installed
-    assert "code mode" in installed
-
-
-def test_install_declined_drift_overwrites_installed(tmp_path):
-    """Declining adoption leaves the repo untouched and restores tkt's
-    patched copy over the installed one.
-    """
-    repo = str(tmp_path / "repo")
-    _make_repo_with_vendored(repo)
-    home = str(tmp_path / "home")
-    install_harness(repo_root=repo, home=home)
-    installed_md = os.path.join(home, ".agents", "skills", "plannotator", "SKILL.md")
-    with open(installed_md, "w", encoding="utf-8") as f:
-        f.write(_read(_vendored_path("plannotator")) + "Upstream addition.\n")
-    install_harness(repo_root=repo, home=home, confirm=lambda m: False)
-    assert _read(os.path.join(repo, "harnesses", "shared", "skills", "plannotator", "SKILL.md")) == _read(
-        _vendored_path("plannotator")
-    )
-    installed = _read(installed_md)
-    assert "Upstream addition." not in installed
-    assert "code mode" in installed
-
-
-def test_install_unattended_never_adopts(tmp_path):
-    """--yes semantics: an unattended run neither prompts nor rewrites the
-    repo; the installed copy is simply overwritten with tkt's patched text.
-    """
-    repo = str(tmp_path / "repo")
-    _make_repo_with_vendored(repo)
-    home = str(tmp_path / "home")
-    install_harness(repo_root=repo, home=home)
-    installed_md = os.path.join(home, ".agents", "skills", "plannotator", "SKILL.md")
-    with open(installed_md, "w", encoding="utf-8") as f:
-        f.write(_read(_vendored_path("plannotator")) + "Upstream addition.\n")
-
-    def confirm(msg: str) -> bool:
-        raise AssertionError(f"unexpected prompt: {msg}")
-
-    install_harness(repo_root=repo, home=home, confirm=confirm, unattended=True)
-    assert _read(os.path.join(repo, "harnesses", "shared", "skills", "plannotator", "SKILL.md")) == _read(
-        _vendored_path("plannotator")
-    )
-    installed = _read(installed_md)
-    assert "Upstream addition." not in installed
-    assert "code mode" in installed
-
-
-def test_install_dry_run_adopt_writes_nothing(tmp_path):
-    """A dry run adopts nothing: repo and installed copies both survive
-    untouched.
-    """
-    repo = str(tmp_path / "repo")
-    _make_repo_with_vendored(repo)
-    home = str(tmp_path / "home")
-    install_harness(repo_root=repo, home=home)
-    installed_md = os.path.join(home, ".agents", "skills", "plannotator", "SKILL.md")
-    with open(installed_md, "w", encoding="utf-8") as f:
-        f.write(_read(_vendored_path("plannotator")) + "Upstream addition.\n")
-    install_harness(repo_root=repo, home=home, dry_run=True, confirm=lambda m: True)
-    assert _read(os.path.join(repo, "harnesses", "shared", "skills", "plannotator", "SKILL.md")) == _read(
-        _vendored_path("plannotator")
-    )
-    assert "Upstream addition." in _read(installed_md)
-
-
-def test_install_warns_on_patch_anchor_miss(tmp_path, caplog):
-    """An upstream reword that strands a patch anchor is warned about, and
-    the remaining patches still apply.
-    """
-    repo = str(tmp_path / "repo")
-    _make_repo_with_vendored(repo)
-    src_md = os.path.join(repo, "harnesses", "shared", "skills", "plannotator", "SKILL.md")
-    with open(src_md, "w", encoding="utf-8") as f:
-        f.write(_read(_vendored_path("plannotator")).replace("not `--gate --json`.", "not `--gate` at all."))
-    home = str(tmp_path / "home")
-    with caplog.at_level(logging.WARNING):
-        install_harness(repo_root=repo, home=home)
-    assert any("matched 0 times" in r.getMessage() for r in caplog.records)
-    installed = _read(os.path.join(home, ".agents", "skills", "plannotator", "SKILL.md"))
-    # The other patches still applied (their markers survive):
-    assert 'tools["<server>"].plannotator_inbox' in installed
+        assert installed == _read(_vendored_path(name))

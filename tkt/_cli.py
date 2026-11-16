@@ -173,19 +173,18 @@ def direnv(
         "each harness's config dir. Removes host-only Plannotator skills "
         "reinstalled by Plannotator and warns about unrecognized skill "
         "entries without touching them; with --yes, removes stale tkt-"
-        "installed agent files no longer shipped. Offers to adopt externally "
-        "updated vendored skills back into the repo (never with --yes)."
+        "installed agent files no longer shipped."
     ),
 )
 @click.option("-n", "--dry-run", is_flag=True, help="Report what would happen without changing anything.")
-@click.option("--yes", "yes", is_flag=True, help="Remove stale agent files without prompting; never adopts.")
+@click.option("--yes", "yes", is_flag=True, help="Remove stale agent files without prompting.")
 @click.option("-v", "--verbose", count=True, help="Increase logging verbosity (-vv for debug).")
 def install_harness(*, dry_run: bool = False, yes: bool = False, verbose: int = 0) -> None:
     _setup_logging(verbose)
     from .install import install_harness as _install
 
     confirm = (lambda msg: True) if yes else click.confirm
-    _install(dry_run=dry_run, confirm=confirm, unattended=yes)
+    _install(dry_run=dry_run, confirm=confirm)
 
 
 @cli.command()

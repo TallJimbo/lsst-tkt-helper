@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import subprocess as sp
 import time
@@ -39,10 +38,10 @@ import pytest
 
 from tkt._sessionmanagers import (
     PlannotatorManager,
-    _status_ts,
-    _write_entry,
+    _match,
+    _sessions_listing,
     cleanup_workspace_sessions,
-    session_registry_dir,
+    plannotator_result_dir,
     sweep_session_registry,
 )
 
@@ -371,22 +370,26 @@ case "$cmd" in
     if [ -f "$FAKE_STATE/sessions.json" ]; then cat "$FAKE_STATE/sessions.json"; else echo "[]"; fi
     ;;
   annotate|review)
-    # A well-behaved server cleans up its own group when TERMed. Needed here
-    # because the sweep test signals only the leader; production close() uses
-    # killpg, which reaches every group member regardless of any trap.
-    trap 'kill -TERM 0; exit 143' TERM INT
-    echo '{"launched": true}'
-    mkdir -p "$FAKE_STATE"; sleep "${FAKE_SLEEP:-60}" &   # stand-in for the blocking session
-    echo $! > "$FAKE_STATE/sleep.pid"
-    if [ -n "${FAKE_SESSION:-}" ]; then
-      # Opt-in: self-register like the real CLI so open() can discover it.
-      # $$ is the session's process-group leader (the manager exec'd us).
-      S="$FAKE_STATE/sessions.json"
-      printf '[{"target":"%s",' "$1" > "$S"
-      printf '"url":"http://localhost:4321/","port":4321,' >> "$S"
-      printf '"pid":%s,"startedAt":%s}]' "$$" "$(date +%s)" >> "$S"
+    # Optional: the CLI rejects the target and exits before any session exists.
+    if [ -n "$FAKE_EXIT_EARLY" ]; then printf '%s\n' "$FAKE_EXIT_EARLY" >&2; exit 1; fi
+    # Optional: withhold registration past the first discovery poll.
+    if [ -n "$FAKE_REGISTER_DELAY_S" ]; then sleep "$FAKE_REGISTER_DELAY_S"; fi
+    printf '%s\\n' "$cmd" "$@" > "$FAKE_STATE/argv.txt"
+    target="$1"
+    port=$((41000 + ($$ % 1000)))
+    # Self-register the way the real CLI does. $$ is the CLI's process-group
+    # leader; the server Plannotator spawns shares the session entry.
+    printf '[{"target":"%s","url":"http://localhost:%s/","port":%s,"pid":%s,"startedAt":"now"}]' \\
+      "$target" "$port" "$port" "$$" > "$FAKE_STATE/sessions.json"
+    echo "  Plannotator session ready: http://localhost:$port/" >&2
+    if [ -n "$FAKE_DECISION" ]; then
+      printf '%s' "$FAKE_DECISION"        # the human resolved it: decision JSON on stdout
+    else
+      sleep "${FAKE_SLEEP:-60}" &         # stand-in for a session still open
+      echo $! > "$FAKE_STATE/sleep.pid"
+      trap 'kill -TERM 0; exit 143' TERM INT
+      wait
     fi
-    wait
     ;;
   *) echo "unknown: $cmd" >&2; exit 2 ;;
 esac
@@ -395,8 +398,8 @@ esac
 
 @pytest.fixture
 def fake_cli(tmp_path, monkeypatch):
-    """Fake `plannotator` on PATH, data dir + registry relocated
-    to tmp_path.
+    """Fake `plannotator` on PATH, with HOME (and therefore
+    ``plannotator_result_dir()``) relocated to tmp_path.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -404,8 +407,7 @@ def fake_cli(tmp_path, monkeypatch):
     cli.write_text(FAKE_CLI)
     cli.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("PLANNOTATOR_DATA_DIR", str(tmp_path / "plannotator-data"))
-    monkeypatch.setenv("HOME", str(tmp_path))  # session_registry_dir lands here
+    monkeypatch.setenv("HOME", str(tmp_path))  # plannotator_result_dir lands here
     state = tmp_path / "state"
     state.mkdir()
     monkeypatch.setenv("FAKE_STATE", str(state))
@@ -416,39 +418,29 @@ def _sessions_json(tmp_path, entries):
     (tmp_path / "state" / "sessions.json").write_text(json.dumps(entries))
 
 
-def _touch_record(tmp_path, workspace, name, *, age=0.0):
-    rec_dir = tmp_path / "plannotator-data" / "feedback" / Path(workspace).name / "records"
-    rec_dir.mkdir(parents=True, exist_ok=True)
-    rec = rec_dir / name
-    rec.write_text("Reviewer wanted X changed.")
-    stamp = time.time() - age
-    os.utime(rec, (stamp, stamp))
-    return rec
-
-
 def test_open_discovers_existing_session(fake_cli):
     """open() attaches to an already-listed session and registers it."""
-    _sessions_json(
-        fake_cli, [{"id": "pn-abc", "target": str(fake_cli / "spec.md"), "url": "http://localhost:41234/abc"}]
-    )
-    mgr = PlannotatorManager()
-    out = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))
+    _sessions_json(fake_cli, [{"target": str(fake_cli / "spec.md"), "url": "http://localhost:41234/"}])
+    out = PlannotatorManager().open(str(fake_cli), str(fake_cli / "spec.md"))
     assert out["reused"] is True
+    assert out["source"] == "discovered"
     assert out["url"].startswith("http://localhost:")
-    assert out["session"] == "pn-abc"
+    assert out["result_path"] is None
+    entry = json.loads((Path(plannotator_result_dir()) / f"{out['handle']}.registry.json").read_text())
+    assert entry["pgid"] == 0 and entry["workspace"] == str(fake_cli)
 
 
 def test_open_spawns_when_absent_and_registers(fake_cli):
-    """open() spawns the CLI and records a pidfile entry when none is live."""
-    mgr = PlannotatorManager()
+    """open() spawns the CLI and records a registry entry when none is live."""
     (fake_cli / "spec.md").write_text("# plan")
-    # Fake CLI never registers a session; open must still return promptly with
-    # a local id and a registry entry (url None until discovered).
-    out = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))
-    assert out["session"].startswith("pn-") or out["session"].startswith("local-")
-    assert (Path(session_registry_dir())).exists()
-    entries = [json.loads(p.read_text()) for p in Path(session_registry_dir()).glob("*.json")]
-    assert len(entries) == 1 and entries[0]["workspace"] == str(fake_cli)
+    # No FAKE_DECISION: the fake registers itself and then blocks, like a
+    # real session the human has not resolved yet.
+    out = PlannotatorManager().open(str(fake_cli), str(fake_cli / "spec.md"))
+    assert out["handle"].startswith("pna-spec-md-")
+    assert out["source"] == "spawned" and out["reused"] is False
+    entry = json.loads((Path(plannotator_result_dir()) / f"{out['handle']}.registry.json").read_text())
+    assert entry["workspace"] == str(fake_cli)
+    assert (Path(plannotator_result_dir()) / f"{out['handle']}.out").exists()
 
 
 def _plan_target_outside(fake_cli):
@@ -464,7 +456,7 @@ def test_open_extra_roots_allows_target_outside_workspace(fake_cli):
     """extra_roots (e.g. the host plan dir) accepts outside targets."""
     plan_root, plan = _plan_target_outside(fake_cli)
     out = PlannotatorManager().open(str(fake_cli), str(plan), extra_roots=[str(plan_root)])
-    assert out["session"].startswith("pn-") or out["session"].startswith("local-")
+    assert out["handle"].startswith("pna-plan-md-")
 
 
 def test_open_target_outside_all_roots_raises(fake_cli):
@@ -482,232 +474,831 @@ def test_open_missing_binary_raises(fake_cli, monkeypatch):
         PlannotatorManager().open(str(fake_cli), str(fake_cli / "spec.md"))
 
 
-def test_result_scan_mtime_after_open(fake_cli):
-    """result() reports feedback records newer than opened_at as feedback."""
-    _sessions_json(fake_cli, [{"id": "pn-1", "target": "spec.md", "url": "http://localhost:1/"}])
-    mgr = PlannotatorManager()
-    (fake_cli / "spec.md").write_text("# p")
-    out = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))
-    sid = out["session"]
-    assert mgr.result(str(fake_cli), sid)["type"] == "pending"
-    _touch_record(fake_cli, str(fake_cli), f"{sid}-annotate-feedback.md")
-    res = mgr.result(str(fake_cli), sid)
-    assert res["type"] == "feedback"
-    assert "X changed" in res["text"]
+def test_open_captures_stdout_as_result(fake_cli, monkeypatch):
+    """The decision JSON is the CLI's stdout, already in place at open."""
+    monkeypatch.setenv("FAKE_DECISION", '{"decision":"approved","annotationCount":0,"target":"/x"}')
+    # Withhold registration past the first poll so discovery takes the
+    # listing path (a registration that lands mid-poll lets the stderr
+    # ready line win and records no server pid).
+    monkeypatch.setenv("FAKE_REGISTER_DELAY_S", "0.35")
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    out = PlannotatorManager().open(ws, str(fake_cli / "plan.md"))
+    assert out["source"] == "spawned" and out["reused"] is False
+    assert Path(out["result_path"]).read_text() == '{"decision":"approved","annotationCount":0,"target":"/x"}'
+    assert out["result_path"] == str(Path(plannotator_result_dir()) / f"{out['handle']}.out")
+    entry = json.loads((Path(plannotator_result_dir()) / f"{out['handle']}.registry.json").read_text())
+    assert entry["pgid"] > 0 and entry["server_pid"] > 0 and entry["url"].startswith("http://localhost:")
+    assert entry["listed_target"] == str((fake_cli / "plan.md").resolve())
 
 
-def test_result_ignores_older_records(fake_cli):
-    """A record older than opened_at must not count as this session's
-    feedback.
+def test_open_always_requests_json(fake_cli, monkeypatch):
+    """Every spawned session asks the CLI for JSON output."""
+    monkeypatch.setenv("FAKE_DECISION", "{}")
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    PlannotatorManager().open(ws, str(fake_cli / "plan.md"), gate=True)
+    argv = (fake_cli / "state" / "argv.txt").read_text().splitlines()
+    assert argv[0] == "annotate" and "--json" in argv and "--gate" in argv
+
+
+def test_open_review_passes_base(fake_cli, monkeypatch):
+    """A review session forwards its compare ref to the CLI."""
+    monkeypatch.setenv("FAKE_DECISION", "{}")
+    ws = str(fake_cli)
+    (fake_cli / "pkg").mkdir()
+    PlannotatorManager().open(ws, str(fake_cli / "pkg"), kind="review", base="main")
+    argv = (fake_cli / "state" / "argv.txt").read_text().splitlines()
+    assert argv[0] == "review" and "--json" in argv and argv[argv.index("--base") + 1] == "main"
+
+
+def test_open_reuses_live_session_and_its_capture(fake_cli, monkeypatch):
+    """A restart re-attaches to the live session and its existing capture."""
+    monkeypatch.setenv("FAKE_DECISION", '{"decision":"approved"}')
+    # Registration past the first poll keeps the entry's server_pid recorded
+    # (the stderr fallback would leave it None and the re-open unmatched).
+    monkeypatch.setenv("FAKE_REGISTER_DELAY_S", "0.35")
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    first = PlannotatorManager().open(ws, str(fake_cli / "plan.md"))
+    second = PlannotatorManager().open(ws, str(fake_cli / "plan.md"))
+    assert second["reused"] is True and second["source"] == "spawned"
+    assert second["handle"] == first["handle"]
+    assert second["result_path"] == first["result_path"]
+
+
+def test_open_registers_human_started_session(fake_cli):
+    """A session the human started is reattachable and reapeable,
+    uncaptured.
     """
-    mgr = PlannotatorManager()
-    (fake_cli / "spec.md").write_text("# p")
-    sid = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))["session"]
-    # Write the record with a 1-hour-old mtime, after opening the session.
-    _touch_record(fake_cli, str(fake_cli), f"{sid}-annotate-feedback.md", age=3600)
-    assert mgr.result(str(fake_cli), sid)["type"] == "pending"
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    target = str((fake_cli / "plan.md").resolve())
+    server = subprocess.Popen(["sleep", "30"])
+    try:
+        _sessions_json(
+            fake_cli,
+            [{"target": target, "url": "http://localhost:4444/", "port": 4444, "pid": server.pid}],
+        )
+        out = PlannotatorManager().open(ws, target)
+        assert out["result_path"] is None and out["source"] == "discovered"
+        assert out["url"] == "http://localhost:4444/"
+        entry = json.loads((Path(plannotator_result_dir()) / f"{out['handle']}.registry.json").read_text())
+        assert entry["pgid"] == 0 and entry["server_pid"] == server.pid
+    finally:
+        server.kill()
+        server.wait()
 
 
-def test_close_kills_process_group(fake_cli):
-    """close() SIGTERMs a spawned session's process group and unregisters."""
-    mgr = PlannotatorManager()
-    (fake_cli / "spec.md").write_text("# p")
-    out = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))
-    res = mgr.close(str(fake_cli), out["session"])
-    assert res["type"] == "closed"
-    assert mgr.status(str(fake_cli)) == []
-
-
-def test_close_discovered_session_unregisters(fake_cli):
-    """Host-started sessions (discovered, pgid 0) are un-killable by us: close
-    drops our registration and reports 'unregistered', never kills a pgid.
+def test_open_reopen_human_started_stays_discovered(fake_cli):
+    """Re-opening a human-started session keeps its discovered identity:
+    no capture appears, and no second registry entry is minted.
     """
-    _sessions_json(
-        fake_cli, [{"id": "pn-7", "target": str(fake_cli / "spec.md"), "url": "http://localhost:7/"}]
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    target = str((fake_cli / "plan.md").resolve())
+    server = subprocess.Popen(["sleep", "30"])
+    try:
+        _sessions_json(
+            fake_cli,
+            [{"target": target, "url": "http://localhost:4444/", "port": 4444, "pid": server.pid}],
+        )
+        first = PlannotatorManager().open(ws, target)
+        second = PlannotatorManager().open(ws, target)
+        assert second["source"] == "discovered" and second["result_path"] is None
+        assert second["handle"] == first["handle"]
+        assert len(list(Path(plannotator_result_dir()).glob("*.registry.json"))) == 1
+    finally:
+        server.kill()
+        server.wait()
+
+
+def test_open_reuses_entry_without_server_pid_via_live_group(fake_cli, monkeypatch):
+    """A re-open reuses the entry whose URL came from the stderr line (and
+    so has no server pid): its capture is there to read, and a second entry
+    claiming "discovered" would hide it.
+    """
+    from tkt import _sessionmanagers
+
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    # Blind the listing while the session spawns so discovery takes the
+    # stderr ready line and records no server pid; the fake stays open
+    # (no FAKE_DECISION), owning a live process group.
+    real = _sessionmanagers._sessions_listing
+    blind = {"yes": True}
+    monkeypatch.setattr(_sessionmanagers, "_sessions_listing", lambda: None if blind["yes"] else real())
+    first = PlannotatorManager().open(ws, str(fake_cli / "plan.md"))
+    blind["yes"] = False
+    entry = json.loads((Path(plannotator_result_dir()) / f"{first['handle']}.registry.json").read_text())
+    assert entry["server_pid"] is None
+    second = PlannotatorManager().open(ws, str(fake_cli / "plan.md"))
+    assert second["reused"] is True and second["source"] == "spawned"
+    assert second["result_path"] == first["result_path"]
+    assert len(list(Path(plannotator_result_dir()).glob("*.registry.json"))) == 1
+
+
+def test_open_does_not_reuse_entry_with_dead_group(fake_cli):
+    """A same-target entry whose CLI group is dead belongs to a finished
+    session: the re-open registers fresh rather than handing back its
+    capture path.
+    """
+    from tkt._sessionmanagers import _write_entry
+
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    target = str((fake_cli / "plan.md").resolve())
+    server = subprocess.Popen(["sleep", "30"])
+    try:
+        _sessions_json(
+            fake_cli,
+            [{"target": target, "url": "http://localhost:4444/", "port": 4444, "pid": server.pid}],
+        )
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        stale_out = str(Path(plannotator_result_dir()) / "pna-plan-md-stale.out")
+        _write_entry(
+            "pna-plan-md-stale",
+            {
+                "handle": "pna-plan-md-stale",
+                "workspace": ws,
+                "target": target,
+                "source": "spawned",
+                "pgid": gone.pid,
+                "out_path": stale_out,
+            },
+        )
+        out = PlannotatorManager().open(ws, target)
+        assert out["source"] == "discovered" and out["result_path"] is None
+        assert out["handle"] != "pna-plan-md-stale"
+        assert len(list(Path(plannotator_result_dir()).glob("*.registry.json"))) == 2
+    finally:
+        server.kill()
+        server.wait()
+
+
+def test_open_spawn_failure_raises_with_stderr_tail(fake_cli, monkeypatch):
+    """A CLI that exits before any session exists fails the open, and the
+    reason rides along on its stderr; a handle waiting on a human looks
+    nothing like this.
+    """
+    monkeypatch.setenv(
+        "FAKE_EXIT_EARLY",
+        "File type not supported: .py\n\nFor code review, use: plannotator review [DIRECTORY]",
     )
-    mgr = PlannotatorManager()
-    sid = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))["session"]
-    entry = json.loads((Path(session_registry_dir()) / f"{sid}.json").read_text())
-    assert entry["pgid"] == 0 and entry["source"] == "discovered"
-    assert mgr.result(str(fake_cli), sid)["type"] == "pending"  # CLI still lists pn-7
-    assert mgr.close(str(fake_cli), sid)["type"] == "unregistered"
-    assert list(Path(session_registry_dir()).glob("*.json")) == []
-    _sessions_json(fake_cli, [])  # CLI truth: gone
-    with pytest.raises(ValueError, match="unknown session"):
-        mgr.result(str(fake_cli), sid)
+    (fake_cli / "code.py").write_text("x = 1\n")
+    with pytest.raises(RuntimeError, match="exited without opening a session") as exc:
+        PlannotatorManager().open(str(fake_cli), str(fake_cli / "code.py"))
+    assert "For code review, use: plannotator review" in str(exc.value)
+    reg = Path(plannotator_result_dir())
+    assert list(reg.glob("*.registry.json")) == []
+    assert list(reg.glob("*.out")) == []
+    assert list(reg.glob("*.err")) == []
 
 
-def test_sweep_drops_dead_keeps_live(fake_cli):
-    """The sweep drops dead pgids and keeps entries for live servers."""
-    mgr = PlannotatorManager()
+def test_match_prefers_exact_target_and_reviews_match_by_ancestor(fake_cli):
+    """The listing rule shared by every consumer: exact match wins; only a
+    review session's target may be an ancestor of the requested one.
+    """
+    root = str(fake_cli.resolve())
+    sub = str((fake_cli / "tkt").resolve())
+    listing = [
+        {"mode": "review", "target": root, "url": "http://localhost:1/"},
+        {"mode": "review", "target": sub, "url": "http://localhost:2/"},
+    ]
+    assert _match(listing, sub)["url"] == "http://localhost:2/"  # exact wins
+    assert _match(listing, str((fake_cli / "tests").resolve()))["url"] == "http://localhost:1/"
+    annotate_root = [{"mode": "annotate", "target": root, "url": "http://localhost:3/"}]
+    assert _match(annotate_root, sub) is None  # annotate targets stay exact
+    assert _match(annotate_root, root)["url"] == "http://localhost:3/"
+
+
+def test_open_attaches_subdirectory_review_to_root_session(fake_cli):
+    """`review` registers at the git root, so a subdirectory request must
+    re-attach to the root-registered session instead of spawning another.
+    """
+    ws = str(fake_cli)
+    (fake_cli / "tkt").mkdir()
+    sub = str((fake_cli / "tkt").resolve())
+    server = subprocess.Popen(["sleep", "30"])
+    try:
+        _sessions_json(
+            fake_cli,
+            [
+                {
+                    "mode": "review",
+                    "target": str(fake_cli.resolve()),
+                    "url": "http://localhost:4444/",
+                    "port": 4444,
+                    "pid": server.pid,
+                }
+            ],
+        )
+        first = PlannotatorManager().open(ws, sub, kind="review")
+        second = PlannotatorManager().open(ws, sub, kind="review")
+        assert first["reused"] is True and first["source"] == "discovered"
+        assert first["result_path"] is None  # discovered sessions have no capture
+        assert first["url"] == "http://localhost:4444/"  # the root-registered session
+        assert second["reused"] is True and second["handle"] == first["handle"]
+        assert second["result_path"] == first["result_path"]
+        assert not (fake_cli / "state" / "argv.txt").exists()  # attached, never spawned
+        entry = json.loads((Path(plannotator_result_dir()) / f"{first['handle']}.registry.json").read_text())
+        assert entry["target"] == sub  # what was asked for
+        assert entry["listed_target"] == str(fake_cli.resolve())  # what was registered
+    finally:
+        server.kill()
+        server.wait()
+
+
+def test_open_annotate_at_root_does_not_swallow_subdirectory(fake_cli):
+    """An annotate session registered at the root is not the session for a
+    subdirectory request; the request spawns its own.
+    """
+    ws = str(fake_cli)
+    (fake_cli / "tkt").mkdir()
+    sub = str((fake_cli / "tkt").resolve())
+    server = subprocess.Popen(["sleep", "30"])
+    try:
+        _sessions_json(
+            fake_cli,
+            [
+                {
+                    "mode": "annotate",
+                    "target": str(fake_cli.resolve()),
+                    "url": "http://localhost:4444/",
+                    "port": 4444,
+                    "pid": server.pid,
+                }
+            ],
+        )
+        out = PlannotatorManager().open(ws, sub)
+        assert out["source"] == "spawned" and out["reused"] is False
+    finally:
+        server.kill()
+        server.wait()
+
+
+def test_sweep_and_attach_share_one_listing_rule(fake_cli):
+    """The sweep keeps exactly the entries the attach path would call live:
+    a subdirectory entry under a root-registered review survives, and a
+    target nowhere in the listing does not.
+    """
+    from tkt._sessionmanagers import _write_entry
+
+    root = str(fake_cli.resolve())
+    _sessions_json(
+        fake_cli,
+        [{"mode": "review", "target": root, "url": "http://localhost:1/", "port": 1, "pid": 999999}],
+    )
+    _write_entry(
+        "pna-sub-1",
+        {"handle": "pna-sub-1", "workspace": root, "target": str(fake_cli / "tkt"), "pgid": 0},
+    )
+    _write_entry(
+        "pna-gone-1",
+        {"handle": "pna-gone-1", "workspace": "/elsewhere", "target": "/elsewhere/x.md", "pgid": 0},
+    )
+    assert _match(_sessions_listing(), str(fake_cli / "tkt")) is not None  # attach: live
+    assert sweep_session_registry() == 1  # and so the sweep must agree
+    assert (Path(plannotator_result_dir()) / "pna-sub-1.registry.json").exists()
+    assert not (Path(plannotator_result_dir()) / "pna-gone-1.registry.json").exists()
+
+
+def test_open_reports_session_that_ended_without_decision(fake_cli):
+    """A spawn entry whose CLI group is dead with an empty capture is not
+    reusable even when the listing still shows a live registration: no
+    decision can arrive through it.
+    """
+    from tkt._sessionmanagers import _registry_entries, _write_entry
+
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    target = str((fake_cli / "plan.md").resolve())
+    server = subprocess.Popen(["sleep", "30"])
+    try:
+        _sessions_json(
+            fake_cli,
+            [{"target": target, "url": "http://localhost:4444/", "port": 4444, "pid": server.pid}],
+        )
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        out = Path(plannotator_result_dir()) / "pna-plan-md-dead.out"
+        out.write_text("")
+        _write_entry(
+            "pna-plan-md-dead",
+            {
+                "handle": "pna-plan-md-dead",
+                "workspace": ws,
+                "target": target,
+                "source": "spawned",
+                "pgid": gone.pid,
+                "server_pid": server.pid,
+                "out_path": str(out),
+            },
+        )
+        result = PlannotatorManager().open(ws, target)
+        assert result["ended_without_decision"] is True
+        assert result["reused"] is not True
+        assert result["handle"] == "pna-plan-md-dead"
+        assert result["source"] == "spawned"
+        # The entry stays so workspace cleanup can still reap the server.
+        assert "pna-plan-md-dead" in _registry_entries()
+    finally:
+        server.kill()
+        server.wait()
+
+
+def test_open_sequence_after_tab_close_reopens_fresh_then_attaches(fake_cli, monkeypatch):
+    """Killing a session's CLI while its server stays listed makes the next
+    open spawn a fresh session (the orphan's entry surviving for the
+    reaper), and the open after that attaches to the fresh one.
+    """
+    import signal as signal_mod
+
+    from tkt._sessionmanagers import _registry_entries
+
+    # Registration past the first poll records each CLI's server pid.
+    monkeypatch.setenv("FAKE_REGISTER_DELAY_S", "0.35")
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    first = PlannotatorManager().open(ws, str(fake_cli / "plan.md"))  # stays open
+    os.killpg(_registry_entries()[first["handle"]]["pgid"], signal_mod.SIGKILL)
+    second = PlannotatorManager().open(ws, str(fake_cli / "plan.md"))
+    assert second["reused"] is False and second["source"] == "spawned"
+    assert second["handle"] != first["handle"]
+    assert second["previous_ended_without_decision"] is True
+    entry2 = _registry_entries()[second["handle"]]
+    assert entry2["server_pid"] == entry2["pgid"]  # discovery adopted its own registration
+    third = PlannotatorManager().open(ws, str(fake_cli / "plan.md"))
+    assert third["reused"] is True and third["handle"] == second["handle"]
+    assert set(_registry_entries()) == {first["handle"], second["handle"]}  # orphan kept
+
+
+def test_open_attaches_the_live_registration_when_a_target_is_listed_twice(fake_cli):
+    """Plannotator does not dedup: with a dead-pid orphan and a live server
+    both listed for one target, open() attaches the live one and spawns
+    nothing — not another orphan-chasing session.
+    """
+    from tkt._sessionmanagers import _registry_entries
+
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    target = str((fake_cli / "plan.md").resolve())
+    orphan = subprocess.Popen(["true"])
+    orphan.wait()
+    server = subprocess.Popen(["sleep", "30"])
+    try:
+        _sessions_json(
+            fake_cli,
+            [
+                {"target": target, "url": "http://localhost:1111/", "port": 1111, "pid": orphan.pid},
+                {"target": target, "url": "http://localhost:2222/", "port": 2222, "pid": server.pid},
+            ],
+        )
+        first = PlannotatorManager().open(ws, target)
+        second = PlannotatorManager().open(ws, target)
+        assert first["reused"] is True and first["url"] == "http://localhost:2222/"
+        assert second["reused"] is True and second["handle"] == first["handle"]
+        assert list(_registry_entries()) == [first["handle"]]
+        assert not (fake_cli / "state" / "argv.txt").exists()  # nothing was spawned
+    finally:
+        server.kill()
+        server.wait()
+
+
+def test_open_spawns_fresh_when_only_an_orphan_is_listed(fake_cli):
+    """A listed session whose registering CLI is dead cannot produce a
+    decision: open() spawns a fresh session and says the earlier attempt
+    ended, instead of attaching.
+    """
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    target = str((fake_cli / "plan.md").resolve())
+    orphan = subprocess.Popen(["true"])
+    orphan.wait()
+    _sessions_json(
+        fake_cli,
+        [{"target": target, "url": "http://localhost:1111/", "port": 1111, "pid": orphan.pid}],
+    )
+    out = PlannotatorManager().open(ws, target)
+    assert out["reused"] is False and out["source"] == "spawned"
+    assert out["previous_ended_without_decision"] is True
+
+
+def test_open_hands_back_a_captured_decision_through_its_own_registration(fake_cli):
+    """A resolved session whose listing registration outlived its CLI is
+    reused with its decision flagged — not re-spawned over.
+    """
+    from tkt._sessionmanagers import _write_entry
+
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    target = str((fake_cli / "plan.md").resolve())
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    decision = Path(plannotator_result_dir()) / "pna-plan-md-done.out"
+    decision.write_text('{"decision":"approved","annotationCount":0,"target":"/x"}')
+    _write_entry(
+        "pna-plan-md-done",
+        {
+            "handle": "pna-plan-md-done",
+            "workspace": ws,
+            "target": target,
+            "source": "spawned",
+            "pgid": gone.pid,
+            "server_pid": gone.pid,
+            "out_path": str(decision),
+        },
+    )
+    _sessions_json(
+        fake_cli,
+        [{"target": target, "url": "http://localhost:4444/", "port": 4444, "pid": gone.pid}],
+    )
+    result = PlannotatorManager().open(ws, target)
+    assert result["reused"] is True
+    assert result["decision_captured"] is True
+    assert result["result_path"] == str(decision)
+    assert not (fake_cli / "state" / "argv.txt").exists()  # never spawned
+
+
+def test_open_ignores_another_entrys_decision_when_the_listed_one_is_ended(fake_cli):
+    """Entry A holds an earlier session's decision and B is the listed
+    orphan with an empty capture: the listing resolves to B, so the target
+    is open again — a fresh spawn, with both entries kept.
+    """
+    from tkt._sessionmanagers import _registry_entries, _write_entry
+
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    target = str((fake_cli / "plan.md").resolve())
+    gone_a = subprocess.Popen(["true"])
+    gone_a.wait()
+    gone_b = subprocess.Popen(["true"])
+    gone_b.wait()
+    decided = Path(plannotator_result_dir()) / "pna-plan-md-a.out"
+    decided.write_text('{"decision":"approved"}')
+    empty = Path(plannotator_result_dir()) / "pna-plan-md-b.out"
+    empty.write_text("")
+    _write_entry(
+        "pna-plan-md-a",
+        {
+            "handle": "pna-plan-md-a",
+            "workspace": ws,
+            "target": target,
+            "source": "spawned",
+            "pgid": gone_a.pid,
+            "server_pid": gone_a.pid,
+            "out_path": str(decided),
+        },
+    )
+    _write_entry(
+        "pna-plan-md-b",
+        {
+            "handle": "pna-plan-md-b",
+            "workspace": ws,
+            "target": target,
+            "source": "spawned",
+            "pgid": gone_b.pid,
+            "server_pid": gone_b.pid,
+            "out_path": str(empty),
+        },
+    )
+    _sessions_json(
+        fake_cli,
+        [{"target": target, "url": "http://localhost:1111/", "port": 1111, "pid": gone_b.pid}],
+    )
+    result = PlannotatorManager().open(ws, target)
+    assert result["reused"] is False and result["source"] == "spawned"
+    assert result["handle"] not in ("pna-plan-md-a", "pna-plan-md-b")
+    assert result["previous_ended_without_decision"] is True
+    assert {"pna-plan-md-a", "pna-plan-md-b"} <= set(_registry_entries())
+
+
+def test_open_without_listing_still_captures(fake_cli, monkeypatch):
+    """A broken `sessions` listing costs the server pid; the URL still
+    arrives from the stderr ready line.
+    """
+    monkeypatch.setenv("FAKE_DECISION", '{"decision":"approved"}')
+    monkeypatch.setattr("tkt._sessionmanagers._sessions_listing", lambda: None)
+    ws = str(fake_cli)
+    (fake_cli / "plan.md").write_text("# plan\n")
+    out = PlannotatorManager().open(ws, str(fake_cli / "plan.md"))
+    assert out["url"] is not None and out["url"].startswith("http://localhost:")
+    assert Path(out["result_path"]).read_text() == '{"decision":"approved"}'
+    assert "Plannotator session ready:" in Path(out["err_path"]).read_text()
+
+
+def test_discover_without_url_sources_gives_up(fake_cli, monkeypatch):
+    """No listing match and no stderr ready line, with the CLI still
+    starting up, means no URL, ever.
+    """
+    monkeypatch.setattr("tkt._sessionmanagers._sessions_listing", lambda: None)
+    monkeypatch.setattr("tkt._sessionmanagers._DISCOVER_BUDGET_S", 0.1)
+    err = Path(fake_cli) / "silent.err"
+    err.write_text("")
+    proc = subprocess.Popen(["sleep", "30"])
+    try:
+        assert PlannotatorManager()._discover(str(fake_cli / "plan.md"), str(err), proc) == (
+            None,
+            None,
+            None,
+        )
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_discover_raises_when_cli_exits_unseen(fake_cli, monkeypatch):
+    """A CLI that exits without registering or printing the ready line is a
+    failed spawn, and the stderr tail names the reason.
+    """
+    monkeypatch.setattr("tkt._sessionmanagers._sessions_listing", lambda: None)
+    err = Path(fake_cli) / "reject.err"
+    err.write_text("File type not supported: .py\nFor code review, use: plannotator review [DIRECTORY]\n")
+    proc = subprocess.Popen(["true"])
+    with pytest.raises(RuntimeError, match="For code review, use: plannotator review"):
+        PlannotatorManager()._discover(str(fake_cli / "code.py"), str(err), proc)
+
+
+@pytest.mark.parametrize(
+    "name,keys",
+    [
+        ("annotate-approved.json", {"decision", "feedback", "annotationCount", "target"}),
+        ("annotate-annotated.json", {"decision", "feedback", "annotationCount", "target"}),
+        ("annotate-approved-empty.json", {"decision", "annotationCount", "target"}),
+        ("annotate-dismissed.json", {"decision", "target"}),
+        ("review-approved.json", {"decision", "message"}),
+        ("review-annotated.json", {"decision", "message"}),
+    ],
+)
+def test_decision_fixture_shapes(name, keys):
+    """The pinned stdout shapes the guidance and tests describe."""
+    path = Path(__file__).parent / "fixtures" / "plannotator" / name
+    decision = json.loads(path.read_text())
+    assert decision["decision"] in {"approved", "annotated", "dismissed"}
+    assert set(decision) == keys
+
+
+def test_closed_session_capture_is_empty(fake_cli):
+    """Closing without submitting leaves a complete, empty capture."""
+    empty = Path(__file__).parent / "fixtures" / "plannotator" / "annotate-closed-empty.json"
+    assert empty.read_text() == ""
+
+
+# ========== result-dir registry: handles, sweep, cleanup ==========
+
+
+def test_claim_handle_is_unique_per_call(fake_cli):
+    """Two opens of the same target in the same second get distinct handles."""
+    from tkt._sessionmanagers import _claim_handle
+
+    first = _claim_handle("/ws/plan.md")
+    second = _claim_handle("/ws/plan.md")
+    assert first != second
+    assert first.startswith("pna-plan-md-")
+    assert (Path(plannotator_result_dir()) / f"{first}.registry.json").exists()
+
+
+def test_claim_handle_slug_survives_odd_names(fake_cli):
+    """Handle slugs survive names with no word characters at all."""
+    from tkt._sessionmanagers import _handle_slug
+
+    assert _handle_slug("My Plan (v2)!!") == "my-plan-v2"
+    assert _handle_slug("!!!") == "session"
+
+
+def test_sweep_drops_dead_entry_keeps_captures(fake_cli):
+    """A finished session loses its entry but keeps its decision file."""
+    from tkt._sessionmanagers import _write_entry
+
+    out = Path(plannotator_result_dir()) / "pna-dead-1.out"
+    out.write_text('{"decision":"approved"}')
+    _write_entry("pna-dead-1", {"handle": "pna-dead-1", "workspace": "/ws", "pgid": 0, "server_pid": 0})
+    assert sweep_session_registry() == 1
+    assert out.exists()
+    assert not (Path(plannotator_result_dir()) / "pna-dead-1.registry.json").exists()
+
+
+def test_sweep_keeps_entry_with_live_server(fake_cli):
+    """An entry with a live session server survives the sweep."""
+    from tkt._sessionmanagers import _write_entry
+
+    live = subprocess.Popen(["sleep", "30"])
+    try:
+        _write_entry(
+            "pna-live-1", {"handle": "pna-live-1", "workspace": "/ws", "pgid": 0, "server_pid": live.pid}
+        )
+        assert sweep_session_registry() == 0
+        assert (Path(plannotator_result_dir()) / "pna-live-1.registry.json").exists()
+    finally:
+        live.kill()
+        live.wait()
+
+
+def test_sweep_prunes_old_captures_and_legacy_dir(fake_cli):
+    """Captures past retention and the pre-capture registry dir both go."""
+    from tkt._sessionmanagers import _legacy_registry_dir, _write_entry
+
+    old = Path(plannotator_result_dir()) / "pna-old-1.out"
+    old.write_text("{}")
+    stamp = time.time() - 31 * 24 * 3600
+    os.utime(old, (stamp, stamp))
+    legacy = Path(_legacy_registry_dir())
+    legacy.mkdir(parents=True)
+    (legacy / "pn-stale.json").write_text("{}")
+    _write_entry("pna-old-1", {"handle": "pna-old-1", "workspace": "/ws", "pgid": 0, "server_pid": 0})
+    sweep_session_registry()
+    assert not old.exists()
+    assert not legacy.exists()
+
+
+def test_cleanup_terminates_server_pid(fake_cli):
+    """``tkt rm`` reaches the server: killing only the CLI leaves it
+    serving.
+    """
+    from tkt._sessionmanagers import _write_entry, cleanup_workspace_sessions
+
+    server = subprocess.Popen(["sleep", "30"])
+    _sessions_json(
+        fake_cli,
+        [{"target": "/ws/plan.md", "url": "http://localhost:4321/", "port": 4321, "pid": server.pid}],
+    )
+    _write_entry(
+        "pna-plan-md-1",
+        {
+            "handle": "pna-plan-md-1",
+            "workspace": str(fake_cli),
+            "target": "/ws/plan.md",
+            "server_pid": server.pid,
+        },
+    )
+    assert cleanup_workspace_sessions(str(fake_cli)) == 1
+    assert server.wait(timeout=5) < 0  # terminated by a signal
+    assert not (Path(plannotator_result_dir()) / "pna-plan-md-1.registry.json").exists()
+
+
+def test_cleanup_skips_server_pid_the_cli_no_longer_lists(fake_cli):
+    """Pid reuse must not make us signal an unrelated process."""
+    from tkt._sessionmanagers import _write_entry, cleanup_workspace_sessions
+
+    unrelated = subprocess.Popen(["sleep", "30"])
+    try:
+        _sessions_json(fake_cli, [])  # listing works, and our pid is not in it
+        _write_entry(
+            "pna-plan-md-2",
+            {
+                "handle": "pna-plan-md-2",
+                "workspace": str(fake_cli),
+                "target": "/ws/plan.md",
+                "server_pid": unrelated.pid,
+            },
+        )
+        assert cleanup_workspace_sessions(str(fake_cli)) == 1
+        assert unrelated.poll() is None
+    finally:
+        unrelated.kill()
+        unrelated.wait()
+
+
+def test_cleanup_terminates_server_resolved_from_listing(fake_cli):
+    """An entry with no recorded server pid is torn down through the listing.
+
+    The stderr ready line can win the discovery poll before `sessions
+    --json` reports the session, leaving no pid in the entry; the session
+    server is then found by the entry's target.
+    """
+    from tkt._sessionmanagers import _write_entry, cleanup_workspace_sessions
+
+    server = subprocess.Popen(["sleep", "30"])
+    target = "/ws/plan.md"
+    _sessions_json(
+        fake_cli,
+        [{"target": target, "url": "http://localhost:4321/", "port": 4321, "pid": server.pid}],
+    )
+    _write_entry(
+        "pna-plan-md-3",
+        {"handle": "pna-plan-md-3", "workspace": str(fake_cli), "target": target, "pgid": 0},
+    )
+    assert cleanup_workspace_sessions(str(fake_cli)) == 1
+    assert server.wait(timeout=5) < 0  # terminated by a signal
+
+
+def test_cleanup_drops_target_the_listing_lacks(fake_cli):
+    """No listing entry for the target: the entry goes, nothing is
+    signalled.
+    """
+    from tkt._sessionmanagers import _write_entry, cleanup_workspace_sessions
+
+    unrelated = subprocess.Popen(["sleep", "30"])
+    try:
+        _sessions_json(fake_cli, [])
+        _write_entry(
+            "pna-plan-md-4",
+            {
+                "handle": "pna-plan-md-4",
+                "workspace": str(fake_cli),
+                "target": "/ws/plan.md",
+                "pgid": 0,
+            },
+        )
+        assert cleanup_workspace_sessions(str(fake_cli)) == 1
+        assert unrelated.poll() is None
+    finally:
+        unrelated.kill()
+        unrelated.wait()
+
+
+def test_sweep_uses_listing_for_entries_without_server_pid(fake_cli):
+    """An entry with no server pid lives while the listing shows its target."""
+    from tkt._sessionmanagers import _write_entry
+
+    server = subprocess.Popen(["sleep", "30"])
+    try:
+        target = "/ws/live.md"
+        _sessions_json(
+            fake_cli,
+            [{"target": target, "url": "http://localhost:4321/", "port": 4321, "pid": server.pid}],
+        )
+        _write_entry(
+            "pna-live-md-1",
+            {"handle": "pna-live-md-1", "workspace": "/ws", "target": target, "pgid": 0},
+        )
+        _write_entry(
+            "pna-gone-md-1",
+            {"handle": "pna-gone-md-1", "workspace": "/ws", "target": "/ws/gone.md", "pgid": 0},
+        )
+        assert sweep_session_registry() == 1
+        reg = Path(plannotator_result_dir())
+        assert (reg / "pna-live-md-1.registry.json").exists()
+        assert not (reg / "pna-gone-md-1.registry.json").exists()
+    finally:
+        server.kill()
+        server.wait()
+
+
+def test_sweep_keeps_entry_when_listing_fails(fake_cli, monkeypatch):
+    """An unusable listing must not make an entry look dead."""
+    from tkt._sessionmanagers import _write_entry
+
+    monkeypatch.setattr("tkt._sessionmanagers._sessions_listing", lambda: None)
+    _write_entry(
+        "pna-unknown-1",
+        {"handle": "pna-unknown-1", "workspace": "/ws", "target": "/ws/plan.md", "pgid": 0},
+    )
+    assert sweep_session_registry() == 0
+    assert (Path(plannotator_result_dir()) / "pna-unknown-1.registry.json").exists()
+
+
+def test_sweep_drops_dead_keeps_live(fake_cli, monkeypatch):
+    """The sweep drops entries whose processes are gone and keeps live ones."""
+    # Registration past the first poll records the server pid, so the
+    # post-kill sweep judges liveness from pids, not the stale listing.
+    monkeypatch.setenv("FAKE_REGISTER_DELAY_S", "0.35")
     (fake_cli / "spec.md").write_text("# p")
-    sid = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))["session"]
-    assert sweep_session_registry() == 0  # live fake server still running
-    pid = json.loads((Path(session_registry_dir()) / f"{sid}.json").read_text())["pgid"]
+    out = PlannotatorManager().open(str(fake_cli), str(fake_cli / "spec.md"))
+    assert sweep_session_registry() == 0  # live fake session still running
+    reg = Path(plannotator_result_dir()) / f"{out['handle']}.registry.json"
+    pid = json.loads(reg.read_text())["pgid"]
     subprocess.run(["kill", str(pid)], check=False)
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and (Path(session_registry_dir()) / f"{sid}.json").exists():
+    while time.monotonic() < deadline and reg.exists():
         assert sweep_session_registry() >= 0
         time.sleep(0.1)
-    assert not (Path(session_registry_dir()) / f"{sid}.json").exists()
+    assert not reg.exists()
 
 
 def test_cleanup_workspace_kills_sessions(fake_cli):
-    """Workspace cleanup kills and unregisters that workspace's sessions."""
-    mgr = PlannotatorManager()
-    (fake_cli / "spec.md").write_text("# p")
-    mgr.open(str(fake_cli), str(fake_cli / "spec.md"))
-    assert cleanup_workspace_sessions(str(fake_cli)) >= 1
-    assert list(Path(session_registry_dir()).glob("*.json")) == []
-
-
-def test_result_closed_after_group_killed(fake_cli):
-    """Dismissed-session regression: once the spawned group is killed and
-    reaped, result() must report closed — not hang on pending via an
-    unreaped zombie group leader (killpg(pgid, 0) succeeds on zombies).
+    """Workspace cleanup terminates and unregisters that workspace's
+    sessions.
     """
-    mgr = PlannotatorManager()
     (fake_cli / "spec.md").write_text("# p")
-    sid = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))["session"]
-    pgid = json.loads((Path(session_registry_dir()) / f"{sid}.json").read_text())["pgid"]
-    os.killpg(pgid, signal.SIGTERM)
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if mgr.result(str(fake_cli), sid)["type"] == "closed":
-            break
-        time.sleep(0.25)
-    else:
-        pytest.fail("result() never reported closed after the group died")
-
-
-def test_open_adopts_local_entry_after_late_registration(fake_cli):
-    """Late-discovery race: our spawn keyed local-<pid>; once the CLI reports
-    the real pn-* id, a re-open must adopt the pgid so close() still kills.
-    """
-    mgr = PlannotatorManager()
-    (fake_cli / "spec.md").write_text("# p")
-    sid = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))["session"]
-    assert sid.startswith("local-")
-    pid = json.loads((Path(session_registry_dir()) / f"{sid}.json").read_text())["pgid"]
-    _sessions_json(
-        fake_cli, [{"id": "pn-late", "target": str(fake_cli / "spec.md"), "url": "http://localhost:9/"}]
-    )
-    out2 = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))
-    assert out2["session"] == "pn-late" and out2["reused"] is True
-    reg = Path(session_registry_dir())
-    assert not list(reg.glob("local-*.json"))
-    entry = json.loads((reg / "pn-late.json").read_text())
-    assert entry["pgid"] == pid and entry["source"] == "spawned"
-    assert mgr.close(str(fake_cli), "pn-late")["type"] == "closed"
+    PlannotatorManager().open(str(fake_cli), str(fake_cli / "spec.md"))
+    assert cleanup_workspace_sessions(str(fake_cli)) == 1
+    assert list(Path(plannotator_result_dir()).glob("*.registry.json")) == []
 
 
 def test_cleanup_workspace_never_signals_own_group(fake_cli):
     """A discovered (pgid 0) entry must be unregistered, never killpg'd:
     killpg(0) would SIGTERM the calling process's own group.
     """
-    _sessions_json(
-        fake_cli, [{"id": "pn-8", "target": str(fake_cli / "spec.md"), "url": "http://localhost:8/"}]
-    )
-    mgr = PlannotatorManager()
-    mgr.open(str(fake_cli), str(fake_cli / "spec.md"))  # discovered -> pgid 0
+    _sessions_json(fake_cli, [{"target": str(fake_cli / "spec.md"), "url": "http://localhost:8/"}])
+    PlannotatorManager().open(str(fake_cli), str(fake_cli / "spec.md"))  # discovered -> pgid 0
     assert cleanup_workspace_sessions(str(fake_cli)) == 1
-    assert list(Path(session_registry_dir()).glob("*.json")) == []
+    assert list(Path(plannotator_result_dir()).glob("*.registry.json")) == []
 
 
-# ========== PlannotatorManager.status (agent pull contract) ==========
-
-
-def test_status_lists_spawned_session_with_id_and_live_fields(fake_cli, monkeypatch):
-    """A spawned, CLI-listed session's status entry carries the registry id
-    (the key result()/close() accept) merged with the CLI's live fields.
-    """
-    monkeypatch.setenv("FAKE_SESSION", "1")
-    mgr = PlannotatorManager()
-    (fake_cli / "spec.md").write_text("# p")
-    sid = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))["session"]
-    # The real `sessions --json` carries no id, so our registry keys the
-    # spawn local-<pid>; that key is what status must surface.
-    assert sid.startswith("local-")
-    st = mgr.status(str(fake_cli))
-    assert len(st) == 1
-    entry = st[0]
-    assert entry["id"] == sid
-    assert entry["state"] == "live"
-    assert entry["url"] == "http://localhost:4321/"
-    assert entry["port"] == 4321
-    assert entry["target"] == str(fake_cli / "spec.md")
-
-
-def test_status_lists_closed_registry_session(fake_cli, monkeypatch):
-    """Post-close invisibility regression: a submitted review vanishes from
-    `sessions --json` while its registry entry remains; status must still
-    list it — with its id — so the agent can call result().
-    """
-    monkeypatch.setenv("FAKE_SESSION", "1")
-    mgr = PlannotatorManager()
-    (fake_cli / "spec.md").write_text("# p")
-    sid = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))["session"]
-    _sessions_json(fake_cli, [])  # submitted: gone from the CLI listing
-    st = mgr.status(str(fake_cli))
-    assert len(st) == 1
-    assert st[0]["id"] == sid
-    assert st[0]["state"] == "closed"
-    assert st[0]["target"] == str(fake_cli / "spec.md")
-
-
-def test_status_passes_through_unregistered_cli_session(fake_cli):
-    """A host-started CLI session with no registry match passes through
-    unchanged: it legitimately has no id (``result`` routing covers
-    registered, agent-started sessions only).
-    """
-    cli_entry = {
-        "index": 0,
-        "mode": "annotate",
-        "target": str(fake_cli / "plan.md"),
-        "url": "http://localhost:5/",
-        "port": 5,
-        "pid": 4242,
-        "project": str(fake_cli),
-        "label": None,
-        "startedAt": 1.0,
-    }
-    _sessions_json(fake_cli, [cli_entry])
-    st = PlannotatorManager().status(str(fake_cli))
-    assert st == [cli_entry]
-    assert "id" not in st[0]
-    assert "state" not in st[0]
-
-
-def test_status_ids_are_accepted_by_result(fake_cli, monkeypatch):
-    """Plugin-contract pin: every registry-backed status entry's id is the
-    exact key result() takes; a submitted session's feedback is readable
-    even though the CLI no longer lists it.
-    """
-    monkeypatch.setenv("FAKE_SESSION", "1")
-    mgr = PlannotatorManager()
-    (fake_cli / "spec.md").write_text("# p")
-    sid = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))["session"]
-    _sessions_json(fake_cli, [])  # submitted
-    _touch_record(fake_cli, str(fake_cli), f"{sid}-annotate-feedback.md")
-    st = mgr.status(str(fake_cli))
-    ids = [e["id"] for e in st if "id" in e]
-    assert ids == [sid]
-    for session_id in ids:
-        assert mgr.result(str(fake_cli), session_id)["type"] == "feedback"
-
-
-# ========== P2 golden replay: real `sessions --json` capture shapes ==========
+# ========== Golden replay: real `sessions --json` capture shapes ==========
 #
 # Verbatim captures of real `plannotator sessions --json` output (real CLI,
 # real workspace): empty, one live annotate session, and two simultaneous
 # live annotate sessions. These are the golden fixtures closing the host
-# probe: replayed byte-exactly through the manager below, with ONLY
-# `target` rewritten to the sandboxed test workspace (the manager requires
-# targets under its workspace). Every other captured key is untouched:
-# `mode` (NOT `kind`), integer `index`, `url`/`port`/`pid`, `project`,
-# `label`, and the ISO-8601 `startedAt` STRING. The PR-URL review entry
-# shape was deliberately never captured (that surface is out of use), so
-# nothing here guesses it.
+# probe: replayed byte-exactly through the listing and matching layer below,
+# with ONLY `target` rewritten to the sandboxed test workspace (open()
+# requires targets under its workspace). Every other captured key is
+# untouched: `mode` (NOT `kind`), integer `index`, `url`/`port`/`pid`,
+# `project`, `label`, and the ISO-8601 `startedAt` STRING. The PR-URL review
+# entry shape was deliberately never captured (that surface is out of use),
+# so nothing here guesses it.
 
 P2_EMPTY = "[]\n"
 
@@ -774,30 +1365,22 @@ def test_p2_captures_are_byte_exact() -> None:
 
 
 class TestP2GoldenReplay:
-    """Replay the captured CLI listing shapes through the real manager."""
+    """Replay the captured CLI listing shapes through the real listing
+    and matching layer.
+    """
 
     def test_empty_capture_tolerated(self, fake_cli):
-        """`[]` parses; status is empty; result on an unknown id raises."""
+        """`[]` parses to an empty listing, distinct from an unusable one."""
         _sessions_json(fake_cli, json.loads(P2_EMPTY))
-        mgr = PlannotatorManager()
-        assert mgr._sessions() == []
-        assert mgr.status(str(fake_cli)) == []
-        with pytest.raises(ValueError, match="unknown session"):
-            mgr.result(str(fake_cli), "local-4242")
+        assert _sessions_listing() == []
 
-    def test_single_capture_parses_matches_and_merges(self, fake_cli, monkeypatch):
+    def test_single_capture_parses_and_matches(self, fake_cli):
         """The live single-entry capture survives parsing (mode/ISO/extra
-        keys), matches by absolute target, and status enriches it with the
-        registry id (local-<pid>) and live state.
+        keys) and matches by absolute target.
         """
-        monkeypatch.setenv("FAKE_SESSION", "1")
-        mgr = PlannotatorManager()
-        (fake_cli / "spec.md").write_text("# p")
-        sid = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))["session"]
-        assert sid.startswith("local-")  # the real CLI listing carries no id
         _sessions_json(fake_cli, _p2(P2_SINGLE, [str(fake_cli / "spec.md")]))
-        live = mgr._sessions()
-        assert len(live) == 1
+        live = _sessions_listing()
+        assert live is not None
         entry = live[0]
         assert entry["mode"] == "annotate" and "kind" not in entry
         assert entry["index"] == 1
@@ -805,213 +1388,19 @@ class TestP2GoldenReplay:
         assert entry["project"] == "tkt2"
         assert entry["label"] == "annotate-2026-10-12-host-session-services-design.md"
         assert entry["startedAt"] == "2026-10-14T22:49:43.469Z"  # ISO string kept verbatim
-        assert mgr._match(live, str(fake_cli / "spec.md")) is not None
-        assert mgr._match(live, str(fake_cli / "other.md")) is None
-        st = mgr.status(str(fake_cli))
-        assert len(st) == 1
-        assert st[0]["id"] == sid
-        assert st[0]["state"] == "live"
-        assert st[0]["url"] == "http://localhost:39893"
-        assert st[0]["mode"] == "annotate"  # merged CLI fields survive the merge
+        assert _match(live, str(fake_cli / "spec.md")) is not None
+        assert _match(live, str(fake_cli / "other.md")) is None
 
-    def test_both_captures_distinct_ids_and_id_routing(self, fake_cli, monkeypatch):
-        """Two simultaneous live sessions get distinct synthetic ids and
-        route by absolute target/registry id — never by listing index.
+    def test_both_captures_match_by_target_not_index(self, fake_cli):
+        """Two simultaneous live sessions match by absolute target — never
+        by listing index (the capture's index order contradicts the
+        alphabetical order of the two targets).
         """
-        monkeypatch.setenv("FAKE_SESSION", "1")
-        mgr = PlannotatorManager()
-        (fake_cli / "spec.md").write_text("# s")
-        (fake_cli / "plan.md").write_text("# p")
-        sid_spec = mgr.open(str(fake_cli), str(fake_cli / "spec.md"))["session"]
-        sid_plan = mgr.open(str(fake_cli), str(fake_cli / "plan.md"))["session"]
-        assert sid_spec != sid_plan  # keyed local-<pgid>: distinct spawns
-        # Replay both captures; the capture's index order (1=plan, 2=spec)
-        # deliberately contradicts the open() order.
         _sessions_json(
             fake_cli,
             _p2(P2_BOTH, [str(fake_cli / "plan.md"), str(fake_cli / "spec.md")]),
         )
-        live = mgr._sessions()
-        assert mgr._match(live, str(fake_cli / "spec.md"))["pid"] == 2716495  # index 2
-        assert mgr._match(live, str(fake_cli / "plan.md"))["pid"] == 2716717  # index 1
-        st = mgr.status(str(fake_cli))
-        by_target = {e["target"]: e for e in st if e.get("state") == "live"}
-        assert by_target[str(fake_cli / "spec.md")]["id"] == sid_spec
-        assert by_target[str(fake_cli / "plan.md")]["id"] == sid_plan
-        # Routing is by registry id (result/close keys), not by index:
-        assert mgr.result(str(fake_cli), sid_plan)["type"] == "pending"
-        assert mgr.close(str(fake_cli), sid_spec)["type"] == "closed"
-        with pytest.raises(ValueError, match="unknown session"):
-            mgr.result(str(fake_cli), sid_spec)
-        st2 = mgr.status(str(fake_cli))
-        live2 = [e for e in st2 if e.get("state") == "live"]
-        assert [e["id"] for e in live2] == [sid_plan]  # only the other session
-        assert mgr.result(str(fake_cli), sid_plan)["type"] == "pending"
-
-
-# ========== status sorting: ISO-8601 startedAt strings ==========
-
-
-def test_status_ts_numeric_passthrough() -> None:
-    """Numeric startedAt/opened_at pass through as float."""
-    assert _status_ts({"startedAt": 1.5}) == 1.5
-    assert _status_ts({"startedAt": 7}) == 7.0
-    assert _status_ts({"opened_at": 3}) == 3.0
-
-
-def test_status_ts_iso_zulu_is_absolute_epoch() -> None:
-    """A trailing-Z ISO-8601 string parses to its UTC epoch seconds."""
-    assert _status_ts({"startedAt": "2026-10-14T22:51:49.929Z"}) == 1792018309.929
-
-
-def test_status_ts_iso_naive_orders_within_same_zone() -> None:
-    """Naive ISO strings parse; only relative order is asserted (a naive
-    timestamp's epoch is locale-dependent).
-    """
-    early = _status_ts({"startedAt": "2026-10-14T10:00:00"})
-    late = _status_ts({"startedAt": "2026-10-14T11:00:00"})
-    assert early < late
-    assert early != 0.0 and late != 0.0
-
-
-def test_status_ts_garbage_and_missing_default_zero() -> None:
-    """Unparseable or absent timestamps fall back to 0.0."""
-    assert _status_ts({"startedAt": "yesterday-ish"}) == 0.0
-    assert _status_ts({"startedAt": None}) == 0.0
-    assert _status_ts({}) == 0.0
-    assert _status_ts({"other": 5}) == 0.0
-
-
-def test_status_sorts_iso_started_at_newest_first(fake_cli):
-    """Two host-started (unregistered) sessions with ISO startedAt strings
-    one hour apart must list the NEWER first.
-
-    Replay of the two-entry golden capture (targets moved inside the test
-    workspace so unregistered pass-through applies; NO tkt registry entries
-    exist). The listing puts the OLDER session first, so the status sort has
-    to reorder by the parsed ISO timestamps — a float()-only implementation
-    reads both as 0.0 and keeps the input order.
-    """
-    older = "2026-10-14T21:51:49.929Z"  # capture time minus one hour
-    newer = "2026-10-14T22:51:49.929Z"
-    entries = _p2(P2_BOTH, [str(fake_cli / "host-a.md"), str(fake_cli / "host-b.md")])
-    entries[0]["startedAt"] = older  # plan slot: older
-    entries[1]["startedAt"] = newer  # spec slot: newer
-    _sessions_json(fake_cli, entries)
-    st = PlannotatorManager().status(str(fake_cli))
-    assert [e["target"] for e in st] == [
-        str(fake_cli / "host-b.md"),
-        str(fake_cli / "host-a.md"),
-    ]
-
-
-# ========== result(): target-derived Plannotator project directory ==========
-#
-# The real Plannotator CLI keys its feedback store by a TARGET-derived
-# project label (a package dir in a multi-package workspace lands under
-# feedback/<package>/records/, sessions report project:<package>), NOT by
-# tkt's workspace name. Single-repo workspaces make the two coincide.
-
-
-def _touch_project_record(tmp_path, project_name, name, *, text="Reviewer wanted X changed.", age=0.0):
-    rec_dir = tmp_path / "plannotator-data" / "feedback" / project_name / "records"
-    rec_dir.mkdir(parents=True, exist_ok=True)
-    rec = rec_dir / name
-    rec.write_text(text)
-    stamp = time.time() - age
-    os.utime(rec, (stamp, stamp))
-    return rec
-
-
-def _registry_entry(ws, target, *, sid, pgid=0, opened_at=None):
-    _write_entry(
-        sid,
-        {
-            "pgid": pgid,
-            "workspace": str(ws),
-            "target": str(target),
-            "kind": "review",
-            "opened_at": opened_at if opened_at is not None else time.time() - 3600.0,
-            "source": "spawned",
-        },
-    )
-    return sid
-
-
-def _multi_pkg_ws(fake_cli):
-    """Create a tkt multi-package workspace: DM-56581 with a package dir
-    inside it.
-    """
-    ws = fake_cli / "DM-56581"
-    (ws / "images").mkdir(parents=True)
-    return ws
-
-
-def test_result_finds_records_under_target_derived_project_dir(fake_cli):
-    """Feedback stored under the TARGET-derived name is found.
-
-    The incident: review opened against <ws>/images; the record landed under
-    feedback/images/ while the workspace basename is DM-56581. result()
-    must not report closed just because the workspace-named directory is
-    empty.
-    """
-    ws = _multi_pkg_ws(fake_cli)
-    sid = _registry_entry(ws, ws / "images", sid="local-4242", pgid=0)
-    _touch_project_record(
-        fake_cli, "images", "2026-10-15T14-31-43-477Z-review-feedback.md", text="Target-keyed feedback"
-    )
-    res = PlannotatorManager().result(str(ws), sid)
-    assert res["type"] == "feedback"
-    assert res["text"] == "Target-keyed feedback"
-
-
-def test_result_target_dir_stale_record_stays_invisible(fake_cli):
-    """Freshness applies across candidates: a pre-opened_at record under the
-    target-derived directory must not count as feedback.
-    """
-    ws = _multi_pkg_ws(fake_cli)
-    now = time.time()
-    keeper = subprocess.Popen(["sleep", "30"], start_new_session=True)
-    try:
-        sid = _registry_entry(ws, ws / "images", sid="local-4242", pgid=keeper.pid, opened_at=now)
-        _touch_project_record(fake_cli, "images", "old-review-feedback.md", age=3600.0)
-        res = PlannotatorManager().result(str(ws), sid)
-        assert res["type"] == "pending"  # live pgid, nothing fresh
-    finally:
-        keeper.terminate()
-        keeper.wait()
-
-
-def test_result_merges_candidates_newest_wins(fake_cli):
-    """Records under BOTH candidate directories merge into one set: the same
-    record name in both must not double-count, and newest wins across the
-    merged set regardless of which candidate it lives under.
-    """
-    ws = _multi_pkg_ws(fake_cli)
-    sid = _registry_entry(ws, ws / "images", sid="local-4242", pgid=0)
-    _touch_project_record(
-        fake_cli, "DM-56581", "r-annotate-feedback.md", text="workspace copy (older)", age=60.0
-    )
-    _touch_project_record(fake_cli, "images", "r-annotate-feedback.md", text="target copy (newer)", age=5.0)
-    res = PlannotatorManager().result(str(ws), sid)
-    assert res["type"] == "feedback"
-    assert res["text"] == "target copy (newer)"
-    # Newest wins from the other side too.
-    _touch_project_record(
-        fake_cli, "DM-56581", "r2-annotate-feedback.md", text="workspace copy (newest)", age=0.0
-    )
-    res = PlannotatorManager().result(str(ws), sid)
-    assert res["text"] == "workspace copy (newest)"
-
-
-def test_result_url_target_uses_workspace_candidate(fake_cli):
-    """A PR-URL target's name-derived directory is inert: records resolve via
-    the workspace-name candidate.
-    """
-    ws = fake_cli / "DM-56581"
-    ws.mkdir()
-    sid = _registry_entry(ws, "https://host/o/r/pull/123", sid="local-4242", pgid=0)
-    _touch_project_record(fake_cli, "DM-56581", "pr-review-123-feedback.md", text="PR feedback")
-    res = PlannotatorManager().result(str(ws), sid)
-    assert res["type"] == "feedback"
-    assert res["text"] == "PR feedback"
+        live = _sessions_listing()
+        assert live is not None
+        assert _match(live, str(fake_cli / "spec.md"))["pid"] == 2716495  # index 2
+        assert _match(live, str(fake_cli / "plan.md"))["pid"] == 2716717  # index 1

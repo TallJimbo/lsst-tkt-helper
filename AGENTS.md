@@ -77,7 +77,7 @@ branch into a single commit and rebase it onto main.
   (`Superpowers.remove` handles either location), and
   `pull-sandbox`/`sandbox-reset` refuse such workspaces. Restricted runs
   rw-mount `~/.opencode/plan` (the built-in Plan-mode plan store), and the
-  session `plannotator` tool accepts files there as `open` targets.
+  session `plannotator_open` tool accepts files there as targets.
 - **`tkt/remote_mcp_proxy.py`** — host-side stdio↔streamable-HTTP MCP proxy
   spawned per connection by the bridge socat; relays `tools/list`/`tools/call`
   verbatim to a remote MCP server with an injected `Authorization` header so
@@ -130,9 +130,10 @@ branch into a single commit and rebase it onto main.
   `~/.agents/skills`, which both Zed and OpenCode discover: tkt-authored
   per-phase workflows (`reviewing-code`, `responding-to-pr-review`) plus
   vendored copies of the sandbox-usable Plannotator skills (`plannotator`,
-  `plannotator-annotate`, `plannotator-review`; see `harnesses/README.md`
-  for the update procedure). The `superpowers/` submodule holds only
-  modifications to upstream-shipped skills.
+  `plannotator-annotate`, `plannotator-review`; installed verbatim upstream,
+  with tkt's own guidance for them in `tkt/AGENTS.md.in`; see
+  `harnesses/README.md` for the update procedure). The `superpowers/`
+  submodule holds only modifications to upstream-shipped skills.
 - **`harnesses/shared/AGENTS.md`** — cross-harness global agent rules. Each
   installer concatenates it ahead of that harness's own instruction file
   (`harnesses/zed/rules.md`, `harnesses/opencode/AGENTS.md`) into the harness's

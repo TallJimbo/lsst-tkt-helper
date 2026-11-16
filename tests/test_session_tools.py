@@ -28,11 +28,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from functools import partial
 from typing import Any
 
 import pytest
 
-from tkt._session_tools import build_session_tools, safe_subpath
+from tkt import _session_tools
+from tkt._inbox_proxy import _forward
+from tkt._session_tools import _resolve_patch_source, build_session_tools, safe_subpath
 
 pytest.importorskip("mcp")
 from mcp.server.mcpserver import MCPServer
@@ -50,12 +53,24 @@ def _call(tool: Any, **kwargs: Any) -> Any:
     return out
 
 
+@pytest.fixture(autouse=True)
+def _no_inbox_upstream(monkeypatch):
+    """Keep the Inbox re-publish out of this module: a real ``plannotator`` on
+    PATH would otherwise spawn one listing per ``build_session_tools`` call.
+    The Inbox surface itself is covered by ``tests/test_inbox_proxy.py``.
+    """
+    monkeypatch.setattr(_session_tools, "register_inbox_tools", lambda *a, **k: 0)
+
+
 def test_session_tools_registered() -> None:
     """The builder registers exactly the session-lifecycle tools."""
     mcp = MCPServer("t")
     build_session_tools(mcp, workspace="/tmp/ws")
     names = _tools(mcp)
-    assert {"brainstorm_server", "plannotator"} <= names
+    assert names == {"brainstorm_server", "plannotator_open"}
+    # The Inbox action map is gone: inbox tools are re-published upstream's
+    # own names by _inbox_proxy, never as a single plannotator_inbox tool.
+    assert "plannotator_inbox" not in names
 
 
 def test_no_host_danger_tools() -> None:
@@ -80,7 +95,7 @@ def test_safe_subpath(tmp_path) -> None:
 
 
 def test_plannotator_tool_delegates_and_contains(monkeypatch) -> None:
-    """The plannotator tool delegates to the manager and refuses escapes."""
+    """The plannotator_open tool delegates and refuses escapes."""
     from tkt import _session_tools
 
     calls: list[tuple] = []
@@ -88,17 +103,25 @@ def test_plannotator_tool_delegates_and_contains(monkeypatch) -> None:
     class FakeMgr:
         def open(self, workspace, target, **kw):
             calls.append((workspace, target, kw))
-            return {"type": "open", "url": "http://localhost:9/x", "session": "pn-1", "reused": False}
+            return {
+                "type": "open",
+                "handle": "pn-1",
+                "url": "http://localhost:9/x",
+                "result_path": "/state/pn-1.out",
+                "err_path": "/state/pn-1.err",
+                "reused": False,
+                "source": "spawned",
+            }
 
     monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
     mcp = MCPServer("t")
     build_session_tools(mcp, workspace="/ws")
     # The installed SDK's list_tools() returns schema-only mcp.types.Tool
     # objects; the registered callable lives on the tool manager's Tool.
-    tool = mcp._tool_manager.get_tool("plannotator")
-    out = _call(tool, action="open", target="../escape.md")
+    tool = mcp._tool_manager.get_tool("plannotator_open")
+    out = _call(tool, target="../escape.md")
     assert "outside workspace" in out
-    out = _call(tool, action="open", target="spec.md")
+    out = _call(tool, target="spec.md")
     assert "pn-1" in out and calls[0][0] == "/ws"
 
 
@@ -111,433 +134,312 @@ def test_plannotator_open_accepts_plan_dir_target(monkeypatch) -> None:
     class FakeMgr:
         def open(self, workspace, target, **kw):
             calls.append((workspace, target, kw))
-            return {"type": "open", "url": "http://localhost:9/x", "session": "pn-1", "reused": False}
+            return {
+                "type": "open",
+                "handle": "pn-1",
+                "url": "http://localhost:9/x",
+                "result_path": "/state/pn-1.out",
+                "err_path": "/state/pn-1.err",
+                "reused": False,
+                "source": "spawned",
+            }
 
     monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
     monkeypatch.setenv("HOME", "/host-home")
     mcp = MCPServer("t")
     build_session_tools(mcp, workspace="/ws")
-    tool = mcp._tool_manager.get_tool("plannotator")
-    out = _call(tool, action="open", target="/host-home/.opencode/plan/plan.md")
+    tool = mcp._tool_manager.get_tool("plannotator_open")
+    out = _call(tool, target="/host-home/.opencode/plan/plan.md")
     assert "pn-1" in out
     assert calls[0][1] == "/host-home/.opencode/plan/plan.md"
     assert calls[0][2]["extra_roots"] == ["/host-home/.opencode/plan"]
     # Escaping the plan dir is refused like any other escape.
-    out = _call(tool, action="open", target="/host-home/.opencode/plan/../evil.md")
+    out = _call(tool, target="/host-home/.opencode/plan/../evil.md")
     assert "failed" in out
     assert len(calls) == 1  # the refused target never reached the manager
 
 
-FAKE_INBOX_MCP = r"""#!/usr/bin/env python3
-import json, sys
+def test_plannotator_open_tells_the_agent_how_to_pull(monkeypatch) -> None:
+    """The result text is the pull contract: read the file, do not poll."""
 
-# Per-tool argument sets mirroring `plannotator inbox --help`: required keys
-# and the keys each upstream tool recognizes.  A wrapper that forwards a
-# wrong or unrecognized key must be refused here, the way the real Inbox
-# refuses it.
-SCHEMAS = {
-    "send_message": (["body"], {"body", "subject", "thread", "reply_to", "attachments"}),
-    "read_thread": ([], {"thread_id", "message_id"}),
-    "wait_for_reply": ([], {"thread_id", "message_id", "cursor"}),
-    "resolve_message": (["message_id"], {"message_id", "resolved"}),
-    "record_decision": (["text"], {"text", "payload"}),
-    "list_decisions": (["project_path"], {"project_path"}),
-    "get_guide_brief": ([], set()),
-    "submit_guide": ([], {"guide", "patch", "snapshot", "body", "subject", "thread", "reply_to"}),
-}
+    class FakeMgr:
+        def open(self, workspace, target, **kw):
+            return {
+                "type": "open",
+                "handle": "pna-plan-md-1",
+                "url": "http://localhost:9/x",
+                "result_path": "/state/pna-plan-md-1.out",
+                "err_path": "/state/pna-plan-md-1.err",
+                "reused": False,
+                "source": "spawned",
+            }
 
-def refuse(rid, msg):
-    return {"jsonrpc": "2.0", "id": rid, "result": {
-        "content": [{"type": "text", "text": msg}], "isError": True}}
+    from tkt import _session_tools
 
-for line in sys.stdin:
-    try: req = json.loads(line)
-    except ValueError: continue
-    rid, method, params = req.get("id"), req.get("method"), req.get("params") or {}
-    if method == "initialize":
-        resp = {"jsonrpc":"2.0","id":rid,"result":{"protocolVersion":"2024-11-05",
-                "capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"0"}}}
-    elif method == "tools/list":
-        resp = {"jsonrpc":"2.0","id":rid,"result":{"tools":[]}}
-    elif method == "tools/call":
-        name = params.get("name")
-        args = params.get("arguments") or {}
-        if name == "boom":
-            resp = refuse(rid, "upstream exploded")
-        else:
-            required, allowed = SCHEMAS.get(name, ([], set(args)))
-            unknown = sorted(set(args) - allowed)
-            missing = [k for k in required if k not in args]
-            if unknown:
-                resp = refuse(rid, 'Invalid arguments for tool %s: Unrecognized key: "%s"'
-                              % (name, unknown[0]))
-            elif missing:
-                resp = refuse(rid, "Invalid arguments for tool %s: %s: Invalid input: "
-                              "expected string, received undefined" % (name, missing[0]))
-            elif name == "get_guide_brief":
-                # The brief ships in structuredContent, with only a one-line
-                # companion string in content (as the real get_guide_brief does).
-                resp = {"jsonrpc":"2.0","id":rid,"result":{
-                    "content":[{"type":"text","text":"The guided-review method, the "
-                                "guide's shape, how to read the diff, the rules and a "
-                                "worked submit_guide call."}],
-                    "structuredContent":{"methodology":"read the diff first",
-                                          "output_schema":{"title":"str"},
-                                          "diff_steps":["git diff main...HEAD"],
-                                          "rules":["code diffs only"],
-                                          "example":{"guide":{"title":"tour"},"patch":"@@ x"}}}}
-            else:
-                resp = {"jsonrpc":"2.0","id":rid,"result":{"content":[{"type":"text",
-                        "text":json.dumps({"tool":name,"args":args})}]}}
-    elif method == "notifications/initialized":
-        continue
-    else:
-        resp = {"jsonrpc":"2.0","id":rid,"result":{}}
-    sys.stdout.write(json.dumps(resp) + "\n"); sys.stdout.flush()
-"""
+    monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
+    mcp = MCPServer("t")
+    build_session_tools(mcp, workspace="/ws")
+    out = _call(mcp._tool_manager.get_tool("plannotator_open"), target="spec.md")
+    assert "http://localhost:9/x" in out and "/state/pna-plan-md-1.out" in out
+    assert "still open" in out and "ended without a decision" in out and "does not parse" in out
+    assert "without feedback" not in out  # an unsubmitted live session is empty too
+
+
+def test_plannotator_open_captured_decision_is_read_now(monkeypatch) -> None:
+    """A reuse carrying a real decision is acted on: read the file now, not
+    "hand over the URL and end your turn" for a finished session.
+    """
+
+    class FakeMgr:
+        def open(self, workspace, target, **kw):
+            return {
+                "type": "open",
+                "handle": "pna-plan-md-1",
+                "url": "http://localhost:9/x",
+                "result_path": "/state/pna-plan-md-1.out",
+                "err_path": "/state/pna-plan-md-1.err",
+                "reused": True,
+                "source": "spawned",
+                "decision_captured": True,
+            }
+
+    from tkt import _session_tools
+
+    monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
+    mcp = MCPServer("t")
+    build_session_tools(mcp, workspace="/ws")
+    out = _call(mcp._tool_manager.get_tool("plannotator_open"), target="spec.md")
+    assert "read `/state/pna-plan-md-1.out` now" in out
+    assert "verbatim" not in out  # the page is gone; there is nothing to hand over
+
+
+def test_plannotator_open_fresh_session_explains_the_previous_one(monkeypatch) -> None:
+    """A spawn after an ended attempt says so, instead of a second session
+    on the same target looking mysterious.
+    """
+
+    class FakeMgr:
+        def open(self, workspace, target, **kw):
+            return {
+                "type": "open",
+                "handle": "pna-plan-md-2",
+                "url": "http://localhost:9/y",
+                "result_path": "/state/pna-plan-md-2.out",
+                "err_path": "/state/pna-plan-md-2.err",
+                "reused": False,
+                "source": "spawned",
+                "previous_ended_without_decision": True,
+            }
+
+    from tkt import _session_tools
+
+    monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
+    mcp = MCPServer("t")
+    build_session_tools(mcp, workspace="/ws")
+    out = _call(mcp._tool_manager.get_tool("plannotator_open"), target="spec.md")
+    assert "previous session on this target ended without a decision" in out
+    assert "new session" in out
+    assert "/state/pna-plan-md-2.out" in out  # the normal read contract still rides along
+
+
+def test_plannotator_open_ended_session_says_so(monkeypatch) -> None:
+    """The ended report replaces the read-the-file contract for the
+    agent.
+    """
+
+    class FakeMgr:
+        def open(self, workspace, target, **kw):
+            return {
+                "type": "open",
+                "handle": "pna-plan-md-1",
+                "url": None,
+                "result_path": "/state/pna-plan-md-1.out",
+                "err_path": "/state/pna-plan-md-1.err",
+                "reused": False,
+                "source": "spawned",
+                "ended_without_decision": True,
+            }
+
+    from tkt import _session_tools
+
+    monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
+    mcp = MCPServer("t")
+    build_session_tools(mcp, workspace="/ws")
+    out = _call(mcp._tool_manager.get_tool("plannotator_open"), target="spec.md")
+    assert "ended without a decision" in out
+    assert "read `/state/pna-plan-md-1.out`" not in out
+    assert "verbatim" not in out  # no live session to hand over
+
+
+def test_plannotator_open_docstring_states_the_surface() -> None:
+    """The tool description says what annotate and review accept."""
+    mcp = MCPServer("t")
+    build_session_tools(mcp, workspace="/ws")
+    tool = mcp._tool_manager.get_tool("plannotator_open")
+    flat = " ".join((tool.description or "").split())
+    assert "text-like" in flat and "not a diff scope" in flat
+
+
+def test_plannotator_open_spawn_failure_is_tool_text(monkeypatch) -> None:
+    """A failed spawn arrives as the standard failure text, carrying the
+    CLI's advice.
+    """
+
+    class FakeMgr:
+        def open(self, workspace, target, **kw):
+            raise RuntimeError(
+                "plannotator exited without opening a session; "
+                "CLI stderr: 'For code review, use: plannotator review [DIRECTORY]'"
+            )
+
+    from tkt import _session_tools
+
+    monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
+    mcp = MCPServer("t")
+    build_session_tools(mcp, workspace="/ws")
+    out = _call(mcp._tool_manager.get_tool("plannotator_open"), target="spec.py")
+    assert "plannotator_open failed" in out and "plannotator review" in out
+
+
+def test_plannotator_open_discovered_session_has_no_capture(monkeypatch) -> None:
+    """A human-started session is reported honestly: nothing to read back."""
+
+    class FakeMgr:
+        def open(self, workspace, target, **kw):
+            return {
+                "type": "open",
+                "handle": "pna-plan-md-1",
+                "url": "http://localhost:9/x",
+                "result_path": None,
+                "err_path": None,
+                "reused": True,
+                "source": "discovered",
+            }
+
+    from tkt import _session_tools
+
+    monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
+    mcp = MCPServer("t")
+    build_session_tools(mcp, workspace="/ws")
+    out = _call(mcp._tool_manager.get_tool("plannotator_open"), target="spec.md")
+    assert "started outside tkt" in out and "null" in out
+
+
+def test_plannotator_open_without_url_points_at_stderr(monkeypatch) -> None:
+    """Listing breakage costs the URL only; the stderr file carries it."""
+
+    class FakeMgr:
+        def open(self, workspace, target, **kw):
+            return {
+                "type": "open",
+                "handle": "pna-plan-md-1",
+                "url": None,
+                "result_path": "/state/pna-plan-md-1.out",
+                "err_path": "/state/pna-plan-md-1.err",
+                "reused": False,
+                "source": "spawned",
+            }
+
+    from tkt import _session_tools
+
+    monkeypatch.setattr(_session_tools, "PlannotatorManager", lambda: FakeMgr())
+    mcp = MCPServer("t")
+    build_session_tools(mcp, workspace="/ws")
+    out = _call(mcp._tool_manager.get_tool("plannotator_open"), target="spec.md")
+    assert "/state/pna-plan-md-1.err" in out
+
+
+def _resolver(workspace: str) -> Any:
+    """Return the resolver ``build_session_tools`` hands the Inbox proxy."""
+    return partial(_resolve_patch_source, workspace)
+
+
+def test_patch_file_source_guards(tmp_path) -> None:
+    """A sandbox-supplied ``patch_file`` stays inside the workspace and the
+    failure paths answer with agent-facing ValueError text.
+    """
+    (tmp_path / "binary.patch").write_bytes(b"\xff\xfe not utf-8 \x00")
+    (tmp_path / "dir.patch").mkdir()
+    with pytest.raises(ValueError, match="outside workspace"):
+        _resolve_patch_source(str(tmp_path), "patch_file", "../elsewhere.patch")
+    with pytest.raises(ValueError, match="outside workspace"):
+        _resolve_patch_source(str(tmp_path), "patch_file", "/etc/passwd")
+    with pytest.raises(ValueError, match="not found on the host"):
+        _resolve_patch_source(str(tmp_path), "patch_file", "missing.patch")
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        _resolve_patch_source(str(tmp_path), "patch_file", "binary.patch")
+    with pytest.raises(ValueError, match="cannot read patch file"):
+        _resolve_patch_source(str(tmp_path), "patch_file", "dir.patch")
+
+
+def test_patch_file_containment_reaches_the_agent_as_tool_text(tmp_path) -> None:
+    """Forwarding a ``patch_file`` escape returns the refusal as tool text;
+    nothing reaches upstream.
+    """
+    out = _forward(
+        "submit_guide",
+        {"guide": {"title": "t"}, "patch_file": "/etc/passwd"},
+        str(tmp_path),
+        _resolver(str(tmp_path)),
+    )
+    assert "outside workspace" in out
+    assert "plannotator inbox failed" not in out  # the refusal short-circuits upstream
 
 
 @pytest.fixture
-def fake_inbox_cli(tmp_path, monkeypatch):
-    """Fake `plannotator` on PATH whose ``inbox mcp`` execs a newline
-    JSON-RPC upstream (no real ``plannotator`` binary required).
+def git_repo(tmp_path):
+    """Create a real git repo at ``pkg``: a base commit plus a ``feature``
+    branch touching two files (so a pathspec-scoped diff differs from the
+    full one). Returns the base branch's name.
     """
-    import os
+    import git
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "plannotator").write_text(
-        '#!/usr/bin/env bash\nif [ "$1" = "inbox" ] && [ "$2" = "mcp" ]; then exec python3 '
-        f"{bin_dir}/fake_inbox_mcp.py" + "; fi\nexit 0\n"
+    repo_dir = tmp_path / "pkg"
+    repo_dir.mkdir()
+    repo = git.Repo.init(repo_dir)
+    repo.config_writer().set_value("user", "name", "Tests").release()
+    repo.config_writer().set_value("user", "email", "tests@example.com").release()
+    (repo_dir / "a.py").write_text("x = 1\n")
+    (repo_dir / "b.txt").write_text("one\n")
+    repo.git.add("-A")
+    repo.git.commit("-m", "base")
+    base = repo.active_branch.name
+    repo.git.checkout("-b", "feature")
+    (repo_dir / "a.py").write_text("x = 2\n")
+    (repo_dir / "b.txt").write_text("two\n")
+    repo.git.add("-A")
+    repo.git.commit("-m", "feature")
+    return base
+
+
+def test_patch_spec_source_runs_real_git_diff(tmp_path, git_repo) -> None:
+    """``patch_spec`` produces host-side ``git diff base...head`` output, with
+    ``head`` defaulting to HEAD and ``paths`` scoping the diff.
+    """
+    ws = str(tmp_path)
+    diff = _resolve_patch_source(ws, "patch_spec", {"dir": "pkg", "base": git_repo})
+    assert "x = 2" in diff and "two" in diff
+    scoped = _resolve_patch_source(
+        ws, "patch_spec", {"dir": "pkg", "base": git_repo, "head": "feature", "paths": ["a.py"]}
     )
-    (bin_dir / "plannotator").chmod(0o755)
-    (bin_dir / "fake_inbox_mcp.py").write_text(FAKE_INBOX_MCP)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    return tmp_path
+    assert "a.py" in scoped and "b.txt" not in scoped
 
 
-def _inbox_tool(workspace: str = "/ws") -> Any:
-    mcp = MCPServer("t")
-    build_session_tools(mcp, workspace=workspace)
-    return mcp._tool_manager.get_tool("plannotator_inbox")
-
-
-def _forwarded(out: str) -> dict:
-    import json as _json
-
-    return _json.loads(out)
-
-
-def _no_spawn_spy(monkeypatch) -> list:
-    import mcp.client.stdio as stdio_mod
-
-    spawns: list = []
-
-    def _spy(*args, **kwargs):
-        spawns.append((args, kwargs))
-        raise AssertionError("upstream must not spawn when the wrapper rejects locally")
-
-    monkeypatch.setattr(stdio_mod, "stdio_client", _spy)
-    return spawns
-
-
-def test_inbox_send_forwards_body_and_routing(fake_inbox_cli) -> None:
-    """``send`` maps to upstream ``send_message``, forwarding ``body`` (not
-    ``text``) plus the routing fields under their upstream names.
+def test_patch_spec_source_refusals(tmp_path, git_repo) -> None:
+    """Unknown keys, missing or ``-``-prefixed refs, escaping ``dir`` and
+    empty diffs all raise before git runs a harmful argv.
     """
-    out = _forwarded(
-        _call(
-            _inbox_tool(),
-            action="send",
-            body="hello",
-            subject="Probe",
-            reply_to="msg_1",
-            attachments=["docs/plan.md"],
-        )
-    )
-    assert out["tool"] == "send_message"
-    assert out["args"] == {
-        "body": "hello",
-        "subject": "Probe",
-        "reply_to": "msg_1",
-        "attachments": ["docs/plan.md"],
-    }
-
-
-def test_inbox_guide_submit_forwards_guide_and_patch(fake_inbox_cli) -> None:
-    """``guide_submit`` maps to upstream ``submit_guide`` with ``guide`` +
-    ``patch`` intact (keys and values), plus its routing fields.
-    """
-    guide = {"title": "Guided tour", "steps": [{"label": "diff", "note": "start here"}]}
-    patch = "@@ -1 +1 @@\n-a\n+b\n"
-    out = _forwarded(_call(_inbox_tool(), action="guide_submit", guide=guide, patch=patch, reply_to="msg_1"))
-    assert out["tool"] == "submit_guide"
-    assert out["args"] == {"guide": guide, "patch": patch, "reply_to": "msg_1"}
-
-
-def test_inbox_guide_submit_forwards_snapshot(fake_inbox_cli) -> None:
-    """A complete ``snapshot`` substitutes for guide + patch."""
-    snapshot = {"files": [{"path": "a.py", "content": "x"}]}
-    out = _forwarded(_call(_inbox_tool(), action="guide_submit", snapshot=snapshot))
-    assert out["args"] == {"snapshot": snapshot}
-
-
-def test_inbox_read_wait_resolve_forward_upstream_ids(fake_inbox_cli) -> None:
-    """``read``/``wait``/``resolve`` route by ``thread_id``/``message_id`` and
-    ``wait`` carries the ``cursor`` resume token; ``resolve`` takes
-    ``resolved`` to reopen.
-    """
-    tool = _inbox_tool()
-    out = _forwarded(_call(tool, action="read", thread_id="thr_1"))
-    assert out["tool"] == "read_thread" and out["args"] == {"thread_id": "thr_1"}
-    out = _forwarded(_call(tool, action="wait", thread_id="thr_1", cursor=3))
-    assert out["tool"] == "wait_for_reply" and out["args"] == {"thread_id": "thr_1", "cursor": 3}
-    out = _forwarded(_call(tool, action="resolve", message_id="msg_1", resolved=False))
-    assert out["tool"] == "resolve_message" and out["args"] == {"message_id": "msg_1", "resolved": False}
-
-
-def test_inbox_record_forwards_text_and_payload(fake_inbox_cli) -> None:
-    """``record`` maps to upstream ``record_decision`` with ``text`` and an
-    optional structured ``payload``.
-    """
-    payload = {"choice": "dedicated queue", "why": "isolation"}
-    out = _forwarded(_call(_inbox_tool(), action="record", text="Chose the queue", payload=payload))
-    assert out["tool"] == "record_decision"
-    assert out["args"] == {"text": "Chose the queue", "payload": payload}
-
-
-def test_inbox_decisions_defaults_project_path_to_workspace(fake_inbox_cli) -> None:
-    """``decisions`` supplies the ``project_path`` the upstream shim does not
-    fill itself: the workspace by default, a contained path when given.
-    """
-    tool = _inbox_tool(workspace="/ws")
-    out = _forwarded(_call(tool, action="decisions"))
-    assert out["tool"] == "list_decisions" and out["args"] == {"project_path": "/ws"}
-    out = _forwarded(_call(tool, action="decisions", project_path="sub"))
-    assert out["args"] == {"project_path": "/ws/sub"}
-    out = _call(tool, action="decisions", project_path="../elsewhere")
-    assert "outside workspace" in out
-
-
-def test_inbox_structured_content_surfaced(fake_inbox_cli) -> None:
-    """``guide_brief``'s brief arrives in ``structuredContent``; the wrapper
-    must surface it, not just the one-line companion text.
-    """
-    out = _call(_inbox_tool(), action="guide_brief")
-    assert "guided-review method" in out  # companion text kept
-    assert "```json" in out  # structured fields surfaced
-    for key in ("methodology", "output_schema", "diff_steps", "rules", "example"):
-        assert key in out
-
-
-def test_inbox_local_validation_rejects_without_spawn(monkeypatch) -> None:
-    """Missing required arguments fail locally with the parameter named —
-    no upstream spawn, no opaque upstream error.
-    """
-    spawns = _no_spawn_spy(monkeypatch)
-    tool = _inbox_tool()
-    assert "body" in _call(tool, action="send")
-    assert "message_id" in _call(tool, action="resolve")
-    assert "text" in _call(tool, action="record")
-    assert "guide" in _call(tool, action="guide_submit")
-    assert "patch" in _call(tool, action="guide_submit", guide={"title": "t"})
-    assert spawns == []
-
-
-def test_inbox_action_map() -> None:
-    """The allow-list is exactly the eight documented action mappings."""
-    from tkt._session_tools import INBOX_ACTION_TOOLS
-
-    assert INBOX_ACTION_TOOLS == {
-        "send": "send_message",
-        "read": "read_thread",
-        "wait": "wait_for_reply",
-        "resolve": "resolve_message",
-        "decisions": "list_decisions",
-        "record": "record_decision",
-        "guide_brief": "get_guide_brief",
-        "guide_submit": "submit_guide",
-    }
-
-
-def test_inbox_unknown_action_rejected_without_spawn(monkeypatch) -> None:
-    """Security surface: non-allow-listed actions are rejected locally
-    and never spawn the upstream server.
-    """
-    import mcp.client.stdio as stdio_mod
-
-    spawns: list = []
-
-    def _spy(*args, **kwargs):
-        spawns.append((args, kwargs))
-        raise AssertionError("upstream must not spawn for a non-allow-listed action")
-
-    monkeypatch.setattr(stdio_mod, "stdio_client", _spy)
-    mcp = MCPServer("t")
-    build_session_tools(mcp, workspace="/ws")
-    tool = mcp._tool_manager.get_tool("plannotator_inbox")
-    out = _call(tool, action="approve", text="rm -rf")
-    assert "unknown action" in out
-    assert spawns == []
-
-
-def test_inbox_upstream_error_surfaced(fake_inbox_cli) -> None:
-    """Upstream ``isError`` results surface as tool text, not exceptions."""
-    from tkt._session_tools import _inbox_call
-
-    out = _inbox_call("boom", {})
-    assert "upstream error" in out and "upstream exploded" in out
-
-
-# guide_submit patch sources: patch_file (host-side workspace read) and
-# patch_spec (host-side git diff).  The upstream fake accepts only
-# submit_guide's own keys, so a source key leaking upstream instead of being
-# resolved locally would be refused there.
-
-
-def _forwarded_head(out: str) -> dict:
-    """Parse the forwarded record from a result ending in a patch summary."""
-    import json as _json
-
-    return _json.loads(out.splitlines()[0])
-
-
-def _make_git_repo(path) -> None:
-    """Git repo with a ``main`` branch and a ``feature`` branch touching
-    two files (so a pathspec-scoped diff differs from the full one).
-    """
-    import subprocess
-
-    def git(*args: str) -> None:
-        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True, text=True)
-
-    git("init", "-b", "main")
-    git("config", "user.email", "tests@example.com")
-    git("config", "user.name", "Tests")
-    (path / "a.py").write_text("x = 1\n")
-    (path / "b.txt").write_text("one\n")
-    git("add", "-A")
-    git("commit", "-m", "base")
-    git("checkout", "-b", "feature")
-    (path / "a.py").write_text("x = 2\n")
-    (path / "b.txt").write_text("two\n")
-    git("add", "-A")
-    git("commit", "-m", "feature")
-
-
-def test_inbox_guide_submit_patch_file_sent_as_patch(fake_inbox_cli) -> None:
-    """``patch_file`` is read host-side under the workspace and its content
-    is forwarded as ``patch``; the result echoes the resolved source.
-    """
-    ws = fake_inbox_cli
-    patch = "diff --git a/x.py b/x.py\n@@ -0,0 +1 @@\n+x\n"
-    (ws / "review-staging").mkdir()
-    (ws / "review-staging" / "guide.patch").write_text(patch)
-    out = _call(
-        _inbox_tool(workspace=str(ws)),
-        action="guide_submit",
-        guide={"title": "t"},
-        patch_file="review-staging/guide.patch",
-    )
-    fwd = _forwarded_head(out)
-    assert fwd["tool"] == "submit_guide"
-    assert fwd["args"] == {"guide": {"title": "t"}, "patch": patch}
-    assert "1 file(s)" in out and "bytes" in out and "review-staging/guide.patch" in out
-
-
-def test_inbox_guide_submit_patch_file_containment_and_missing(monkeypatch, fake_inbox_cli) -> None:
-    """Escapes are refused, a missing file names the host path it looked for,
-    non-UTF-8 bytes are refused — all locally, with no upstream spawn.
-    """
-    spawns = _no_spawn_spy(monkeypatch)
-    ws = fake_inbox_cli
-    tool = _inbox_tool(workspace=str(ws))
-    assert "outside workspace" in _call(
-        tool, action="guide_submit", guide={"title": "t"}, patch_file="../elsewhere.patch"
-    )
-    assert "outside workspace" in _call(
-        tool, action="guide_submit", guide={"title": "t"}, patch_file="/etc/passwd"
-    )
-    missing = _call(tool, action="guide_submit", guide={"title": "t"}, patch_file="missing.patch")
-    assert "not found" in missing and "missing.patch" in missing
-    (ws / "binary.patch").write_bytes(b"\xff\xfe not utf-8 \x00")
-    assert "UTF-8" in _call(tool, action="guide_submit", guide={"title": "t"}, patch_file="binary.patch")
-    assert spawns == []
-
-
-def test_inbox_guide_submit_patch_spec_runs_host_git_diff(fake_inbox_cli) -> None:
-    """``patch_spec`` forwards host-side ``git diff base...head`` output,
-    with ``head`` defaulting to ``HEAD`` and ``paths`` scoping the diff.
-    """
-    import subprocess
-
-    ws = fake_inbox_cli
-    repo = ws / "pkg"
-    repo.mkdir()
-    _make_git_repo(repo)
-    expected = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--no-color", "main...feature"],
-        capture_output=True,
-        text=True,
-    ).stdout
-    tool = _inbox_tool(workspace=str(ws))
-    out = _call(
-        tool,
-        action="guide_submit",
-        guide={"title": "t"},
-        patch_spec={"dir": "pkg", "base": "main"},
-    )
-    fwd = _forwarded_head(out)
-    assert fwd["tool"] == "submit_guide"
-    assert fwd["args"] == {"guide": {"title": "t"}, "patch": expected}
-    assert "git diff main...HEAD" in out
-    out = _call(
-        tool,
-        action="guide_submit",
-        guide={"title": "t"},
-        patch_spec={"dir": "pkg", "base": "main", "head": "feature", "paths": ["a.py"]},
-    )
-    fwd = _forwarded_head(out)
-    assert "a.py" in fwd["args"]["patch"] and "b.txt" not in fwd["args"]["patch"]
-
-
-def test_inbox_guide_submit_patch_spec_errors(monkeypatch, fake_inbox_cli) -> None:
-    """Bad specs are refused locally — unknown keys, missing/dangerous refs,
-    escaping ``dir``, failing git, empty diffs — with no upstream spawn.
-    """
-    spawns = _no_spawn_spy(monkeypatch)
-    ws = fake_inbox_cli
-    repo = ws / "pkg"
-    repo.mkdir()
-    _make_git_repo(repo)
-    tool = _inbox_tool(workspace=str(ws))
+    ws = str(tmp_path)
     cases = [
-        ({"dir": "pkg", "base": "main", "diff": "x"}, "unknown key"),
+        ({"dir": "pkg", "base": git_repo, "diff": "x"}, "unknown key"),
         ({"dir": "pkg", "head": "feature"}, "requires a non-empty 'base'"),
+        ({"dir": "pkg", "base": ""}, "requires a non-empty 'base'"),
         ({"dir": "pkg", "base": "-b", "head": "feature"}, "must not start with '-'"),
-        ({"dir": "../outside", "base": "main"}, "outside workspace"),
+        ({"dir": "pkg", "base": git_repo, "head": "-x"}, "must not start with '-'"),
+        ({"dir": "../outside", "base": git_repo}, "outside workspace"),
         ({"dir": "pkg", "base": "nope"}, "git diff failed"),
-        ({"dir": "pkg", "base": "main", "head": "main"}, "empty diff"),
+        ({"dir": "pkg", "base": git_repo, "head": git_repo}, "empty diff"),
     ]
     for spec, expected in cases:
-        out = _call(tool, action="guide_submit", guide={"title": "t"}, patch_spec=spec)
-        assert expected in out, f"{spec}: {out}"
-    assert spawns == []
-
-
-def test_inbox_guide_submit_patch_sources_mutually_exclusive(monkeypatch) -> None:
-    """At most one of patch, patch_file, patch_spec, snapshot — refused
-    locally, with no upstream spawn.
-    """
-    spawns = _no_spawn_spy(monkeypatch)
-    tool = _inbox_tool()
-    assert "at most one" in _call(
-        tool, action="guide_submit", guide={"title": "t"}, patch="x", patch_file="a.patch"
-    )
-    assert "at most one" in _call(
-        tool, action="guide_submit", snapshot={"files": []}, patch_spec={"base": "main"}
-    )
-    assert "at most one" in _call(
-        tool, action="guide_submit", guide={"title": "t"}, patch_file="a.patch", patch_spec={"base": "main"}
-    )
-    assert spawns == []
+        with pytest.raises(ValueError, match=expected):
+            _resolve_patch_source(ws, "patch_spec", spec)

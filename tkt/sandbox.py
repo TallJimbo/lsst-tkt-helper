@@ -44,7 +44,7 @@ from typing import Any
 import git
 
 from ._environment import Environment, Tool
-from ._sessionmanagers import sweep_session_registry
+from ._sessionmanagers import plannotator_result_dir, sweep_session_registry
 from ._workspace import Workspace
 from .install import PLANNOTATOR_HOST_ONLY_SKILLS
 
@@ -967,6 +967,16 @@ class Sandbox(Tool):
             expanded = os.path.expanduser(path)
             rw_paths.add(expanded)
             argv += ["--bind-try", expanded, expanded]
+        # The session tools' result directory, visible at its host path: the
+        # decision JSON a host-side Plannotator session leaves behind is
+        # something the agent reads with its own file tools.  Mounted after the
+        # configured mounts so a configured read-write bind of the same path
+        # still wins.  plannotator_result_dir() creates the directory, which
+        # --ro-bind-try otherwise would skip silently.
+        if not network and bridge_llm:
+            result_dir = plannotator_result_dir()
+            if result_dir not in rw_paths:
+                argv += ["--ro-bind-try", result_dir, result_dir]
         # Mask the background-service credential file (which holds the host
         # service password) from the agent.  The /dev/null overlay is the
         # last mount so nothing can re-expose it; an empty read makes v2
@@ -989,6 +999,7 @@ class Sandbox(Tool):
         # (net_dir is validated non-None in the bridge mount block above.)
         if not network and bridge_llm and net_dir is not None:
             argv += ["--setenv", "TKT_SESSION_SOCKET", os.path.join(net_dir, SESSION_SOCKET_NAME)]
+            argv += ["--setenv", "TKT_PLANNOTATOR_RESULTS", plannotator_result_dir()]
             argv += [
                 "--setenv",
                 "OPENCODE_CONFIG_CONTENT",

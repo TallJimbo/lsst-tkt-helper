@@ -30,6 +30,9 @@ import subprocess as sp
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
+from tkt import _session_tools
 from tkt.mcp_files import MAX_CONTENT_BYTES
 from tkt.mcp_server import (
     _MAX_OUTPUT_CHARS,
@@ -56,6 +59,15 @@ from tkt.mcp_server import (
     truncate_output,
     write_tool,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_inbox_upstream(monkeypatch):
+    """Keep the Inbox re-publish out of this module: a real ``plannotator`` on
+    PATH would otherwise spawn one listing per ``build_session_tools`` call.
+    The Inbox surface itself is covered by ``tests/test_inbox_proxy.py``.
+    """
+    monkeypatch.setattr(_session_tools, "register_inbox_tools", lambda *a, **k: 0)
 
 
 def test_read_char_cap_scales_with_limit():
@@ -243,7 +255,7 @@ def test_mcp_server_run_server_registers_session_tools(tmp_path, monkeypatch):
     mcp_server.run_server(mock.Mock(), cwd=str(tmp_path), repo_dir=str(tmp_path))
     assert captured.get("called") is True
     assert captured["workspace"] == str(tmp_path)
-    assert {"brainstorm_server", "plannotator", "plannotator_inbox"} <= captured["names"]
+    assert {"brainstorm_server", "plannotator_open"} <= captured["names"]
 
 
 def test_build_driver_script_hardening():

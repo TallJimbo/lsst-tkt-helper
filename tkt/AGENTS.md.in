@@ -46,31 +46,53 @@ work around the restriction; instead ask the human to rerun with network
 access (legacy sandbox runs: `tkt sandbox-run --network`).
 
 If you offer a browser-based visual companion (see the brainstorming skill) or
-Plannotator reviews, use the `brainstorm_server` / `plannotator` MCP tools: they
-run the session servers on the *host*, where the human's browser reaches them
-directly. If your tool catalog lists entries as `tools["<server>"].<tool>` (a
-code-mode harness), that path is the call form: invoke the tool from code mode
-(the `execute` tool), never as a top-level tool name — there, a top-level call
-to the bare name (e.g. `plannotator`) can never work; from code mode, e.g.
-`tools["tkt-session"].plannotator({ action: "open", kind: "review", target:
-"<dir>", base: "<ref>" })` opens a review. Hand the human any URL the tool
-returns **verbatim** and end your turn — feedback is not pushed to you. When
-the human prods you (or when you need the outcome), call the `plannotator`
-tool's `status` action to list session ids and `result` to fetch each outcome.
-If you offer the Plannotator Inbox / guided reviews, use the `plannotator_inbox`
-tool (`guide_brief` then `guide_submit` to author a guided review — ask your
-human to request it rather than clicking the web-UI button). Never launch
-`start-server.sh` or the `plannotator` CLI yourself: an in-sandbox server is
-unreachable by design, and the host tools own session lifecycles
-(attach-or-start, no duplicates). If a session tool is absent from your tool
-catalog in every spelling, stop and report it instead of improvising. One
-exception: shortly after the session sat idle (e.g. while the human worked
-through a review), a turn's tool catalog may transiently list the session
-tools as "no longer available" while the harness reconnects its MCP
-connections. If such a revocation cites session tools you used in an earlier
-turn, wait one turn and use the tools if they reappear; report only if the
-tools stay missing across turns. A failed call to a bare tool name is not
-such a revocation: if the catalog still lists the tool (in any spelling),
+Plannotator reviews, use the `brainstorm_server` / `plannotator_open` MCP tools:
+they run the session servers on the *host*, where the human's browser reaches
+them directly. If your tool catalog lists entries as `tools["<server>"].<tool>`
+(a code-mode harness), that path is the call form: invoke the tool from code mode
+(the `execute` tool), never as a top-level tool name — there, a top-level call to
+the bare name (e.g. `plannotator_open`) can never work. From code mode, e.g.
+`tools["tkt-session"].plannotator_open({ kind: "review", target: "<dir>",
+base: "<ref>" })` opens a review. `annotate` takes text-like files — markdown
+and the other types Plannotator renders; code goes through `kind="review"`.
+A directory `review` registers at the repository root, so the directory you
+pass is not a diff scope. Hand the human any URL the tool
+returns **verbatim** and end your turn: feedback is not pushed to you, and
+nothing arrives to wake you.
+
+The tool returns the path the session's decision lands at — `<handle>.out`,
+beside `<handle>.registry.json`, under the directory named by
+`TKT_PLANNOTATOR_RESULTS` (mounted read-only at that same path). When the human
+says the review is in, read that file. The capture exists from the moment
+the session opens: while the session is still open the file is empty, and an
+empty file for a session no longer running means it ended without a decision:
+ask the human rather than re-reading. JSON that does not parse means the
+session has not resolved, so read it again later rather than reporting a
+parse error. Never poll for it, and never launch `start-server.sh`
+or the `plannotator` CLI yourself: a session started inside the sandbox is
+unreachable by design, and the host tools own session lifecycles — opening the
+same target again attaches to the live session, and `ls`/`read` over that
+directory is how you rediscover a session after a restart. A session the human
+started from their own terminal has no capture for you to read: ask them what
+they submitted. Closing a review tab discards an unsent draft, so a session the
+human walked away from has to be opened again.
+
+For the Plannotator Inbox — leaving the human a question they can answer later,
+or authoring a guided review — the upstream tools are published directly:
+`send_message`, `read_thread`, `search`, `resolve_message`, `wait_for_reply`,
+`get_guide_brief`, `submit_guide`. Call them through the same code-mode path.
+`submit_guide` also accepts tkt's `patch_file` (a diff staged inside the
+workspace) and `patch_spec` (a host `git diff base...head`), each forwarded as
+`patch`, because paths private to your sandbox are invisible to the host.
+
+If a session tool is absent from your tool catalog in every spelling, stop and
+report it instead of improvising. One exception: shortly after the session sat
+idle (e.g. while the human worked through a review), a turn's tool catalog may
+transiently list the session tools as "no longer available" while the harness
+reconnects its MCP connections. If such a revocation cites session tools you
+used in an earlier turn, wait one turn and use the tools if they reappear; report
+only if the tools stay missing across turns. A failed call to a bare tool name is
+not such a revocation: if the catalog still lists the tool (in any spelling),
 retry through the path the catalog gives.
 
 All environment variables needed to build and import the packages in your
