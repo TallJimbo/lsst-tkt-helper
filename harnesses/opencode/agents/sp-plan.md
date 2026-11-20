@@ -16,6 +16,8 @@ permissions:
   - { action: webfetch, resource: "*", effect: deny }
   - { action: websearch, resource: "*", effect: deny }
   - { action: edit, resource: "*", effect: deny }
+  - { action: edit, resource: "docs/superpowers/specs/*.md", effect: allow }
+  - { action: edit, resource: "superpowers-docs/*/specs/*.md", effect: allow }
   - {
       action: edit,
       resource: "*/superpowers-docs/*/plans/*.md",
