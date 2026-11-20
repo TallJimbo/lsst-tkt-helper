@@ -40,6 +40,10 @@ Agents should create a feature branch for their session and start by committing
 the spec and plan documents. When work is complete, _offer_ to squash the
 branch into a single commit and rebase it onto main.
 
+If you find yourself on a feature branch that is unrelated to what you're
+working on, assume it's an incomplete but dormant project that's nevertheless
+in active use. Branch from it, and rebase/squash back onto it.
+
 ## File layout
 
 - **`tkt/__init__.py`** — Public API exports: `cli`, `Environment`,
