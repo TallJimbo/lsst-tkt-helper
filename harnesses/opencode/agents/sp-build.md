@@ -39,7 +39,7 @@ Delegation:
   template.
 
 Model policy: all subagents run on the machine-designated local model
-(`rubin-dm-01/local-inference-lab/Qwen3.8-Flash-Next-NVFP4`). Omit `model`
+(`rubin-dm-01/nvidia/Qwen3.8-Flash-Next-FP4-Local`). Omit `model`
 for the default (medium) effort tier; pass the designated id with a `#low`,
 `#medium`, or `#xhigh` suffix only to vary reasoning effort. Never name an
 OpenCode Zen or Princeton AI Sandbox model — the catalog allowlists the local
