@@ -1,0 +1,18 @@
+# Extra packages installed on top of a fresh lsst-scipipe conda environment
+#
+# Bootstrap a new env with:
+#
+#   conda install --no-update-deps --file conda-extras.txt
+#
+
+json5
+prek
+mcp
+pybind11-stubgen
+mypy
+types-pyyaml
+types-shapely
+types-tqdm
+scipy-stubs
+jupyterlab
+esbonio
