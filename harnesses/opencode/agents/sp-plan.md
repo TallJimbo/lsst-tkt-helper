@@ -29,6 +29,7 @@ permissions:
       resource: ".agent/docs/superpowers/plans/*.md",
       effect: allow,
     }
+  - { action: edit, resource: ".superpowers/*", effect: allow }
   - { action: edit, resource: "superpowers-docs/*/plans/*.md", effect: allow }
 
   # GitHub MCP: fully hidden here. Read-only GitHub access belongs to the

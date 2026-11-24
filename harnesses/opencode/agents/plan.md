@@ -21,6 +21,10 @@ permissions:
   # No network tools (sp-design parity; restricted sandboxes have none).
   - { action: webfetch, resource: "*", effect: deny }
   - { action: websearch, resource: "*", effect: deny }
+  # Visual companion screens/events for the math-display and brainstorming
+  # flows (sp-design/sp-plan parity); the brainstorm_server session tool
+  # needs no permission grant — the tkt-session MCP is wired globally.
+  - { action: edit, resource: ".superpowers/*", effect: allow }
   # GitHub MCP: read-only search/fetch, matching sp-design. The global
   # opencode.jsonc additionally denies the GitHub write tools per tool.
   - { action: "github_*", resource: "*", effect: deny }
