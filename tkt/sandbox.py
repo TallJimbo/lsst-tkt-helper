@@ -436,9 +436,10 @@ class Sandbox(Tool):
 
     def remove(self, directory: str) -> None:
         """Kill session servers for this workspace (``tkt rm`` hook)."""
-        from ._sessionmanagers import cleanup_workspace_sessions
+        from ._sessionmanagers import cleanup_workspace_brainstorm, cleanup_workspace_sessions
 
         cleanup_workspace_sessions(directory)
+        cleanup_workspace_brainstorm(directory)
 
     def _add_agent_worktree(self, package_dir: str, agent_package_dir: str, ticket: str) -> None:
         repo = git.Repo(package_dir)

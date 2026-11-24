@@ -26,8 +26,11 @@
 
 ``BrainstormManager`` (moved from ``tkt/mcp_server.py``) owns the visual
 companion server; ``PlannotatorManager`` owns ``plannotator`` review sessions.
-Servers they start are detached and outlive the MCP connection that spawned
-them; they die by explicit close, idle timeout, the boot sweep, or ``tkt rm``.
+Servers they start are detached and outlive the MCP connection and the
+sandbox that spawned them. Companion servers exit when the human closes the
+last browser tab, or when no browser ever connects; Plannotator sessions
+follow their own lifecycle. Both are also reaped by explicit close and by
+``tkt rm``.
 """
 
 from __future__ import annotations
@@ -55,6 +58,10 @@ _BRAINSTORM_SCRIPT_HOME_RELPATH = os.path.join(
 # Wall-clock bound for the launcher script (it self-bounds to ~8 s waiting for
 # the server to start and prove it stays alive).
 _BRAINSTORM_START_TIMEOUT_S = 30
+
+# tkt runs companions tab-close-driven: the idle reaper is off (0) unless the
+# agent explicitly asks for a cap.
+_BRAINSTORM_DEFAULT_IDLE_MINUTES = 0
 
 
 def _find_brainstorm_script() -> str:
@@ -108,11 +115,10 @@ class BrainstormManager:
     no network bridge, is reachable from the human's browser verbatim, and
     ``--open`` can auto-open the browser again.
 
-    Lifetime is normally bounded by the companion server's own idle timeout
-    (and the boot sweep or ``tkt rm``) rather than by the MCP connection that
-    spawned it, so a session survives reconnects.  ``start()`` optionally
-    anchors the server's lifetime to a specific process via ``--owner-pid``,
-    for callers that want it to self-exit when their process dies.
+    Lifetime belongs to the human's browser: the server exits a short grace
+    after the last tab closes, or when no browser ever connects.  It is never
+    bound to the MCP connection or the sandbox, so it survives reconnects and
+    sandbox teardown; ``stop()`` and ``tkt rm`` reap it early.
     """
 
     def __init__(self, *, root: str) -> None:
@@ -138,7 +144,13 @@ class BrainstormManager:
         return resolved
 
     def _scan_state_dir(self, project: str) -> str | None:
-        """Return the newest session ``state`` dir under ``project``."""
+        """Return the newest session ``state`` dir under ``project``.
+
+        A session dir is visible while either lifecycle marker exists —
+        ``server-info`` while the server may be live, ``server-stopped``
+        after it exited (the reap reason lives there) — and invisible once
+        both are gone.
+        """
         base = os.path.join(project, ".superpowers", "brainstorm")
         newest: str | None = None
         newest_mtime = 0.0
@@ -150,11 +162,15 @@ class BrainstormManager:
             if not entry.is_dir():
                 continue
             state_dir = os.path.join(entry.path, "state")
-            info = os.path.join(state_dir, "server-info")
-            try:
-                mtime = os.path.getmtime(info)
-            except OSError:
+            marker_times = []
+            for marker in ("server-info", "server-stopped"):
+                try:
+                    marker_times.append(os.path.getmtime(os.path.join(state_dir, marker)))
+                except OSError:
+                    pass
+            if not marker_times:
                 continue
+            mtime = max(marker_times)
             if mtime > newest_mtime:
                 newest, newest_mtime = state_dir, mtime
         return newest
@@ -180,6 +196,16 @@ class BrainstormManager:
         return obj
 
     @staticmethod
+    def _read_stopped(state_dir: str) -> dict[str, Any] | None:
+        """Read the server's ``server-stopped`` JSON, or ``None``."""
+        try:
+            with open(os.path.join(state_dir, "server-stopped"), encoding="utf-8") as f:
+                obj = _last_json_object(f.read())
+        except OSError:
+            return None
+        return obj
+
+    @staticmethod
     def _read_pid(state_dir: str) -> int | None:
         """Read the launcher's recorded server pid, or ``None``."""
         try:
@@ -188,13 +214,14 @@ class BrainstormManager:
         except (OSError, ValueError):
             return None
 
-    def _is_alive(self, state_dir: str | None) -> bool:
+    @staticmethod
+    def _is_alive(state_dir: str | None) -> bool:
         """Return True when a live companion server exists for this session."""
         if state_dir is None or not os.path.isdir(state_dir):
             return False
         if os.path.exists(os.path.join(state_dir, "server-stopped")):
             return False
-        pid = self._read_pid(state_dir)
+        pid = BrainstormManager._read_pid(state_dir)
         if pid is None:
             return False
         try:
@@ -210,7 +237,6 @@ class BrainstormManager:
         port: int | None = None,
         idle_timeout_minutes: int | None = None,
         open_browser: bool = True,
-        owner_pid: int | None = None,
     ) -> dict[str, Any]:
         """Start the companion server, or return the live session's info.
 
@@ -219,10 +245,10 @@ class BrainstormManager:
         server is confirmed up (or failed).  A still-running server for this
         project is reused rather than duplicated.
 
-        ``owner_pid`` optionally anchors the server's lifetime to that process
-        via the launcher's ``--owner-pid`` flag; when ``None`` (the default)
-        the flag is omitted and the server then dies only via explicit
-        close, idle timeout, the boot sweep, or ``tkt rm``.
+        The server's lifetime is the human's browser tab: owner monitoring is
+        disabled (``--owner-pid none``) and the idle reaper is off unless
+        ``idle_timeout_minutes`` is given, so closing the tab — not a client
+        process dying — is what reaps it.
         """
         project = self._resolve_project_dir(project_dir)
         state_dir = self._state_dir(project)
@@ -237,15 +263,33 @@ class BrainstormManager:
             env.pop("BRAINSTORM_PORT", None)  # let the script reuse/choose a port
         else:
             env["BRAINSTORM_PORT"] = str(int(port))
-        argv = ["bash", _find_brainstorm_script(), "--project-dir", project]
-        if owner_pid is not None:
-            argv += ["--owner-pid", str(int(owner_pid))]
-        if idle_timeout_minutes is not None:
-            argv += ["--idle-timeout-minutes", str(int(idle_timeout_minutes))]
+        argv = [
+            "bash",
+            _find_brainstorm_script(),
+            "--project-dir",
+            project,
+            "--owner-pid",
+            "none",
+            "--idle-timeout-minutes",
+            str(
+                int(idle_timeout_minutes)
+                if idle_timeout_minutes is not None
+                else _BRAINSTORM_DEFAULT_IDLE_MINUTES
+            ),
+        ]
         if open_browser:
             argv += ["--open"]
+        # start_new_session: the companion must outlive the bridge. Without
+        # it the server inherits the session-listener socat's process group
+        # and _stop_bridge's killpg signal-kills it at sandbox teardown.
         proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_BRAINSTORM_START_TIMEOUT_S, env=env, check=False
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=_BRAINSTORM_START_TIMEOUT_S,
+            env=env,
+            check=False,
+            start_new_session=True,
         )
         started = _last_json_object(proc.stdout)
         if started is None:
@@ -257,13 +301,24 @@ class BrainstormManager:
         return started
 
     def status(self, project_dir: str) -> dict[str, Any]:
-        """Report whether a companion server is live for ``project_dir``."""
+        """Report whether a companion server is live for ``project_dir``.
+
+        A server that reaped itself (its last browser tab closed) leaves only
+        ``server-stopped`` behind — ``shutdown()`` unlinks ``server-info`` —
+        so that file's JSON, reason included, is the whole report.
+        """
         project = self._resolve_project_dir(project_dir)
         state_dir = self._state_dir(project)
         if state_dir is None:
             return {"type": "not-running", "project_dir": project}
+        alive = self._is_alive(state_dir)
+        if not alive:
+            stopped = self._read_stopped(state_dir)
+            if stopped is not None:
+                stopped["type"] = "server-stopped"
+                return stopped
         info = dict(self._read_info(state_dir) or {})
-        info["type"] = "server-running" if self._is_alive(state_dir) else "server-stopped"
+        info["type"] = "server-running" if alive else "server-stopped"
         return info
 
     def stop(self, project_dir: str) -> dict[str, Any]:
@@ -308,6 +363,12 @@ def _format_brainstorm_info(info: dict[str, Any]) -> str:
         )
     if kind == "not-running":
         return body + "No companion server session exists for this project yet."
+    if kind == "server-stopped" and info.get("reason"):
+        return body + (
+            f"Companion server stopped (reason: {info['reason']}). Do not restart it "
+            "until you have a genuinely new screen to push the human; a reopened tab "
+            "reconnects on its own once the server is started again."
+        )
     return body
 
 
@@ -661,6 +722,34 @@ def cleanup_workspace_sessions(workspace: str) -> int:
             continue
         removed += 1
     return removed
+
+
+def cleanup_workspace_brainstorm(workspace: str) -> int:
+    """``tkt rm`` hook: terminate companion servers under ``workspace``.
+
+    The ``brainstorm_server`` tool accepts any project dir inside the
+    workspace — in practice the workspace root or a direct child directory
+    (a package) — so both layouts of ``.superpowers/brainstorm/*/state``
+    are scanned.  Their content dirs live inside the workspace and vanish
+    with it, so a surviving server would only serve a corpse until its tab
+    closes.
+    """
+    ws = Path(workspace).resolve()
+    patterns = (".superpowers/brainstorm/*/state", "*/.superpowers/brainstorm/*/state")
+    state_dirs = {p for pattern in patterns for p in ws.glob(pattern) if p.is_dir()}
+    killed = 0
+    for state_dir in sorted(state_dirs):
+        if not BrainstormManager._is_alive(str(state_dir)):
+            continue
+        pid = BrainstormManager._read_pid(str(state_dir))
+        if pid is None:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+        killed += 1
+    return killed
 
 
 class PlannotatorManager:

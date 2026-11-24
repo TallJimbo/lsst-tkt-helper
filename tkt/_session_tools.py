@@ -158,7 +158,9 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
                 is chosen and then reused across restarts of the same
                 project.
             idle_timeout_minutes: "start" only; auto-shutdown after this many
-                idle minutes (server default 240).
+                idle minutes. Default is no idle cap — the server exits when
+                the human closes the browser tab (or no browser ever
+                connects), so a tab left open for days keeps the session.
             open_browser: "start" only; auto-open the human's browser on the
                 first pushed screen (default True; only ever opens once, and
                 not if a tab is already connected).
@@ -168,9 +170,9 @@ def build_session_tools(mcp: MCPServer, *, workspace: str) -> None:
         try:
             project = safe_subpath(workspace, project_dir)
             if action == "start":
-                # owner_pid omitted on purpose: session servers die by
-                # close / idle timeout / sweep / tkt rm, never by client
-                # disconnect.
+                # Owner monitoring and the idle cap are off on purpose: the
+                # companion's lifecycle is the human's browser tab (last tab
+                # closed → exit), never a client process.
                 info = brainstorm.start(
                     project, port=port, idle_timeout_minutes=idle_timeout_minutes, open_browser=open_browser
                 )

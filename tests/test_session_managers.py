@@ -57,7 +57,11 @@ def test_brainstorm_manager_moved() -> None:
 
 
 def _brainstorm_session(root, name, *, pid=None, stopped=False, info=None):
-    """Create a fake session dir laid out like start-server.sh does."""
+    """Create a fake session dir laid out like start-server.sh does.
+
+    ``stopped`` writes the ``server-stopped`` marker: pass a dict for the
+    JSON the server's shutdown writes (``{"reason": ..., "timestamp": ...}``).
+    """
     base = root / ".superpowers" / "brainstorm" / name
     state = base / "state"
     content = base / "content"
@@ -75,7 +79,8 @@ def _brainstorm_session(root, name, *, pid=None, stopped=False, info=None):
     if pid is not None:
         (state / "server.pid").write_text(str(pid) + "\n")
     if stopped:
-        (state / "server-stopped").write_text("{}\n")
+        payload = stopped if isinstance(stopped, dict) else {}
+        (state / "server-stopped").write_text(json.dumps(payload) + "\n")
     return state
 
 
@@ -124,7 +129,7 @@ def test_brainstorm_start_reuses_live_server(tmp_path):
 
 
 def test_brainstorm_start_launches_launcher(tmp_path):
-    """start() shells out to the launcher with args and no owner pid."""
+    """start() launches detached, with owner monitoring and idle cap off."""
     from tkt._sessionmanagers import BrainstormManager
 
     mgr = BrainstormManager(root=str(tmp_path))
@@ -140,23 +145,24 @@ def test_brainstorm_start_launches_launcher(tmp_path):
         mock.patch("tkt._sessionmanagers.subprocess.run", return_value=completed) as run,
         mock.patch("tkt._sessionmanagers._find_brainstorm_script", return_value="/fake/start-server.sh"),
     ):
-        info = mgr.start(".", port=52999, idle_timeout_minutes=30)
+        info = mgr.start(".", port=52999)
     assert info == started
     argv = run.call_args[0][0]
     env = run.call_args.kwargs["env"]
     assert argv[:2] == ["bash", "/fake/start-server.sh"]
     assert argv[argv.index("--project-dir") + 1] == os.path.realpath(tmp_path)
-    # Default owner_pid=None means the companion is not bound to this
-    # process: it dies only via close / timeout / sweep, never by
-    # the caller's exit.
-    assert "--owner-pid" not in argv
-    assert argv[argv.index("--idle-timeout-minutes") + 1] == "30"
+    # The human's browser tab owns the lifecycle: no owner-PID anchor, no
+    # idle cap by default, and its own process group so the bridge's killpg
+    # at sandbox teardown cannot reach it.
+    assert argv[argv.index("--owner-pid") + 1] == "none"
+    assert argv[argv.index("--idle-timeout-minutes") + 1] == "0"
+    assert run.call_args.kwargs["start_new_session"] is True
     assert "--open" in argv
     assert env["BRAINSTORM_PORT"] == "52999"
 
 
-def test_brainstorm_start_owner_pid_is_passed_through(tmp_path):
-    """An explicit owner_pid appends --owner-pid with that pid."""
+def test_brainstorm_start_idle_timeout_passthrough(tmp_path):
+    """An explicit idle_timeout_minutes replaces the disabled default."""
     from tkt._sessionmanagers import BrainstormManager
 
     mgr = BrainstormManager(root=str(tmp_path))
@@ -170,9 +176,9 @@ def test_brainstorm_start_owner_pid_is_passed_through(tmp_path):
         mock.patch("tkt._sessionmanagers.subprocess.run", return_value=completed) as run,
         mock.patch("tkt._sessionmanagers._find_brainstorm_script", return_value="/fake/start-server.sh"),
     ):
-        mgr.start(".", owner_pid=4242)
+        mgr.start(".", idle_timeout_minutes=30)
     argv = run.call_args[0][0]
-    assert argv[argv.index("--owner-pid") + 1] == "4242"
+    assert argv[argv.index("--idle-timeout-minutes") + 1] == "30"
 
 
 def test_brainstorm_start_without_port_clears_env_and_no_open(tmp_path):
@@ -357,6 +363,43 @@ def test_format_brainstorm_info_warns_about_key():
     out = _format_brainstorm_info({"type": "server-started", "url": "http://x/?key=abc"})
     assert "```json" in out
     assert "?key=" in out  # explicit warning not to strip the session key
+
+
+def test_brainstorm_status_reports_reap_reason(tmp_path):
+    """After a tab-close reap, a fresh manager finds the marker-only session
+    and reports the reason the server recorded for its own shutdown.
+    """
+    from tkt._sessionmanagers import BrainstormManager
+
+    state = _brainstorm_session(
+        tmp_path, "1-1", pid=os.getpid(), stopped={"reason": "browser-closed", "timestamp": 1700000000}
+    )
+    (state / "server-info").unlink()  # shutdown() unlinks it; the marker is all that's left
+    mgr = BrainstormManager(root=str(tmp_path))
+    info = mgr.status(".")
+    assert info["type"] == "server-stopped"
+    assert info["reason"] == "browser-closed"
+    assert info["timestamp"] == 1700000000
+
+
+def test_brainstorm_status_not_running_without_markers(tmp_path):
+    """A leftover session dir with neither lifecycle marker stays invisible."""
+    from tkt._sessionmanagers import BrainstormManager
+
+    (tmp_path / ".superpowers" / "brainstorm" / "1-1" / "state").mkdir(parents=True)
+    mgr = BrainstormManager(root=str(tmp_path))
+    assert mgr.status(".")["type"] == "not-running"
+
+
+def test_format_brainstorm_info_reports_stop_reason():
+    """A stopped render names the reap reason instead of the 'not ... yet'
+    wording, which would invite a resurrection of a session the human closed.
+    """
+    from tkt._sessionmanagers import _format_brainstorm_info
+
+    out = _format_brainstorm_info({"type": "server-stopped", "reason": "browser-closed"})
+    assert "browser-closed" in out
+    assert "No companion server session" not in out
 
 
 # ========== PlannotatorManager (host-side review sessions) ==========
@@ -1404,3 +1447,57 @@ class TestP2GoldenReplay:
         assert live is not None
         assert _match(live, str(fake_cli / "spec.md"))["pid"] == 2716495  # index 2
         assert _match(live, str(fake_cli / "plan.md"))["pid"] == 2716717  # index 1
+
+
+def _spawn_sleep():
+    """Spawn a live process to stand in for a companion server pid."""
+    return sp.Popen(["sleep", "30"])
+
+
+def test_cleanup_workspace_brainstorm_kills_live_skips_dead(tmp_path):
+    """Only sessions with a live pid and no stop marker are terminated."""
+    from tkt._sessionmanagers import cleanup_workspace_brainstorm
+
+    live = _spawn_sleep()
+    _brainstorm_session(tmp_path, "1-1", pid=live.pid)
+    dead = _spawn_sleep()
+    dead.kill()
+    dead.wait()
+    _brainstorm_session(tmp_path, "2-2", pid=dead.pid)
+    _brainstorm_session(tmp_path, "3-3", pid=dead.pid, stopped=True)
+    _brainstorm_session(tmp_path, "4-4")  # no pid file at all
+
+    killed = cleanup_workspace_brainstorm(str(tmp_path))
+    try:
+        assert killed == 1
+        deadline = time.monotonic() + 5.0
+        while live.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert live.poll() is not None, "the live companion must have been SIGTERMed"
+    finally:
+        live.kill()
+
+
+def test_cleanup_workspace_brainstorm_kills_nested_project_server(tmp_path):
+    """A session under a direct-child project dir (a package, the common
+    `brainstorm_server` layout) is reaped along with the root's.
+    """
+    from tkt._sessionmanagers import cleanup_workspace_brainstorm
+
+    live = _spawn_sleep()
+    _brainstorm_session(tmp_path / "pkg", "1-1", pid=live.pid)
+    try:
+        assert cleanup_workspace_brainstorm(str(tmp_path)) == 1
+        deadline = time.monotonic() + 5.0
+        while live.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert live.poll() is not None, "the nested companion must have been SIGTERMed"
+    finally:
+        live.kill()
+
+
+def test_cleanup_workspace_brainstorm_missing_workspace(tmp_path):
+    """No .superpowers dir is a clean no-op."""
+    from tkt._sessionmanagers import cleanup_workspace_brainstorm
+
+    assert cleanup_workspace_brainstorm(str(tmp_path / "nope")) == 0
